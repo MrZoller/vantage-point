@@ -86,6 +86,7 @@ cfg_get_text() {  # <block> <key> [file=$CONFIG]
 # ---- config knobs (all optional; sane fallbacks) ----
 MODEL="$(cfg_get models monitor)"
 EMAIL_TO="$(cfg_get output email_to)"
+DASHBOARD="$(cfg_get output dashboard)"
 SUBJECT_NAME="$(cfg_get_text subject name)"
 RUN_TIMEOUT="$(cfg_get monitoring run_timeout_seconds)"
 STATE_MAX_LINES="$(cfg_get monitoring state_max_lines)"
@@ -419,4 +420,11 @@ else
   # $REPORT from an earlier successful run today in place.
   rm -f "$RUN_REPORT"
   echo "[monitor:$MODE] nothing material — no report written (silence is correct)."
+fi
+
+# ---- refresh the kb/index.html dashboard (best-effort; never fails the run) ----
+# Observations may have updated even on a quiet day, so regenerate every run unless
+# output.dashboard is explicitly false.
+if [ "$DASHBOARD" != "false" ] && [ -f bin/dashboard.sh ]; then
+  bash bin/dashboard.sh || echo "[monitor:$MODE] WARNING: dashboard refresh failed (report is unaffected)" >&2
 fi

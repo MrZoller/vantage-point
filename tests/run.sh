@@ -226,7 +226,7 @@ test_encode_header
 make_fake_repo() {
   local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
-  cp "$ROOT/bin/monitor.sh" "$repo/bin/"
+  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/dashboard.sh" "$repo/bin/"
   cat > "$repo/monitor-config.yaml" <<YAML
 version: 1
 models:
@@ -324,9 +324,39 @@ test_full_run() {
   assert_eq "seen.jsonl pruned to state_max_lines" "5" "$n"
   local o; o="$(wc -l < "$repo/state/observations.jsonl" | tr -d ' ')"
   assert_eq "observations.jsonl pruned to observations_max_lines" "5" "$o"
+  if [ -f "$repo/kb/index.html" ]; then pass "dashboard refreshed (kb/index.html)"; else fail "dashboard refreshed (kb/index.html)"; fi
   if [ -d "$repo/state/.lock" ]; then fail "lock released on exit"; else pass "lock released on exit"; fi
 }
 test_full_run
+
+echo "== dashboard.sh: renders entities, sparklines, events, report links =="
+test_dashboard() {
+  local repo="$TMP/dashrepo" html
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/dashboard.sh" "$repo/bin/"
+  {
+    printf '{"timestamp":"2026-05-01T07:00:00Z","entity":"Tudor BB58","metric":"secondary_price_usd","value":3650,"unit":"USD","source":"u"}\n'
+    printf 'THIS IS A MALFORMED / TRUNCATED LINE {oops\n'   # must not blank the dashboard
+    printf '{"timestamp":"2026-06-01T07:00:00Z","entity":"Tudor BB58","metric":"secondary_price_usd","value":3200,"unit":"USD","source":"u"}\n'
+    printf '{"timestamp":"2026-06-06T07:00:00Z","entity":"Tudor BB58","metric":"event","event_type":"leak","value":"new GMT teased","source":"u"}\n'
+  } > "$repo/state/observations.jsonl"
+  printf 'r\n' > "$repo/kb/2026-06-06.daily.md"
+  ( cd "$repo" && bash bin/dashboard.sh >/dev/null )
+  html="$repo/kb/index.html"
+  if [ ! -f "$html" ]; then fail "dashboard wrote kb/index.html"; return; fi
+  pass "dashboard wrote kb/index.html"
+  assert_contains "lists the tracked entity (despite a malformed line)" "$(cat "$html")" "Tudor BB58"
+  assert_contains "renders a sparkline cell" "$(cat "$html")" 'class="spark"'
+  assert_contains "event detail falls back to value when note is absent" "$(cat "$html")" "new GMT teased"
+  assert_contains "links a recent report" "$(cat "$html")" "2026-06-06.daily.md"
+  python3 - "$html" <<'PY'
+import sys, html.parser
+class P(html.parser.HTMLParser): pass
+P().feed(open(sys.argv[1]).read())
+PY
+  assert_eq "kb/index.html parses as HTML" "0" "$?"
+}
+test_dashboard
 
 echo "== monitor.sh: email Subject names the monitored subject =="
 test_email_subject() {

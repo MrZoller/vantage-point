@@ -141,6 +141,8 @@ output:
   # remove it to skip email and just read reports from kb/.
   email_to: ""                # e.g. "you@example.com"; blank = no email
   knowledge_base: ./kb/       # accumulate over time; don't just email into the void
+  dashboard: true             # regenerate kb/index.html each run (tracked entities +
+                              # sparklines + report links); set false to skip
   # NOTE: the distribution list below is documentation only — it sketches the
   # intended multi-channel shape (file/slack/telegram/discord). Only email_to
   # above is wired today; editing these entries has no effect.

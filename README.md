@@ -18,7 +18,8 @@ market-monitor/
 │   ├── bootstrap.sh
 │   ├── monitor.sh                # monitor.sh {daily|weekly}
 │   ├── install-launchd.sh        # install/remove the launchd agents (no repo edits)
-│   └── usage.sh                  # roll up state/runs.log: cost/turns/tokens
+│   ├── usage.sh                  # roll up state/runs.log: cost/turns/tokens
+│   └── dashboard.sh              # regenerate kb/index.html (entities + sparklines)
 └── launchd/
     ├── ai.zoller.marketmonitor.daily.plist    # templates; __MM_ROOT__ filled in at install
     └── ai.zoller.marketmonitor.weekly.plist
@@ -31,7 +32,7 @@ Created at runtime, gitignored (a specific deployment's data):
 ├── profile.yaml                  # you promote the reviewed draft to this (ground truth)
 ├── state/seen.jsonl              # dedup memory: "is this NEW?"
 ├── state/observations.jsonl      # longitudinal metric/event memory: "is this CHANGING?"
-└── kb/                           # accumulated reports + per-run logs
+└── kb/                           # accumulated reports, per-run logs, and index.html
 ```
 
 The committed half is the engine; the ignored half is one deployment. `profile.yaml`
@@ -280,8 +281,21 @@ you pin in `tracking.watch`. Like `show_borderline`, the thresholds start sensit
 false` to turn the whole layer off. `observations.jsonl` is pruned to
 `tracking.observations_max_lines` each run, same as `seen.jsonl`.
 
-This is Phase 1 of a larger roadmap (see `docs/roadmap.md`): conveyance overhaul,
-two-pass deep-dive, and one-click calibration build on this longitudinal state.
+See `docs/roadmap.md` for the larger roadmap this is part of.
+
+## How findings are conveyed
+
+Reports are built to be *read and acted on*, not skimmed:
+- Each report opens with a **bottom line** — the single most important thing this run
+  — followed by **What changed** (trends), then items grouped by signal
+  (opportunity / threat / shift), each with *why it matters → recommended action →
+  confidence*.
+- The **weekly** digest adds a **Watchlist status** table — a one-glance snapshot of
+  each tracked entity with a unicode sparkline of recent values.
+- `bin/dashboard.sh` regenerates **`kb/index.html`** after every run (disable with
+  `output.dashboard: false`): a browsable snapshot of tracked entities (latest metric
+  + sparkline), recent events, and links to recent reports. Open it in a browser, or
+  run `./bin/dashboard.sh` by hand anytime. (Needs `jq`, like the run log.)
 
 ## Tests
 

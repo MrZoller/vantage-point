@@ -30,16 +30,17 @@ Record observations each run; flag a **What changed** finding when a metric cros
 `mention_spike_factor`. A flagged move is material on its own. Config: `tracking`
 block. Sensitivity starts high (with confidence labels), tighten after calibrating.
 
-## Phase 2 — conveyance overhaul
+## Phase 2 — conveyance overhaul ✅ (shipped)
 
-Make findings land as decisions, not a list:
-- Lead each report with a single **"if you read one thing"** item.
-- Tier by opportunity / threat / shift; per item: *why it matters → suggested
-  action → confidence*.
-- **Watchlist status table** (per-entity state each run) + inline **sparklines**
-  rendered from `observations.jsonl` in the HTML email.
-- A rolling, browsable **`kb/index.html` dashboard** (latest state per entity,
-  recent shifts) generated from accumulated state.
+Findings land as decisions, not a list:
+- Each report opens with a **bottom line** (the one thing to read), then What
+  changed, then items grouped by opportunity / threat / shift with *why → action →
+  confidence*.
+- The weekly digest adds a **Watchlist status** table with unicode **sparklines**
+  (render in both plain text and HTML mail — more portable than SVG).
+- `bin/dashboard.sh` regenerates a browsable **`kb/index.html`** each run (tracked
+  entities + latest metric + sparkline, recent events, report links); `output.dashboard`
+  toggles it.
 
 ## Phase 3 — two-pass deep dive
 
