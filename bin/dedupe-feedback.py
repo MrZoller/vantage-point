@@ -11,6 +11,16 @@ import json
 import sys
 
 
+def _ts(rec):
+    """A sortable timestamp string; a missing or non-string value sorts earliest.
+
+    The log can be hand-edited, so a row may carry "timestamp": null (or a number);
+    coerce to "" rather than letting None >= str raise TypeError and abort the run.
+    """
+    t = rec.get("timestamp")
+    return t if isinstance(t, str) else ""
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "-"
     try:
@@ -28,7 +38,13 @@ def main():
             except json.JSONDecodeError:
                 continue
             if isinstance(obj, dict) and obj.get("id"):
-                latest[obj["id"]] = obj   # append order is chronological; last wins
+                rid = obj["id"]
+                prev = latest.get(rid)
+                # Keep the latest BY TIMESTAMP. The log is append-only so this usually
+                # equals append order, but a manual edit or merge could reorder it.
+                # ISO-8601 UTC timestamps compare lexicographically; ties keep the later line.
+                if prev is None or _ts(obj) >= _ts(prev):
+                    latest[rid] = obj
     for obj in latest.values():
         print(json.dumps(obj, ensure_ascii=False))
 

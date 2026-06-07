@@ -20,7 +20,8 @@ stays consistent instead of re-deriving them.
   `review.sh`/`feedback-server.py` (grading UI → `state/feedback.jsonl`), `usage.sh`,
   `install-launchd.sh`, `dedupe-feedback.py`.
 - **State** (gitignored): `state/seen.jsonl` (dedup), `state/observations.jsonl`
-  (trends), `state/feedback.jsonl` (grades); `kb/` (reports + dashboard).
+  (trends), `state/feedback.jsonl` (grades), `state/runs.log` (per-run usage);
+  `kb/` (reports + dashboard).
 - Deployed on a macOS mini via **launchd**, running from a local checkout — changes
   reach it by `git pull`, not by merging to GitHub. `install-launchd.sh` regenerates the
   plists and retires old agents.
