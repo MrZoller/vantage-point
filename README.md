@@ -37,6 +37,13 @@ artifact built from public sources. The `derived:` blocks inside the config docu
 the *shape* of the profile; the live approved values live in `profile.yaml`, which
 makes the review gate a literal, diffable file promotion.
 
+## Prerequisites
+
+- **Node.js** (LTS) — Claude Code installs via npm.
+- **A Claude plan** for Claude Code to authenticate against — your **Max** subscription here.
+- **macOS** for the launchd schedules below (Linux/cron alternative near the end).
+- Optional: **msmtp** (`brew install msmtp`) for emailed reports; **gh** for repo creation.
+
 ## One-time setup
 
 1. Drop all the files into `~/market-monitor`, create your live config, and make
@@ -51,7 +58,14 @@ makes the review gate a literal, diffable file promotion.
    ```
    npm i -g @anthropic-ai/claude-code     # if not already installed
    claude                                 # log in with your Max account, then exit
+   which claude                           # note this path — the scripts must be able to find it
    ```
+   The scripts export `PATH="$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"`
+   so `claude` resolves under launchd's bare environment. If `which claude` prints a
+   path outside those (e.g. an nvm/fnm shim), add that directory to the `export PATH=`
+   line at the top of **both** `bin/*.sh` — otherwise the scheduled job dies with
+   `command not found` even though it runs fine in your shell. This is the most common
+   first-run failure.
 3. Fill in `monitor-config.yaml` — the subject, the anchor, and a few good seed
    URLs for each. Seeds matter most when the anchor has a thin public footprint.
 4. Build and approve the profile:
@@ -86,6 +100,46 @@ Make sure the mini doesn't sleep through the schedule (Energy settings → preve
 sleep, or wrap the script in `caffeinate`). A missed `StartCalendarInterval` fires
 on wake, but only once — you don't want a sleeping mini eating your daily run.
 
+## Email delivery (optional)
+
+Reports always land in `kb/`. To also email them, install msmtp and add a config.
+For Google Workspace (e.g. `zoller.ai`), SMTP requires an **App Password**, not your
+account password — generate one at myaccount.google.com → Security → App passwords
+(needs 2-Step Verification on).
+
+`~/.msmtprc`:
+```
+defaults
+auth           on
+tls            on
+tls_starttls   on
+logfile        ~/.msmtp.log
+
+account        default
+host           smtp.gmail.com
+port           587
+from           you@zoller.ai
+user           you@zoller.ai
+password       <16-char app password>
+```
+Lock it down — msmtp refuses a world-readable file that holds a password:
+```
+chmod 600 ~/.msmtprc
+```
+Verify standalone (`echo "test" | msmtp you@zoller.ai`), then uncomment the msmtp
+block in `bin/monitor.sh` and set the recipient.
+
+## Running on Linux (cron) instead
+
+launchd is macOS-only. On the Ubuntu box, skip the plists and use cron (`crontab -e`):
+```
+30 6 * * *  $HOME/market-monitor/bin/monitor.sh daily  >> $HOME/market-monitor/state/daily.log 2>&1
+0  7 * * 1  $HOME/market-monitor/bin/monitor.sh weekly >> $HOME/market-monitor/state/weekly.log 2>&1
+```
+cron also runs with a minimal PATH, so the same `which claude` caveat applies — make
+sure that path is in the `export PATH=` line in `bin/*.sh` (the `/opt/homebrew` entry
+is harmless on Linux; add your real npm-global bin if it differs).
+
 ## Why launchd and not `/schedule`
 
 Claude Code's own desktop scheduled tasks (`/schedule`) are the lighter native
@@ -111,3 +165,19 @@ no app running, and slots into the same Unix toolchain as the rest of your home 
   `relevance.calibration.not_relevant` and misses into `relevant`, then re-bootstrap
   so the rubric learns your taste. That feedback loop is the whole reason to
   prototype on a domain where you already know good output from noise.
+
+## Troubleshooting
+
+- **`claude: command not found` in the scheduled run (but fine in your shell).** The
+  launchd/cron PATH doesn't include where `claude` lives. `which claude`, then add that
+  dir to the `export PATH=` line in both `bin/*.sh`.
+- **`no approved profile.yaml`.** Bootstrap hasn't been approved. Run
+  `./bin/bootstrap.sh`, review `profile.draft.yaml`, then `cp profile.draft.yaml profile.yaml`.
+- **Job never fired.** Confirm `REPLACE_ME` is replaced in the plist, the agent is loaded
+  (`launchctl print gui/$(id -u)/ai.zoller.marketmonitor.daily`), and the mini was awake.
+  launchd logs go to `state/daily.out.log` / `state/daily.err.log`.
+- **Empty daily, no email.** Correct behavior when nothing clears threshold — the run
+  prints `NO_MATERIAL_ITEMS` and writes no report. Check `kb/<date>.daily.err` to confirm
+  it actually ran.
+- **Email fails.** Check `~/.msmtp.log`, confirm `chmod 600 ~/.msmtprc`, and that you used
+  an App Password rather than your account password.
