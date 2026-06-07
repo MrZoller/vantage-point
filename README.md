@@ -29,7 +29,8 @@ Created at runtime, gitignored (a specific deployment's data):
 ├── monitor-config.yaml           # your live config (cp from the .example, then fill in)
 ├── profile.draft.yaml            # bootstrap writes this (review target)
 ├── profile.yaml                  # you promote the reviewed draft to this (ground truth)
-├── state/seen.jsonl              # longitudinal memory: dedup + "is this NEW?"
+├── state/seen.jsonl              # dedup memory: "is this NEW?"
+├── state/observations.jsonl      # longitudinal metric/event memory: "is this CHANGING?"
 └── kb/                           # accumulated reports + per-run logs
 ```
 
@@ -261,6 +262,26 @@ model (with a one-line notice on stderr) — nothing is hardcoded.
   instead of going silent. They're recorded to state so they aren't re-surfaced.
   Calibrate from these real examples, then set `show_borderline: false` to return
   to silent empty days.
+
+## Trend detection (what changed)
+
+The `tracking` block turns the monitor from a *new-items filter* into something that
+also reports **what moved**. Each run, the agent records observations — a metric value
+(price, listing count, mentions) or a recurring event (a leak, a hire, a filing) — per
+tracked entity into `state/observations.jsonl`, then compares against prior runs and
+surfaces a **What changed** section when a metric crosses `min_pct_change`, an entity
+hits a `repeat_streak` of events, or mentions spike past `mention_spike_factor`. A
+flagged move is material even if no single article cleared `relevance.threshold` — the
+pattern *is* the signal, and a daily with only trend changes still sends.
+
+Which entities are tracked = the profile (anchor watchlist + key players) **plus** any
+you pin in `tracking.watch`. Like `show_borderline`, the thresholds start sensitive
+(with confidence labels) so you can calibrate, then tighten. Set `tracking.enabled:
+false` to turn the whole layer off. `observations.jsonl` is pruned to
+`tracking.observations_max_lines` each run, same as `seen.jsonl`.
+
+This is Phase 1 of a larger roadmap (see `docs/roadmap.md`): conveyance overhaul,
+two-pass deep-dive, and one-click calibration build on this longitudinal state.
 
 ## Tests
 

@@ -8,8 +8,11 @@ re-derive the market or the anchor. The approved profile is your ground truth.
 ## Inputs
 - The config, with `subject.derived`, `anchor.derived`, and `relevance.rubric`
   already filled in and **human-approved**. Trust them.
-- The `monitoring.state_file` — your longitudinal memory of what you've already
-  seen and surfaced. This is what makes "is this NEW?" answerable.
+- The `monitoring.state_file` (`./state/seen.jsonl`) — your dedup memory of what
+  you've already seen and surfaced. This is what makes "is this NEW?" answerable.
+- `./state/observations.jsonl` — your longitudinal metric/event memory per entity.
+  This is what makes "is this CHANGING?" answerable (see Trend detection).
+- The `tracking` config block — what to track over time and how sensitively.
 - The run mode for this cycle: `daily` or `weekly`.
 
 ## Trust boundary
@@ -34,16 +37,36 @@ humans at review time, not by you mid-run.
    `anchor.derived.signal_definitions` (opportunity / threat / shift) and write
    the SO-WHAT in the anchor's terms — not what happened, but what it *means for
    this anchor*. One or two sentences. This is the part that earns the read.
-6. **Record.** Append every new item you evaluated to `state_file` (so it's
+6. **Observe & detect change.** Only when `tracking.enabled`. This is what turns
+   *monitoring* into *intelligence* — surfacing what MOVED, not just what's new.
+   - **Record observations.** For every tracked entity you saw evidence on, append
+     an observation (schema below) to `./state/observations.jsonl`: a metric value
+     (price, listing count, mentions) or a recurring event (a leak, a hire, a
+     filing). Track the entities in `tracking.watch` PLUS those implied by the
+     profile (`anchor.derived` watchlist/interests, `subject.derived.key_players`)
+     and any other you judge material. Record only what you can source.
+   - **Compute change.** For each tracked entity+metric, compare against its prior
+     observations and flag a change when it crosses ANY threshold: `min_pct_change`
+     (metric move vs the last value), `repeat_streak` (≥ N related events in the
+     window), or `mention_spike_factor` (mentions ≥ N× the trailing baseline). A
+     flagged change is a finding even if no single item cleared `relevance.threshold`
+     — the pattern is the signal.
+   - **Label.** When `tracking.label_confidence`, tag each change high/medium/low by
+     how solid the data is (one source vs. triangulated).
+7. **Record.** Append every new item you evaluated to `state_file` (so it's
    never re-scored). Surfaced items get the full record below; dropped items get
    just the dedup keys + score. Write surfaced items into the knowledge base too.
-7. **Report.** Emit the daily report (below) — or, if nothing cleared threshold
-   and `cadence.daily.send_if_empty` is false, send nothing at all. Silence is a
+8. **Report.** Emit the daily report (below), leading with **What changed** when a
+   trend outranks the day's items. If nothing cleared threshold AND nothing changed
+   (and `cadence.daily.send_if_empty` is false), send nothing at all. Silence is a
    valid and correct output.
 
 ## Procedure (weekly)
 The weekly digest is **synthesis, not concatenation** — not seven dailies stapled
-together. Read the week's surfaced records from the knowledge base / state and:
+together. Read the week's surfaced records AND `observations.jsonl` and:
+- **Trends first.** Lead with the week's material moves from the observations
+  (multi-day deltas, streaks, spikes) — the cross-run pattern is the whole reason
+  the weekly cadence exists, and usually matters more than any single item.
 - Lead with a 2–3 sentence top-line: what actually moved this week for the anchor.
 - Group the week's items by signal type or theme; keep the SO-WHAT, drop the noise.
 - **Watching:** slow-burn items that haven't crossed the daily threshold alone but
@@ -67,6 +90,23 @@ but dedup against what the dailies already surfaced.
 }
 ```
 
+## Observation record (appended to ./state/observations.jsonl)
+One JSON object per line — your longitudinal memory for trend detection. `value` is
+a number for metrics, or a short string for events. Keep it small and sourced; one
+data point is not a trend, so record it and wait rather than inferring a move.
+```json
+{
+  "timestamp": "2026-06-07T07:00:00Z",
+  "entity": "Tudor Black Bay 58",
+  "metric": "secondary_price_usd",   // e.g. secondary_price_usd | new_listings | mention_count | event
+  "value": 3200,                     // number for metrics; short string for events
+  "unit": "USD",                     // optional
+  "event_type": null,                // when metric == "event": leak | hire | filing | reissue | ...
+  "source": "https://...",           // no source, no observation
+  "note": "median ask across 8 listings"
+}
+```
+
 ## Report shapes
 **Daily (terse).** No preamble, no padding. Just the material items:
 ```
@@ -75,8 +115,22 @@ but dedup against what the dailies already surfaced.
 • [{signal}] {title} ({source})
   {so_what}  → {url}
 ```
-If `N` is 0 and send_if_empty is false: produce no report — UNLESS
-`monitoring.show_borderline` is true and borderline items exist (see appendix).
+
+**What changed (trends).** Emitted when `tracking.enabled` and ≥1 change was flagged
+this run (step 6). Lead the report with it when a move outranks the day's items — a
+market move usually matters more than another release post. Each line names the
+entity, the move (direction + magnitude), the SO-WHAT for the anchor, and confidence:
+```
+What changed
+• [↓ 12%] Tudor Black Bay 58 secondary_price_usd: $3650 → $3200 over 3 weeks
+  {so_what in the anchor's terms}  (medium)
+```
+- Daily with material items: put **What changed** first, then the items.
+- Daily with ONLY trend changes (no item cleared threshold): still write the report
+  containing this section; do NOT emit `NO_MATERIAL_ITEMS`.
+
+If `N` is 0 AND nothing changed: produce no report — UNLESS `monitoring.show_borderline`
+is true and borderline items exist (see appendix).
 
 **Considered (below threshold) — appendix.** A tuning aid, emitted ONLY when
 `monitoring.show_borderline` is true. List the near-miss items that scored in
@@ -89,7 +143,8 @@ Considered (below threshold)
 ```
 Borderline behavior (daily), explicitly:
 - Only when `show_borderline` is true. When false, behave exactly as before:
-  silent on empty days, and `NO_MATERIAL_ITEMS` when nothing clears threshold.
+  silent on empty days, and `NO_MATERIAL_ITEMS` when nothing clears threshold AND
+  nothing changed (a flagged trend change is itself material — see What changed).
 - `show_borderline` true AND ≥1 item clears threshold: append this section after
   the normal daily report.
 - `show_borderline` true AND nothing clears threshold but borderline items exist:
@@ -107,6 +162,9 @@ in under two minutes. The goal is that someone looks forward to it, not mutes it
   that pads its output to seem useful is the exact failure mode we're avoiding.
 - **Don't fabricate.** No invented implications, no manufactured urgency. If you
   can't articulate a real SO-WHAT for an item, it probably doesn't clear threshold.
+- **Don't fabricate trends.** A change needs real, sourced observations on both
+  ends. One data point is not a trend — record it and wait. Never invent a number
+  to complete a pattern, and don't dress run-to-run noise as a move.
 - **Mark confidence.** Tag low-confidence interpretations as such rather than
   presenting a guess as a finding.
 - **Stay in your lane.** Score and interpret against the approved profile; don't

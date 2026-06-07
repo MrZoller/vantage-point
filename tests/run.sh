@@ -236,6 +236,8 @@ subject:
 monitoring:
   run_timeout_seconds: $run_timeout
   state_max_lines: 5
+tracking:
+  observations_max_lines: 5
 governance:
   profile_refresh_days: 30
 output:
@@ -304,7 +306,8 @@ echo "== monitor.sh: reclaims stale lock, prunes state, warns on stale profile =
 test_full_run() {
   local repo="$TMP/runrepo" out rc
   make_fake_repo "$repo" "2000-01-01"                 # old profile -> staleness warning
-  seq 1 20 | sed 's/^/{"n":/; s/$/}/' > "$repo/state/seen.jsonl"   # 20 lines > state_max_lines (5)
+  seq 1 20 | sed 's/^/{"n":/; s/$/}/' > "$repo/state/seen.jsonl"          # > state_max_lines (5)
+  seq 1 20 | sed 's/^/{"o":/; s/$/}/' > "$repo/state/observations.jsonl"  # > observations_max_lines (5)
   mkdir -p "$repo/state/.lock"
   printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"    # a pid that isn't running -> stale
   local marker="$repo/claude_ran"
@@ -314,10 +317,13 @@ test_full_run() {
   assert_eq "run exits 0" "0" "$rc"
   assert_contains "reclaims the stale lock" "$out" "reclaiming stale lock"
   assert_contains "prunes oversized state" "$out" "pruned state/seen.jsonl"
+  assert_contains "prunes oversized observations" "$out" "pruned state/observations.jsonl"
   assert_contains "warns on stale profile" "$out" "profile is"
   if [ -f "$marker" ]; then pass "claude ran after reclaiming the lock"; else fail "claude ran after reclaiming the lock"; fi
   local n; n="$(wc -l < "$repo/state/seen.jsonl" | tr -d ' ')"
   assert_eq "seen.jsonl pruned to state_max_lines" "5" "$n"
+  local o; o="$(wc -l < "$repo/state/observations.jsonl" | tr -d ' ')"
+  assert_eq "observations.jsonl pruned to observations_max_lines" "5" "$o"
   if [ -d "$repo/state/.lock" ]; then fail "lock released on exit"; else pass "lock released on exit"; fi
 }
 test_full_run

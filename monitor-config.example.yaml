@@ -115,6 +115,26 @@ monitoring:
   show_borderline: true     # tuning aid: surface near-miss items below threshold
   borderline_band: 0.2      # how far below threshold counts as a near-miss
 
+tracking:
+  # Longitudinal trend detection — the "monitoring -> intelligence" layer. Each run
+  # the monitor records observations (a metric value, or a recurring event) per
+  # entity into state/observations.jsonl, then surfaces what CHANGED (deltas,
+  # streaks, spikes) in a "What changed" section — not just brand-new items.
+  enabled: true
+  # The agent auto-tracks entities from the approved profile (anchor watchlist +
+  # subject key players) and anything else it judges material. Pin must-track
+  # entities + metrics here so coverage is guaranteed (optional; read by the agent):
+  watch:
+    - { entity: "Tudor Black Bay 58", metrics: ["secondary_price_usd", "new_listings"] }
+    # - { entity: "<brand or ref>",   metrics: ["mention_count", "price_usd"] }
+  # Sensitivity. Like show_borderline, start sensitive while calibrating, then
+  # tighten. A change is flagged when it crosses ANY of these:
+  min_pct_change: 8         # a tracked metric moved >= this % vs its last observation
+  repeat_streak: 2          # >= this many related events for one entity in the window
+  mention_spike_factor: 2.0 # mentions >= this multiple of the entity's trailing baseline
+  label_confidence: true    # tag each change high/medium/low while you're tuning
+  observations_max_lines: 20000   # cap state/observations.jsonl; pruned each run (0 = off)
+
 output:
   # Reports always land in kb/. Set email_to to ALSO email each report via msmtp
   # (install msmtp + configure ~/.msmtprc — see the README). Leave it blank or
