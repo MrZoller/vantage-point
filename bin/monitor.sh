@@ -58,6 +58,21 @@ else
   echo "[monitor:$MODE] models.monitor not set in $CONFIG — using CLI default model" >&2
 fi
 
+# Read output.email_to the same dependency-light way. Blank/absent -> empty
+# string, which the delivery step below treats as "don't email".
+EMAIL_TO="$(awk '
+  $0 ~ /^output:[[:space:]]*(#.*)?$/ { inblk=1; next }
+  inblk && /^[^[:space:]#]/          { inblk=0 }
+  inblk && $1 == "email_to:" {
+    line=$0
+    sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  email_to: "
+    sub(/[[:space:]]*#.*$/, "", line)                  # drop trailing comment
+    gsub(/[[:space:]]/, "", line)                      # drop surrounding space
+    gsub(/["\047]/, "", line)                          # drop quotes
+    print line; exit
+  }
+' "$CONFIG")"
+
 echo "[monitor:$MODE] model=${MODEL:-(CLI default)} $TODAY -> $REPORT"
 
 # Clear only this run's scratch file (a leftover from an aborted earlier run).
@@ -122,9 +137,20 @@ fi
 if [ -s "$RUN_REPORT" ]; then
   mv -f "$RUN_REPORT" "$REPORT"
   echo "[monitor:$MODE] report ready: $REPORT"
-  # Email via msmtp (configure ~/.msmtprc against Google Workspace SMTP):
-  # { printf 'Subject: [market-monitor] %s %s\n\n' "$MODE" "$TODAY"; cat "$REPORT"; } \
-  #   | msmtp "you@zoller.ai"
+  # Email via msmtp when output.email_to is set (configure ~/.msmtprc — see README).
+  # Failure to send never fails the run: the report is already safe in $REPORT.
+  if [ -n "$EMAIL_TO" ]; then
+    if command -v msmtp >/dev/null 2>&1; then
+      if { printf 'Subject: [market-monitor] %s %s\n\n' "$MODE" "$TODAY"; cat "$REPORT"; } \
+           | msmtp "$EMAIL_TO"; then
+        echo "[monitor:$MODE] emailed report to $EMAIL_TO"
+      else
+        echo "[monitor:$MODE] WARNING: msmtp failed — report still in $REPORT" >&2
+      fi
+    else
+      echo "[monitor:$MODE] output.email_to set but msmtp not found — skipping email (report in $REPORT)" >&2
+    fi
+  fi
   #
   # ...or push to Claude Code Channels / Telegram / Slack, or just read it from kb/.
 else
