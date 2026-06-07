@@ -73,8 +73,9 @@ HTML_HEAD
 
   # ---- tracked entities (numeric metrics) ----
   printf '<h2>Tracked entities</h2>\n'
-  rows="$(jq -rs '
-    map(select(.metric != "event" and (.value | type == "number")))
+  rows="$(jq -rRn '
+    [ inputs | fromjson? ]                       # skip a malformed line, keep the rest
+    | map(select(.metric != "event" and (.value | type == "number")))
     | group_by(.entity + "\t" + .metric)
     | map(sort_by(.timestamp)
           | { entity: .[0].entity, metric: .[0].metric, unit: (.[-1].unit // ""),
@@ -96,10 +97,12 @@ HTML_HEAD
   fi
 
   # ---- recent events ----
-  events="$(jq -rs '
-    map(select(.metric == "event"))
+  events="$(jq -rRn '
+    [ inputs | fromjson? ]                       # skip a malformed line, keep the rest
+    | map(select(.metric == "event"))
     | sort_by(.timestamp) | reverse | .[0:12]
-    | .[] | [(.timestamp[0:10]), .entity, (.event_type // "event"), (.note // "")] | @tsv
+    | .[] | [(.timestamp[0:10]), .entity, (.event_type // "event"),
+             (.note // (.value | strings) // "")] | @tsv
   ' "$OBS" 2>/dev/null || true)"
   if [ -n "$events" ]; then
     printf '<h2>Recent events</h2>\n<ul>\n'
