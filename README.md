@@ -150,6 +150,30 @@ path, but they only fire while the desktop app is open. On an always-on mini,
 launchd calling `claude -p` headless is more reliable: it survives reboots, needs
 no app running, and slots into the same Unix toolchain as the rest of your home lab.
 
+## Model selection
+
+The top-level `models:` block in `monitor-config.yaml` picks which Claude model
+each agent runs on:
+
+```yaml
+models:
+  bootstrap: opus     # infrequent; depth matters — spend here
+  monitor:   sonnet   # daily, shallow scoring — keep it cheap
+```
+
+The defaults reflect each agent's job. **bootstrap** runs rarely and does the
+deep research the whole pipeline rests on, so it's worth spending Opus there.
+**monitor** runs every day doing shallow diff-and-score work, so Sonnet keeps it
+cheap. Each run echoes its model in the `[bootstrap]` / `[monitor:<mode>]`
+startup line, so `kb/<date>.<mode>.err` records which model produced a report.
+
+Values may be aliases (`opus`, `sonnet`) or full model IDs (e.g.
+`claude-opus-4-8`). **Which forms are accepted depends on your plan and your
+Claude Code version** — check `claude --help` for the `--model` flag, and
+confirm a quick `claude -p "hi" --model <value>` succeeds before committing to a
+value. Remove or blank a key and that agent falls back to the CLI's default
+model (with a one-line notice on stderr) — nothing is hardcoded.
+
 ## Operating notes
 
 - **Cost lever.** Because Claude Code is authenticated against Max, the spend lives

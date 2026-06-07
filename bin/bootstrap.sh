@@ -20,7 +20,33 @@ DRAFT="profile.draft.yaml"
 [ -f "$CONFIG" ] || { echo "missing $CONFIG" >&2; exit 1; }
 [ -f "$PROMPT" ] || { echo "missing $PROMPT" >&2; exit 1; }
 
-echo "[bootstrap] researching subject + anchor -> $DRAFT"
+# Read models.bootstrap from the live config with a dependency-light parse (no
+# YAML library). awk walks the `models:` block and pulls the one key, stripping
+# any inline comment and quotes. No match -> empty string (never aborts under
+# set -e, since this is an assignment).
+MODEL="$(awk '
+  $0 ~ /^models:[[:space:]]*(#.*)?$/ { inblk=1; next }
+  inblk && /^[^[:space:]#]/         { inblk=0 }
+  inblk && $1 == "bootstrap:" {
+    line=$0
+    sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  bootstrap: "
+    sub(/[[:space:]]*#.*$/, "", line)                  # drop trailing comment
+    gsub(/[[:space:]]/, "", line)                      # drop surrounding space
+    gsub(/["\047]/, "", line)                          # drop quotes
+    print line; exit
+  }
+' "$CONFIG")"
+
+# Fall back to the CLI default by omitting --model when the key is absent/blank.
+# Print a notice so a typo'd config is visible rather than silently defaulting.
+MODEL_ARGS=()
+if [ -n "$MODEL" ]; then
+  MODEL_ARGS=(--model "$MODEL")
+else
+  echo "[bootstrap] models.bootstrap not set in $CONFIG — using CLI default model" >&2
+fi
+
+echo "[bootstrap] model=${MODEL:-(CLI default)} researching subject + anchor -> $DRAFT"
 
 claude -p "$(cat "$PROMPT")
 
@@ -33,6 +59,7 @@ to that file. Do NOT edit $CONFIG. Mark low-confidence inferences inline.
 \`\`\`yaml
 $(cat "$CONFIG")
 \`\`\`" \
+  ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
   --permission-mode acceptEdits \
