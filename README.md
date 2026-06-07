@@ -229,11 +229,10 @@ model (with a one-line notice on stderr) — nothing is hardcoded.
   modes — daily and weekly write the same `state/seen.jsonl`, so they must never run
   at once — and skips if a run is already going, so an overlapping schedule or a
   manual run can't corrupt shared state (keep the daily/weekly schedules from
-  overlapping; the defaults are 30 min apart). A crashed run's stale lock is
-  reclaimed automatically — when its owner has died, or when it's older than any
-  legitimate run could be (`run_timeout_seconds` + a buffer), which also covers an OS
-  reusing the dead run's PID. (With the timeout set to `0`, a run has no upper bound,
-  so reclaim relies on owner-death alone.) The
+  overlapping; the defaults are 30 min apart). The lock records its owner by PID and
+  process start time; a crashed run's lock is reclaimed only once that exact process
+  is gone, so a long run (claude plus the email/render step) is never reclaimed out
+  from under itself and a recycled PID can't be mistaken for the original owner. The
   claude call is wall-clock bounded by `monitoring.run_timeout_seconds` (default
   1800s, `0` to disable; needs `timeout`/`gtimeout` from coreutils) so a stall can't
   hang the job, and a hard failure prints a `run FAILED` line instead of vanishing

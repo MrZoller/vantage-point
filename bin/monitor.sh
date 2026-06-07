@@ -64,14 +64,17 @@ case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-nu
 # daily and weekly share state/seen.jsonl, so ONE lock guards all modes — never two
 # monitors at once, whatever the mode (so keep the daily/weekly schedules from
 # overlapping; the defaults are 30 min apart). An overlapping or manual run just
-# skips. A crashed run leaves a stale lock, reclaimed when its owner is gone OR the
-# lock is older than any legitimate run could be (which also covers PID reuse).
+# skips. A crashed run leaves a stale lock; it's reclaimed when its owner process is
+# gone. We identify the owner by PID *and* start time, so a recycled PID (different
+# start time) is correctly seen as stale and a live owner is never reclaimed — no
+# matter how long it runs (claude + email/render), and regardless of whether a
+# timeout is configured or enforceable.
 LOCK="state/.lock"
-# Reclaim a lock whose owner has outlived any legitimate run (this also covers an
-# OS reusing the dead run's PID). With the timeout disabled (0) a real run has no
-# upper time bound, so age-based reclaim is OFF and we rely on owner-liveness alone.
-LOCK_MAX_AGE=$(( RUN_TIMEOUT > 0 ? RUN_TIMEOUT + 600 : 0 ))
-LOCK_SETUP_GRACE=30   # secs a lock may sit without a pid file before its owner is assumed dead
+LOCK_SETUP_GRACE=30   # secs a lock may sit without an owner token before its creator is assumed dead
+
+proc_start() {  # normalized start time of pid $1 (empty if it isn't running)
+  ps -o lstart= -p "$1" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'
+}
 
 lock_age_secs() {  # age (s) of the lock dir; huge if it's gone
   local mtime
@@ -82,19 +85,21 @@ lock_age_secs() {  # age (s) of the lock dir; huge if it's gone
 # Acquire the lock. Returns 0 (owned) or 1 (held by a live run / lost a reclaim race).
 acquire_lock() {
   mkdir "$LOCK" 2>/dev/null && return 0   # uncontended
-  local oldpid age
-  oldpid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  age="$(lock_age_secs)"
-  if [ -z "$oldpid" ]; then
-    # Lock exists but no pid yet: another acquirer is mid-setup. Writing the pid
-    # takes milliseconds, so treat it as active only briefly.
-    if [ "$age" -lt "$LOCK_SETUP_GRACE" ]; then return 1; fi
-  elif kill -0 "$oldpid" 2>/dev/null; then
-    # Owner alive -> active, unless a time-bounded run has gone on impossibly long
-    # (only meaningful when a timeout is configured; disabled => no upper bound).
-    if [ "$LOCK_MAX_AGE" -le 0 ] || [ "$age" -lt "$LOCK_MAX_AGE" ]; then return 1; fi
+  local owner oldpid oldstart
+  owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
+  if [ -z "$owner" ]; then
+    # Lock dir exists but the owner token isn't written yet: another acquirer is
+    # mid-setup (milliseconds). Treat as active only briefly; longer => it died there.
+    if [ "$(lock_age_secs)" -lt "$LOCK_SETUP_GRACE" ]; then return 1; fi
+  else
+    oldpid="${owner%% *}"
+    oldstart="${owner#* }"
+    # Active iff that EXACT process is still alive: same PID and same start time.
+    if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null && [ "$(proc_start "$oldpid")" = "$oldstart" ]; then
+      return 1
+    fi
   fi
-  echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown}, age ${age}s)" >&2
+  echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown})" >&2
   # Reclaim race-safely: rename the inspected dir out of the way (only one renamer
   # of a given dir can win), then let the final mkdir be the sole ownership arbiter
   # — concurrent reclaimers can't both end up owning.
@@ -103,7 +108,7 @@ acquire_lock() {
 }
 
 if acquire_lock; then
-  echo "$$" > "$LOCK/pid"
+  printf '%s %s\n' "$$" "$(proc_start "$$")" > "$LOCK/owner"
 else
   echo "[monitor:$MODE] another run is in progress — skipping" >&2
   exit 0

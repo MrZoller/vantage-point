@@ -219,12 +219,18 @@ SH
   chmod +x "$repo/stub/claude"
 }
 
+# Mirror monitor.sh's proc_start so tests can forge a matching/non-matching owner token.
+proc_start() {
+  ps -o lstart= -p "$1" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'
+}
+
 echo "== monitor.sh: skips when a live lock is held =="
 test_lock_skip() {
   local repo="$TMP/lockrepo" out rc
   make_fake_repo "$repo"
   mkdir -p "$repo/state/.lock"
-  echo "$$" > "$repo/state/.lock/pid"         # owned by this (live) test process
+  # A live, matching owner token (this test process). monitor must see it active.
+  printf '%s %s\n' "$$" "$(proc_start "$$")" > "$repo/state/.lock/owner"
   local marker="$repo/claude_ran"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
@@ -235,22 +241,23 @@ test_lock_skip() {
 }
 test_lock_skip
 
-echo "== monitor.sh: a live-pid lock that is too old is reclaimed (PID-reuse guard) =="
-test_lock_too_old() {
-  local repo="$TMP/oldlockrepo" out rc
-  make_fake_repo "$repo" "2099-01-01" 60       # run_timeout 60s -> LOCK_MAX_AGE 660s
+echo "== monitor.sh: a recycled PID (same pid, different start time) is reclaimed =="
+test_lock_reused_pid() {
+  local repo="$TMP/reusedpidrepo" out rc
+  make_fake_repo "$repo"
   mkdir -p "$repo/state/.lock"
-  echo "$$" > "$repo/state/.lock/pid"          # a LIVE pid (this process)...
-  touch -d '3 hours ago' "$repo/state/.lock"   # ...but the lock is far older than any run
+  # Live pid (this process) but a start time that does NOT match: simulates the
+  # original owner dying and its PID being reused by an unrelated process.
+  printf '%s %s\n' "$$" "Thu Jan  1 00:00:00 2000" > "$repo/state/.lock/owner"
   local marker="$repo/claude_ran"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
   assert_eq "exits 0" "0" "$rc"
-  assert_contains "reclaims despite a live pid (too old)" "$out" "reclaiming stale lock"
-  if [ -f "$marker" ]; then pass "claude ran after reclaiming the too-old lock"; else fail "claude ran after reclaiming the too-old lock"; fi
+  assert_contains "reclaims a recycled-PID lock" "$out" "reclaiming stale lock"
+  if [ -f "$marker" ]; then pass "claude ran after reclaiming recycled-PID lock"; else fail "claude ran after reclaiming recycled-PID lock"; fi
 }
-test_lock_too_old
+test_lock_reused_pid
 
 echo "== monitor.sh: reclaims stale lock, prunes state, warns on stale profile =="
 test_full_run() {
@@ -258,7 +265,7 @@ test_full_run() {
   make_fake_repo "$repo" "2000-01-01"                 # old profile -> staleness warning
   seq 1 20 | sed 's/^/{"n":/; s/$/}/' > "$repo/state/seen.jsonl"   # 20 lines > state_max_lines (5)
   mkdir -p "$repo/state/.lock"
-  echo "2147483646" > "$repo/state/.lock/pid"         # a pid that isn't running -> stale
+  printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"    # a pid that isn't running -> stale
   local marker="$repo/claude_ran"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
