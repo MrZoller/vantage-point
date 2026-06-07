@@ -63,3 +63,19 @@ Make grading frictionless so the rubric learns your taste and quality compounds:
 - The next `bin/bootstrap.sh` reads `feedback.jsonl` as ground-truth calibration and
   tunes `relevance.rubric` / `relevance.calibration` to match (no fragile in-place
   YAML mutation; you still review/approve the draft).
+
+## Backlog / possible next steps (not started)
+
+Ideas raised but not built — captured so they aren't lost:
+
+- **Second delivery channel.** A Slack / Discord / Telegram (or generic webhook)
+  delivery option, so `output.distribution` becomes real instead of documentation.
+  Would parallel the email path: opt-in via config, fail-safe (never breaks the run),
+  same report content.
+- **Thread-friendly email subject.** Gmail collapses daily reports into one
+  conversation because the subject prefix is stable. Option to lead the subject with
+  the date or market (e.g. `<market> — daily <date>`) or add a per-run token so each
+  report threads separately. (Or just turn off Gmail conversation view — a zero-code
+  workaround.)
+- **Tailor `docs/overview.md`** — swap the generic "Example Market"/Acme example for a
+  real market + competitors if showing it to a specific audience.
