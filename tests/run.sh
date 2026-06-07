@@ -223,8 +223,8 @@ echo "== monitor.sh: skips when a live lock is held =="
 test_lock_skip() {
   local repo="$TMP/lockrepo" out rc
   make_fake_repo "$repo"
-  mkdir -p "$repo/state/.lock.daily"
-  echo "$$" > "$repo/state/.lock.daily/pid"   # owned by this (live) test process
+  mkdir -p "$repo/state/.lock"
+  echo "$$" > "$repo/state/.lock/pid"         # owned by this (live) test process
   local marker="$repo/claude_ran"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
@@ -235,13 +235,30 @@ test_lock_skip() {
 }
 test_lock_skip
 
+echo "== monitor.sh: a live-pid lock that is too old is reclaimed (PID-reuse guard) =="
+test_lock_too_old() {
+  local repo="$TMP/oldlockrepo" out rc
+  make_fake_repo "$repo"                       # run_timeout_seconds:0 -> LOCK_MAX_AGE 7200s
+  mkdir -p "$repo/state/.lock"
+  echo "$$" > "$repo/state/.lock/pid"          # a LIVE pid (this process)...
+  touch -d '3 hours ago' "$repo/state/.lock"   # ...but the lock is far older than any run
+  local marker="$repo/claude_ran"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "exits 0" "0" "$rc"
+  assert_contains "reclaims despite a live pid (too old)" "$out" "reclaiming stale lock"
+  if [ -f "$marker" ]; then pass "claude ran after reclaiming the too-old lock"; else fail "claude ran after reclaiming the too-old lock"; fi
+}
+test_lock_too_old
+
 echo "== monitor.sh: reclaims stale lock, prunes state, warns on stale profile =="
 test_full_run() {
   local repo="$TMP/runrepo" out rc
   make_fake_repo "$repo" "2000-01-01"                 # old profile -> staleness warning
   seq 1 20 | sed 's/^/{"n":/; s/$/}/' > "$repo/state/seen.jsonl"   # 20 lines > state_max_lines (5)
-  mkdir -p "$repo/state/.lock.daily"
-  echo "2147483646" > "$repo/state/.lock.daily/pid"   # a pid that isn't running -> stale
+  mkdir -p "$repo/state/.lock"
+  echo "2147483646" > "$repo/state/.lock/pid"         # a pid that isn't running -> stale
   local marker="$repo/claude_ran"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
@@ -253,7 +270,7 @@ test_full_run() {
   if [ -f "$marker" ]; then pass "claude ran after reclaiming the lock"; else fail "claude ran after reclaiming the lock"; fi
   local n; n="$(wc -l < "$repo/state/seen.jsonl" | tr -d ' ')"
   assert_eq "seen.jsonl pruned to state_max_lines" "5" "$n"
-  if [ -d "$repo/state/.lock.daily" ]; then fail "lock released on exit"; else pass "lock released on exit"; fi
+  if [ -d "$repo/state/.lock" ]; then fail "lock released on exit"; else pass "lock released on exit"; fi
 }
 test_full_run
 

@@ -225,9 +225,13 @@ model (with a one-line notice on stderr) — nothing is hardcoded.
   billing; treat it as a relative signal for tuning run frequency and `--max-turns`.
   Run `./bin/usage.sh [days]` (default 30) for a rolled-up summary — runs, cost,
   turns, and tokens over the window.
-- **Reliability.** `monitor.sh` takes a per-mode lock (`state/.lock.<mode>`) and
-  skips if a run is already going, so an overlapping schedule or a manual run can't
-  corrupt shared state; a crashed run's stale lock is reclaimed automatically. The
+- **Reliability.** `monitor.sh` takes one shared lock (`state/.lock`) across both
+  modes — daily and weekly write the same `state/seen.jsonl`, so they must never run
+  at once — and skips if a run is already going, so an overlapping schedule or a
+  manual run can't corrupt shared state (keep the daily/weekly schedules from
+  overlapping; the defaults are 30 min apart). A crashed run's stale lock is
+  reclaimed automatically — when its owner has died, or when it's older than any
+  legitimate run could be (which also covers an OS reusing the dead run's PID). The
   claude call is wall-clock bounded by `monitoring.run_timeout_seconds` (default
   1800s, `0` to disable; needs `timeout`/`gtimeout` from coreutils) so a stall can't
   hang the job, and a hard failure prints a `run FAILED` line instead of vanishing

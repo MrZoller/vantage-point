@@ -50,23 +50,56 @@ cfg_get() {  # <block> <key> [file=$CONFIG]
   ' "${3:-$CONFIG}"
 }
 
-# ---- single-run lock (per mode) ----
-# An always-on scheduler can fire while a previous run is still going (or you can
-# launch one by hand mid-run). Two runs sharing state/seen.jsonl + the report file
-# corrupt each other, so take an atomic per-mode lock and skip if it's held.
-LOCK="state/.lock.$MODE"
-if ! mkdir "$LOCK" 2>/dev/null; then
+# ---- config knobs (all optional; sane fallbacks) ----
+MODEL="$(cfg_get models monitor)"
+EMAIL_TO="$(cfg_get output email_to)"
+RUN_TIMEOUT="$(cfg_get monitoring run_timeout_seconds)"
+STATE_MAX_LINES="$(cfg_get monitoring state_max_lines)"
+REFRESH_DAYS="$(cfg_get governance profile_refresh_days)"
+case "$RUN_TIMEOUT"     in ''|*[!0-9]*) RUN_TIMEOUT=1800 ;; esac
+case "$STATE_MAX_LINES" in ''|*[!0-9]*) STATE_MAX_LINES=5000 ;; esac
+case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-numeric -> skip check
+
+# ---- single-run lock (shared across modes) ----
+# daily and weekly share state/seen.jsonl, so ONE lock guards all modes — never two
+# monitors at once, whatever the mode (so keep the daily/weekly schedules from
+# overlapping; the defaults are 30 min apart). An overlapping or manual run just
+# skips. A crashed run leaves a stale lock, reclaimed when its owner is gone OR the
+# lock is older than any legitimate run could be (which also covers PID reuse).
+LOCK="state/.lock"
+LOCK_MAX_AGE=$(( RUN_TIMEOUT > 0 ? RUN_TIMEOUT + 600 : 7200 ))
+
+lock_age_secs() {  # age (s) of the lock dir; huge if it's gone
+  local mtime
+  mtime="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || echo 0)"
+  echo "$(( $(date +%s) - mtime ))"
+}
+
+# Acquire the lock. Returns 0 (owned) or 1 (held by a live run / lost a reclaim race).
+acquire_lock() {
+  mkdir "$LOCK" 2>/dev/null && return 0   # uncontended
+  local oldpid age
   oldpid="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
-    echo "[monitor:$MODE] another run (pid $oldpid) is in progress — skipping" >&2
-    exit 0
+  age="$(lock_age_secs)"
+  # Treat as active (skip) while young AND either still being set up (no pid yet)
+  # or owned by a live process. Anything older than a legitimate run is a crash.
+  if [ "$age" -lt "$LOCK_MAX_AGE" ] && { [ -z "$oldpid" ] || kill -0 "$oldpid" 2>/dev/null; }; then
+    return 1
   fi
-  # Owner is gone: a crashed run left this behind. Reclaim it.
-  echo "[monitor:$MODE] reclaiming stale lock (pid ${oldpid:-unknown} not running)" >&2
-  rm -rf "$LOCK"
-  mkdir "$LOCK" 2>/dev/null || { echo "[monitor:$MODE] could not acquire lock — skipping" >&2; exit 0; }
+  echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown}, age ${age}s)" >&2
+  # Reclaim race-safely: rename the inspected dir out of the way (only one renamer
+  # of a given dir can win), then let the final mkdir be the sole ownership arbiter
+  # — concurrent reclaimers can't both end up owning.
+  mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"
+  mkdir "$LOCK" 2>/dev/null
+}
+
+if acquire_lock; then
+  echo "$$" > "$LOCK/pid"
+else
+  echo "[monitor:$MODE] another run is in progress — skipping" >&2
+  exit 0
 fi
-echo "$$" > "$LOCK/pid"
 
 # Release the lock on exit, and surface a hard failure (a set -e abort — e.g. the
 # claude run errored or timed out) that would otherwise vanish into the launchd log.
@@ -79,16 +112,6 @@ cleanup() {
   return 0
 }
 trap cleanup EXIT
-
-# ---- config knobs (all optional; sane fallbacks) ----
-MODEL="$(cfg_get models monitor)"
-EMAIL_TO="$(cfg_get output email_to)"
-RUN_TIMEOUT="$(cfg_get monitoring run_timeout_seconds)"
-STATE_MAX_LINES="$(cfg_get monitoring state_max_lines)"
-REFRESH_DAYS="$(cfg_get governance profile_refresh_days)"
-case "$RUN_TIMEOUT"     in ''|*[!0-9]*) RUN_TIMEOUT=1800 ;; esac
-case "$STATE_MAX_LINES" in ''|*[!0-9]*) STATE_MAX_LINES=5000 ;; esac
-case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-numeric -> skip check
 
 # Pass --model only when set; otherwise omit it so the CLI default applies.
 MODEL_ARGS=()
