@@ -15,6 +15,25 @@ OBS="state/observations.jsonl"
 OUT="kb/index.html"
 mkdir -p kb
 
+# ---- args: [--serve [PORT]] ----
+SERVE=0
+PORT=8000
+case "${1:-}" in
+  ""|--once) ;;                                   # default: just regenerate kb/index.html
+  --serve)
+    SERVE=1
+    if [ -n "${2:-}" ]; then
+      case "$2" in ''|*[!0-9]*) echo "usage: dashboard.sh [--serve [PORT]]" >&2; exit 2 ;; esac
+      PORT="$2"
+    fi ;;
+  -h|--help)
+    printf 'usage: dashboard.sh [--serve [PORT]]\n'
+    printf '  (no args)        regenerate kb/index.html\n'
+    printf '  --serve [PORT]   regenerate, then serve kb/ over HTTP (default port %s; Ctrl-C to stop)\n' "$PORT"
+    exit 0 ;;
+  *) echo "usage: dashboard.sh [--serve [PORT]]" >&2; exit 2 ;;
+esac
+
 command -v jq >/dev/null 2>&1 || { echo "[dashboard] jq not found - skipping $OUT" >&2; exit 0; }
 
 # Unicode sparkline from numeric args. awk scales (handles floats) and emits 0..7
@@ -140,3 +159,14 @@ HTML_FOOT
 } > "$OUT.tmp" && mv -f "$OUT.tmp" "$OUT"
 
 echo "[dashboard] wrote $OUT"
+
+# ---- optional: serve kb/ over HTTP so it's viewable via an SSH-forwarded port ----
+if [ "$SERVE" = 1 ]; then
+  command -v python3 >/dev/null 2>&1 || { echo "[dashboard] python3 not found — cannot --serve" >&2; exit 1; }
+  echo "[dashboard] serving kb/ at http://localhost:$PORT/  (Ctrl-C to stop)"
+  echo "[dashboard] over SSH:  ssh -L $PORT:localhost:$PORT you@host   then open the URL locally"
+  # `cd kb` (not --directory) for compatibility with older python3; exec so Ctrl-C
+  # stops cleanly. Bind to localhost only — pair with SSH port-forwarding, not a
+  # public listener.
+  cd kb && exec python3 -m http.server "$PORT" --bind 127.0.0.1
+fi

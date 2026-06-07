@@ -294,8 +294,27 @@ Reports are built to be *read and acted on*, not skimmed:
   each tracked entity with a unicode sparkline of recent values.
 - `bin/dashboard.sh` regenerates **`kb/index.html`** after every run (disable with
   `output.dashboard: false`): a browsable snapshot of tracked entities (latest metric
-  + sparkline), recent events, and links to recent reports. Open it in a browser, or
-  run `./bin/dashboard.sh` by hand anytime. (Needs `jq`, like the run log.)
+  + sparkline), recent events, and links to recent reports. Run `./bin/dashboard.sh`
+  by hand anytime to refresh it. (Needs `jq`, like the run log.)
+
+### Viewing the dashboard remotely
+
+`kb/index.html` is a local file, so serve it and reach it over your existing SSH/VS
+Code session:
+
+```
+./bin/dashboard.sh --serve          # regenerate + serve kb/ on http://localhost:8000
+./bin/dashboard.sh --serve 8080     # ...or pick a port
+```
+It binds to `127.0.0.1` only — pair it with SSH port-forwarding rather than exposing
+a public listener:
+```
+ssh -L 8000:localhost:8000 you@mini   # then open http://localhost:8000/ on your laptop
+```
+In **VS Code Remote**, running `--serve` in the integrated terminal triggers VS Code's
+automatic port forwarding (click the toast), or use the **Live Preview** extension on
+`kb/index.html`. Report links are markdown, so they open as raw text in a browser —
+read a report rendered via VS Code's markdown preview, or in the emailed HTML.
 
 ## Tests
 
