@@ -16,9 +16,10 @@ market-monitor/
 ├── monitor-prompt.md             # the recurring-agent prompt
 ├── bin/
 │   ├── bootstrap.sh
-│   └── monitor.sh                # monitor.sh {daily|weekly}
+│   ├── monitor.sh                # monitor.sh {daily|weekly}
+│   └── install-launchd.sh        # install/remove the launchd agents (no repo edits)
 └── launchd/
-    ├── ai.zoller.marketmonitor.daily.plist
+    ├── ai.zoller.marketmonitor.daily.plist    # templates; __MM_ROOT__ filled in at install
     └── ai.zoller.marketmonitor.weekly.plist
 ```
 
@@ -85,19 +86,30 @@ makes the review gate a literal, diffable file promotion.
 
 ## Scheduling (launchd)
 
-Edit both plists, replace `REPLACE_ME` with your real path, copy them in, and load:
+One command — no editing of repo files:
 
 ```
-cp launchd/*.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.zoller.marketmonitor.daily.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.zoller.marketmonitor.weekly.plist
-# (older macOS: launchctl load -w ~/Library/LaunchAgents/<plist>)
+./bin/install-launchd.sh
 ```
+
+It generates the real plists from the `launchd/*.plist` templates into
+`~/Library/LaunchAgents`, baking in this checkout's path (so the schedules point at
+wherever you cloned), then loads both agents. The committed templates are never
+touched, so `git status` stays clean and a fresh clone needs no re-editing. Re-run it
+any time to reinstall (it reloads idempotently); `./bin/install-launchd.sh uninstall`
+unloads and removes both.
+
+To change *when* runs fire, edit the `StartCalendarInterval` in the
+`launchd/*.plist` templates and re-run the installer.
 
 Kick one off immediately to confirm wiring:
 ```
 launchctl kickstart -k gui/$(id -u)/ai.zoller.marketmonitor.daily
 ```
+
+(Older macOS without `launchctl bootstrap`/`bootout`: `cp launchd/*.plist
+~/Library/LaunchAgents/` after substituting `__MM_ROOT__` yourself, then
+`launchctl load -w ~/Library/LaunchAgents/<plist>`.)
 
 Make sure the mini doesn't sleep through the schedule (Energy settings → prevent
 sleep, or wrap the script in `caffeinate`). A missed `StartCalendarInterval` fires
@@ -223,7 +235,8 @@ model (with a one-line notice on stderr) — nothing is hardcoded.
   dir to the `export PATH=` line in both `bin/*.sh`.
 - **`no approved profile.yaml`.** Bootstrap hasn't been approved. Run
   `./bin/bootstrap.sh`, review `profile.draft.yaml`, then `cp profile.draft.yaml profile.yaml`.
-- **Job never fired.** Confirm `REPLACE_ME` is replaced in the plist, the agent is loaded
+- **Job never fired.** Re-run `./bin/install-launchd.sh` (it regenerates the plist with
+  the correct path), confirm the agent is loaded
   (`launchctl print gui/$(id -u)/ai.zoller.marketmonitor.daily`), and the mini was awake.
   launchd logs go to `state/daily.out.log` / `state/daily.err.log`.
 - **Empty daily, no email.** Correct behavior when nothing clears threshold — the run

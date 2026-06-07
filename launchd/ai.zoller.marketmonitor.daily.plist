@@ -8,8 +8,8 @@
 
   <key>ProgramArguments</key>
   <array>
-    <!-- REPLACE_ME with your username / actual path -->
-    <string>/Users/REPLACE_ME/market-monitor/bin/monitor.sh</string>
+    <!-- Path is filled in by bin/install-launchd.sh; edit this template, not your copy. -->
+    <string>__MM_ROOT__/bin/monitor.sh</string>
     <string>daily</string>
   </array>
 
@@ -21,8 +21,8 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>/Users/REPLACE_ME/market-monitor/state/daily.out.log</string>
+  <string>__MM_ROOT__/state/daily.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/REPLACE_ME/market-monitor/state/daily.err.log</string>
+  <string>__MM_ROOT__/state/daily.err.log</string>
 </dict>
 </plist>
