@@ -231,11 +231,14 @@ make_fake_repo() {
 version: 1
 models:
   monitor: sonnet
+  deepdive: opus
 subject:
   name: "Test Market & Co"
 monitoring:
   run_timeout_seconds: $run_timeout
   state_max_lines: 5
+  deepdive_threshold: 0.85
+  deepdive_max_items: 5
 tracking:
   observations_max_lines: 5
 governance:
@@ -252,6 +255,7 @@ anchor:
     last_bootstrapped: $lastboot
 YAML
   printf 'monitor prompt (test fixture)\n' > "$repo/monitor-prompt.md"
+  printf 'deep-dive prompt (test fixture) DEEPDIVE_FIXTURE\n' > "$repo/deepdive-prompt.md"
   cat > "$repo/stub/claude" <<'SH'
 #!/usr/bin/env bash
 [ -n "${CLAUDE_RAN:-}" ] && : > "$CLAUDE_RAN"
@@ -328,6 +332,55 @@ test_full_run() {
   if [ -d "$repo/state/.lock" ]; then fail "lock released on exit"; else pass "lock released on exit"; fi
 }
 test_full_run
+
+# A stub claude that, on the triage call, writes a report + a deep-dive queue with a
+# high-scoring item, and on the deep-dive call (prompt contains DEEPDIVE_FIXTURE)
+# records that it ran. Used by the two-pass tests.
+write_twopass_stub() {  # $1 = repo
+  cat > "$1/stub/claude" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *DEEPDIVE_FIXTURE*)                       # the deep-dive pass
+    [ -n "${DD_MARKER:-}" ] && echo "ran" >> "$DD_MARKER"
+    printf '{"num_turns":2,"total_cost_usd":0.0}\n'; exit 0 ;;
+  *)                                        # the triage pass
+    printf '# report\n* item\n' > "kb/.$(date +%F).daily.partial.md"
+    printf '{"url":"u","title":"t","signal":"opportunity","score":0.9,"so_what":"x"}\n' \
+      > "state/.deepdive.daily.queue.jsonl"
+    printf '{"num_turns":1,"total_cost_usd":0.0}\n'; exit 0 ;;
+esac
+SH
+  chmod +x "$1/stub/claude"
+}
+
+echo "== monitor.sh: deep-dive pass runs on queued high-scorers when models.deepdive is set =="
+test_deepdive_enabled() {
+  local repo="$TMP/ddrepo" out rc dd="$TMP/dd_ran"
+  make_fake_repo "$repo"                    # config has models.deepdive: opus
+  write_twopass_stub "$repo"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( DD_MARKER="$dd" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run exits 0" "0" "$rc"
+  if [ -f "$dd" ]; then pass "deep-dive pass was invoked"; else fail "deep-dive pass was invoked"; fi
+  assert_contains "logs the deep-dive pass to runs.log" "$(cat "$repo/state/runs.log" 2>/dev/null)" '"pass":"deepdive"'
+  if [ -f "$repo/state/.deepdive.daily.queue.jsonl" ]; then fail "deep-dive queue cleaned up"; else pass "deep-dive queue cleaned up"; fi
+}
+test_deepdive_enabled
+
+echo "== monitor.sh: no deep-dive pass when models.deepdive is unset =="
+test_deepdive_disabled() {
+  local repo="$TMP/ddoffrepo" out rc dd="$TMP/dd_ran_off"
+  make_fake_repo "$repo"
+  sed -i.bak '/^  deepdive: opus$/d' "$repo/monitor-config.yaml" && rm -f "$repo/monitor-config.yaml.bak"
+  write_twopass_stub "$repo"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( DD_MARKER="$dd" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run exits 0" "0" "$rc"
+  if [ -f "$dd" ]; then fail "deep-dive pass NOT invoked when disabled"; else pass "deep-dive pass NOT invoked when disabled"; fi
+}
+test_deepdive_disabled
 
 echo "== dashboard.sh: renders entities, sparklines, events, report links =="
 test_dashboard() {

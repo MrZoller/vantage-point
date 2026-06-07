@@ -13,7 +13,8 @@ market-monitor/
 ├── .gitignore
 ├── monitor-config.example.yaml   # template: subject, anchor, seeds, scope, calibration
 ├── bootstrap-prompt.md           # the profile-builder prompt
-├── monitor-prompt.md             # the recurring-agent prompt
+├── monitor-prompt.md             # the recurring-agent (triage) prompt
+├── deepdive-prompt.md            # the optional second-pass investigator prompt
 ├── bin/
 │   ├── bootstrap.sh
 │   ├── monitor.sh                # monitor.sh {daily|weekly}
@@ -315,6 +316,27 @@ In **VS Code Remote**, running `--serve` in the integrated terminal triggers VS 
 automatic port forwarding (click the toast), or use the **Live Preview** extension on
 `kb/index.html`. Report links are markdown, so they open as raw text in a browser —
 read a report rendered via VS Code's markdown preview, or in the emailed HTML.
+
+## Deep dive (two-pass investigation)
+
+The daily monitor is intentionally cheap and shallow. Set **`models.deepdive`** and it
+gains a second pass on a stronger model that runs *only* on the handful of items triage
+scored highest:
+
+1. **Triage** (the `monitor` model) sweeps, scores, and reports as usual, and queues
+   its top survivors — those scoring `>= monitoring.deepdive_threshold` (default 0.85),
+   capped at `monitoring.deepdive_max_items` (default 5).
+2. **Deep dive** (the `deepdive` model, `deepdive-prompt.md`) investigates each queued
+   item: fetches the *primary* source, **corroborates across independent sources**
+   (which kills rumor amplification — uncorroborated items get downgraded/flagged),
+   and deepens the so-what with history from `observations.jsonl`. It edits those
+   entries in the report in place, adding a corroboration status and adjusted confidence.
+
+It's fully **opt-in and cost-bounded**: remove `models.deepdive` and the monitor is
+single-pass exactly as before. Because the deep pass only fires when triage queues
+high-scorers (often zero on a quiet day) and is capped per run, daily cost stays close
+to today's. Both passes are logged to `state/runs.log` with a `pass` field
+(`triage` / `deepdive`) so `bin/usage.sh` accounts for each.
 
 ## Tests
 
