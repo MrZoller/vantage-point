@@ -305,10 +305,12 @@ if [ -n "$DEEPDIVE_MODEL" ] && [ -s "$RUN_REPORT" ] && [ -s "$QUEUE" ]; then
   n_dd="$(wc -l < "$QUEUE" | tr -d ' ')"
   echo "[monitor:$MODE] deep-dive: investigating $n_dd item(s) (cap $DEEPDIVE_MAX) on $DEEPDIVE_MODEL" >&2
   if [ -f "$DEEPDIVE_PROMPT" ]; then
-    # The deep-dive enriches $RUN_REPORT in place. Back it up first so a failed or
-    # timed-out deep pass can't suppress (or leave half-edited) the valid triage
-    # report — enrichment is optional; the triage report must survive.
+    # The deep-dive enriches $RUN_REPORT in place and may append corroborating
+    # observations. Back BOTH up first: a failed, timed-out, or report-emptying pass
+    # must leave the valid triage report AND the trusted observations intact —
+    # enrichment is optional and must be non-destructive.
     cp "$RUN_REPORT" "$RUN_REPORT.pre-dd"
+    cp state/observations.jsonl state/observations.jsonl.pre-dd
     dd_rc=0
     DD_JSON="$(${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} claude -p "$(cat "$DEEPDIVE_PROMPT")
 
@@ -341,15 +343,22 @@ report's structure." \
       --max-turns 40 \
       --output-format json \
       2>> "kb/${TODAY}.${MODE}.err")" || dd_rc=$?
-    if [ "$dd_rc" -eq 0 ]; then
+    if [ "$dd_rc" -eq 0 ] && [ -s "$RUN_REPORT" ]; then
+      # Succeeded and left a non-empty report: keep the enrichment + its observations.
       log_usage deepdive "$DD_JSON"
-      rm -f "$RUN_REPORT.pre-dd"
+      rm -f "$RUN_REPORT.pre-dd" state/observations.jsonl.pre-dd
       echo "[monitor:$MODE] deep-dive complete" >&2
     else
-      # Failed/timed out: restore the pristine triage report and carry on. The
-      # report still ships; it just isn't enriched.
+      # Failed, timed out, or emptied the report: restore the pristine triage report
+      # AND observations, and carry on. The report still ships; it just isn't enriched.
+      if [ "$dd_rc" -eq 0 ]; then log_usage deepdive "$DD_JSON"; fi   # it ran; account for spend
       mv -f "$RUN_REPORT.pre-dd" "$RUN_REPORT"
-      echo "[monitor:$MODE] WARNING: deep-dive failed (exit $dd_rc) — keeping the triage report" >&2
+      mv -f state/observations.jsonl.pre-dd state/observations.jsonl
+      if [ "$dd_rc" -eq 0 ]; then
+        echo "[monitor:$MODE] WARNING: deep-dive left an empty report — restored the triage report" >&2
+      else
+        echo "[monitor:$MODE] WARNING: deep-dive failed (exit $dd_rc) — restored the triage report" >&2
+      fi
     fi
   else
     echo "[monitor:$MODE] WARNING: $DEEPDIVE_PROMPT missing — skipping deep-dive (triage report stands)" >&2

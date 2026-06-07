@@ -342,6 +342,8 @@ write_twopass_stub() {  # $1 = repo
 case "$*" in
   *DEEPDIVE_FIXTURE*)                       # the deep-dive pass
     [ -n "${DD_MARKER:-}" ] && echo "ran" >> "$DD_MARKER"
+    [ -n "${DD_WRITE_OBS:-}" ] && printf '{"junk":"from-deepdive"}\n' >> state/observations.jsonl
+    [ -n "${DD_EMPTY:-}" ] && : > "kb/.$(date +%F).daily.partial.md"   # simulate emptying the report
     printf '{"num_turns":2,"total_cost_usd":0.0}\n'; exit "${DD_EXIT:-0}" ;;
   *)                                        # the triage pass
     printf '# report\n* item\n' > "kb/.$(date +%F).daily.partial.md"
@@ -387,14 +389,48 @@ test_deepdive_failure() {
   local repo="$TMP/ddfailrepo" out rc
   make_fake_repo "$repo"
   write_twopass_stub "$repo"
+  # deep-dive appends a junk observation, then fails -> both report and observations restored
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
-  out="$( DD_EXIT=1 HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+  out="$( DD_EXIT=1 DD_WRITE_OBS=1 HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
   assert_eq "run still exits 0 despite deep-dive failure" "0" "$rc"
   assert_contains "warns that the deep-dive failed" "$out" "deep-dive failed"
   if [ -f "$repo/kb/$(date +%F).daily.md" ]; then pass "triage report still promoted"; else fail "triage report still promoted"; fi
+  if grep -q from-deepdive "$repo/state/observations.jsonl"; then fail "failed deep-dive's observations rolled back"; else pass "failed deep-dive's observations rolled back"; fi
 }
 test_deepdive_failure
+
+echo "== monitor.sh: a deep-dive that empties the report restores the triage report =="
+test_deepdive_empty() {
+  local repo="$TMP/ddemptyrepo" out rc
+  make_fake_repo "$repo"
+  write_twopass_stub "$repo"
+  # deep-dive exits 0 but empties the report -> triage report must be restored
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( DD_EMPTY=1 HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run exits 0" "0" "$rc"
+  assert_contains "warns it restored the triage report" "$out" "restored the triage report"
+  if [ -s "$repo/kb/$(date +%F).daily.md" ]; then pass "non-empty triage report promoted"; else fail "non-empty triage report promoted"; fi
+}
+test_deepdive_empty
+
+echo "== usage.sh: a deep-dive pass doesn't inflate the run count =="
+test_usage_passes() {
+  local repo="$TMP/usagepass" out now
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/usage.sh" "$repo/bin/"
+  now="$(date -u +%FT%TZ)"
+  {
+    printf '{"timestamp":"%s","mode":"daily","pass":"triage","num_turns":10,"cost_usd":0.02}\n' "$now"
+    printf '{"timestamp":"%s","mode":"daily","pass":"deepdive","num_turns":20,"cost_usd":0.30}\n' "$now"
+  } > "$repo/state/runs.log"
+  out="$( bash "$repo/bin/usage.sh" 30 2>&1 )"
+  assert_contains "one invocation = one run (not two)" "$out" "runs:    1"
+  assert_contains "cost sums across both passes" "$out" "cost:    \$0.32"
+  assert_contains "shows the pass breakdown" "$out" "deepdive=1, triage=1"
+}
+test_usage_passes
 
 echo "== dashboard.sh: renders entities, sparklines, events, report links =="
 test_dashboard() {

@@ -18,16 +18,21 @@ esac
 command -v jq >/dev/null 2>&1 || { echo "jq not found — install it (brew install jq / apt install jq)" >&2; exit 1; }
 [ -f "$LOG" ] || { echo "no $LOG yet — run bin/monitor.sh first" >&2; exit 0; }
 
-# Slurp the log, keep runs within the window, and total the usage fields. Missing
-# fields default to 0 so a partial line never breaks the rollup.
+# Slurp the log, keep rows within the window, and total the usage fields. A run can
+# log multiple pass rows (triage + deepdive); count runs from triage/legacy rows
+# only (so deep-dive doesn't inflate the count), but sum cost/turns across all rows.
+# Missing fields default to 0 so a partial line never breaks the rollup.
 jq -rs --argjson days "$DAYS" '
   (now - ($days * 86400)) as $cutoff
-  | map(select((.timestamp | fromdateiso8601) >= $cutoff))
+  | map(select((.timestamp | fromdateiso8601) >= $cutoff))                as $all
+  | ($all | map(select((.pass // "triage") == "triage")))                 as $runs
   | "window:  last \($days) days",
-    "runs:    \(length)",
-    "by mode: " + (if length == 0 then "—"
-                   else (group_by(.mode) | map("\(.[0].mode)=\(length)") | join(", ")) end),
-    "cost:    $\(((((map(.cost_usd // 0) | add) // 0) * 100) | round) / 100) (API-equivalent estimate)",
-    "turns:   \((map(.num_turns // 0) | add) // 0)",
-    "tokens:  in \((map(.input_tokens // 0) | add) // 0), out \((map(.output_tokens // 0) | add) // 0), cache-read \((map(.cache_read_input_tokens // 0) | add) // 0)"
+    "runs:    \($runs | length)",
+    "by mode: " + (if ($runs | length) == 0 then "—"
+                   else ($runs | group_by(.mode) | map("\(.[0].mode)=\(length)") | join(", ")) end),
+    "passes:  " + (if ($all | length) == 0 then "—"
+                   else ($all | group_by(.pass // "triage") | map("\(.[0].pass // "triage")=\(length)") | join(", ")) end),
+    "cost:    $\(((((($all | map(.cost_usd // 0) | add) // 0)) * 100) | round) / 100) (API-equivalent estimate)",
+    "turns:   \(($all | map(.num_turns // 0) | add) // 0)",
+    "tokens:  in \(($all | map(.input_tokens // 0) | add) // 0), out \(($all | map(.output_tokens // 0) | add) // 0), cache-read \(($all | map(.cache_read_input_tokens // 0) | add) // 0)"
 ' "$LOG"
