@@ -58,6 +58,9 @@ spark() {
 }
 
 esc() {  # minimal HTML escaping for text we inject
+  # Disable patsub_replacement (bash 5.2+ default): otherwise '&' in a ${//}
+  # replacement expands to the match and turns < / > into <lt; / >gt;. No-op on 3.2.
+  shopt -u patsub_replacement 2>/dev/null || true
   local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"
 }
 
