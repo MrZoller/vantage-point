@@ -99,6 +99,12 @@ STATE_FILE="$(cfg_get monitoring state_file)"      # dedup memory; honored, not 
 [ -n "$STATE_FILE" ] || STATE_FILE="state/seen.jsonl"
 STATE_FILE="${STATE_FILE#./}"                       # normalize so "./state/..." == default
 mkdir -p "$(dirname "$STATE_FILE")"; touch "$STATE_FILE"
+# How to name it to Claude (cwd is the checkout): a relative path is anchored with
+# ./, an absolute path is handed over verbatim (never ".//abs").
+case "$STATE_FILE" in
+  /*) STATE_FILE_REF="$STATE_FILE" ;;
+  *)  STATE_FILE_REF="./$STATE_FILE" ;;
+esac
 SUBJECT_NAME="$(cfg_get_text subject name)"
 RUN_TIMEOUT="$(cfg_get monitoring run_timeout_seconds)"
 STATE_MAX_LINES="$(cfg_get monitoring state_max_lines)"
@@ -257,7 +263,7 @@ Approved profile - YOUR GROUND TRUTH (derived blocks + relevance rubric):
 $(cat "$PROFILE")
 \`\`\`
 
-Your dedup/state file is ./$STATE_FILE. Append every newly-evaluated item (full
+Your dedup/state file is $STATE_FILE_REF. Append every newly-evaluated item (full
 record for surfaced items, keys+score for dropped ones) so nothing is re-scored.
 Your observations file is ./state/observations.jsonl - your longitudinal metric/event
 memory for trend detection. When tracking.enabled, read the recent observations for

@@ -558,6 +558,45 @@ test_feedback_server() {
 }
 test_feedback_server
 
+echo "== monitor.sh: an absolute state_file is named to Claude verbatim (no .// prefix) =="
+test_state_file_absolute() {
+  local repo="$TMP/absrepo" out abs="$TMP/abs-seen.jsonl" args="$TMP/abs_args"
+  make_fake_repo "$repo"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  monitor: sonnet
+monitoring:
+  run_timeout_seconds: 0
+  state_max_lines: 5
+  state_file: $abs
+tracking:
+  observations_max_lines: 5
+governance:
+  profile_refresh_days: 30
+output:
+  email_to: ""
+YAML
+  # A stub claude that records the prompt it was handed, so we can inspect the path ref.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "prompt names the absolute path verbatim" "$(cat "$args" 2>/dev/null)" "Your dedup/state file is $abs."
+  case "$(cat "$args" 2>/dev/null)" in
+    *".//"*) fail "no doubled .// prefix on an absolute state_file" ;;
+    *) pass "no doubled .// prefix on an absolute state_file" ;;
+  esac
+  if [ -f "$abs" ]; then pass "absolute state_file is created"; else fail "absolute state_file is created"; fi
+}
+test_state_file_absolute
+
 echo "== feedback-server.py: review UI honors monitoring.state_file =="
 test_feedback_state_file() {
   local repo="$TMP/fbstate" out
