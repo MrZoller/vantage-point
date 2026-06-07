@@ -19,6 +19,7 @@ vantage-point/
 ├── bootstrap-prompt.md           # the profile-builder prompt
 ├── monitor-prompt.md             # the recurring-agent (triage) prompt
 ├── deepdive-prompt.md            # the optional second-pass investigator prompt
+├── editor-prompt.md              # the optional final-pass editor prompt
 ├── bin/
 │   ├── bootstrap.sh
 │   ├── monitor.sh                # monitor.sh {daily|weekly}
@@ -349,6 +350,22 @@ single-pass exactly as before. Because the deep pass only fires when triage queu
 high-scorers (often zero on a quiet day) and is capped per run, daily cost stays close
 to today's. Both passes are logged to `state/runs.log` with a `pass` field
 (`triage` / `deepdive`) so `bin/usage.sh` accounts for each.
+
+## Editorial pass (polish before delivery)
+
+By default the report is delivered as the analytical passes wrote it. Uncomment
+**`models.editor`** to add a dedicated *editor* (`editor-prompt.md`) as the final pass
+— it turns a correct-but-raw report into a tight, scannable brief: it leads with the
+single most important finding, orders by importance, cuts or merges marginal items, and
+tightens the prose to the house style. It runs **after** the deep dive (so it polishes
+the corroborated report) and only on days a report is actually delivered.
+
+It's strictly editorial and **non-destructive**: the editor may only reorder, cut,
+merge, and rephrase — it must **add no facts, change no figures, and keep every
+surviving item's `[source](url)` and `_(confidence)_`** (no web/Bash tools are even
+allowed in this pass). If it fails or empties the report, the unedited report is
+restored and shipped. Like the deep dive it's opt-in and logged to `state/runs.log`
+(`pass: editor`). Pairs naturally with the polished HTML email template.
 
 ## Calibration (teach it your taste)
 

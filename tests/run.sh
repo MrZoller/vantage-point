@@ -312,6 +312,7 @@ anchor:
 YAML
   printf 'monitor prompt (test fixture)\n' > "$repo/monitor-prompt.md"
   printf 'deep-dive prompt (test fixture) DEEPDIVE_FIXTURE\n' > "$repo/deepdive-prompt.md"
+  printf 'editor prompt (test fixture) EDITOR_FIXTURE\n' > "$repo/editor-prompt.md"
   cat > "$repo/stub/claude" <<'SH'
 #!/usr/bin/env bash
 [ -n "${CLAUDE_RAN:-}" ] && : > "$CLAUDE_RAN"
@@ -511,6 +512,93 @@ test_deepdive_empty() {
   if [ -s "$repo/kb/$(date +%F).daily.md" ]; then pass "non-empty triage report promoted"; else fail "non-empty triage report promoted"; fi
 }
 test_deepdive_empty
+
+# A stub claude for the editorial-pass tests: triage writes a report; the editor call
+# (its prompt contains EDITOR_FIXTURE) records that it ran and, per env, rewrites /
+# empties / fails. The config swaps models.deepdive -> models.editor so only the
+# editor second pass is in play.
+write_editor_stub() {  # $1 = repo
+  cat > "$1/stub/claude" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *EDITOR_FIXTURE*)                          # the editorial pass
+    [ -n "${ED_MARKER:-}" ] && echo ran >> "$ED_MARKER"
+    [ -n "${ED_EMPTY:-}" ]   && : > "kb/.$(date +%F).daily.partial.md"
+    [ -n "${ED_REWRITE:-}" ] && printf '# edited\n* curated item\n' > "kb/.$(date +%F).daily.partial.md"
+    printf '{"num_turns":2,"total_cost_usd":0.0}\n'; exit "${ED_EXIT:-0}" ;;
+  *)                                         # the triage pass
+    printf '# report\n* item\n' > "kb/.$(date +%F).daily.partial.md"
+    printf '{"num_turns":1,"total_cost_usd":0.0}\n'; exit 0 ;;
+esac
+SH
+  chmod +x "$1/stub/claude"
+}
+
+# Swap the fixture config's deepdive model for an editor model (portable: pure s///,
+# no newline insertion), so the editor pass is enabled and deep-dive is not.
+enable_editor() { sed 's/^  deepdive: opus$/  editor: opus/' "$1/monitor-config.yaml" > "$1/c.tmp" && mv "$1/c.tmp" "$1/monitor-config.yaml"; }
+
+echo "== monitor.sh: editorial pass runs on the report when models.editor is set =="
+test_editor_enabled() {
+  local repo="$TMP/edrepo" out rc ed="$TMP/ed_ran"
+  make_fake_repo "$repo"
+  enable_editor "$repo"
+  write_editor_stub "$repo"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( ED_MARKER="$ed" ED_REWRITE=1 HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run exits 0" "0" "$rc"
+  if [ -f "$ed" ]; then pass "editorial pass was invoked"; else fail "editorial pass was invoked"; fi
+  assert_contains "logs the editor pass to runs.log" "$(cat "$repo/state/runs.log" 2>/dev/null)" '"pass":"editor"'
+  if [ -s "$repo/kb/$(date +%F).daily.md" ]; then pass "edited report is delivered"; else fail "edited report is delivered"; fi
+  assert_contains "the delivered report is the edited one" "$(cat "$repo/kb/$(date +%F).daily.md" 2>/dev/null)" "curated item"
+}
+test_editor_enabled
+
+echo "== monitor.sh: no editorial pass when models.editor is unset =="
+test_editor_disabled() {
+  local repo="$TMP/edoffrepo" out rc ed="$TMP/ed_ran_off"
+  make_fake_repo "$repo"
+  # Remove deepdive too, so neither second pass runs; editor stays unset.
+  sed '/^  deepdive: opus$/d' "$repo/monitor-config.yaml" > "$repo/c.tmp" && mv "$repo/c.tmp" "$repo/monitor-config.yaml"
+  write_editor_stub "$repo"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( ED_MARKER="$ed" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run exits 0" "0" "$rc"
+  if [ -f "$ed" ]; then fail "editorial pass NOT invoked when disabled"; else pass "editorial pass NOT invoked when disabled"; fi
+}
+test_editor_disabled
+
+echo "== monitor.sh: a failed editorial pass keeps the unedited report =="
+test_editor_failure() {
+  local repo="$TMP/edfailrepo" out rc
+  make_fake_repo "$repo"
+  enable_editor "$repo"
+  write_editor_stub "$repo"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( ED_EXIT=1 ED_REWRITE=1 HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run still exits 0 despite editor failure" "0" "$rc"
+  assert_contains "warns that the editorial pass failed" "$out" "editorial pass failed"
+  assert_contains "the unedited report is delivered" "$(cat "$repo/kb/$(date +%F).daily.md" 2>/dev/null)" "* item"
+}
+test_editor_failure
+
+echo "== monitor.sh: an editorial pass that empties the report keeps the unedited one =="
+test_editor_empty() {
+  local repo="$TMP/edemptyrepo" out rc
+  make_fake_repo "$repo"
+  enable_editor "$repo"
+  write_editor_stub "$repo"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( ED_EMPTY=1 HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run exits 0" "0" "$rc"
+  assert_contains "warns it kept the unedited report" "$out" "kept the unedited report"
+  if [ -s "$repo/kb/$(date +%F).daily.md" ]; then pass "non-empty report delivered" ; else fail "non-empty report delivered"; fi
+}
+test_editor_empty
 
 echo "== usage.sh: a deep-dive pass doesn't inflate the run count =="
 test_usage_passes() {
