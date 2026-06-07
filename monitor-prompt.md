@@ -79,6 +79,8 @@ but dedup against what the dailies already surfaced.
 ## Item record (written to state_file / KB)
 ```json
 {
+  "id": "a1b2c3d4",                // stable short id (8 hex chars of the URL); lets a
+                                   // human grade this item later. Same URL -> same id.
   "date": "2026-06-06",
   "source": "wornandwound.com",
   "url": "https://...",
@@ -89,6 +91,9 @@ but dedup against what the dailies already surfaced.
   "confidence": "high"             // high | medium | low
 }
 ```
+Give every surfaced item an `id` and show it in the report (e.g. a `[a1b2c3d4]` tag on
+the item line) so it can be graded later — thumbs up/down in the review UI, recorded to
+`state/feedback.jsonl`, which the next bootstrap uses to calibrate the rubric.
 
 ## Observation record (appended to ./state/observations.jsonl)
 One JSON object per line — your longitudinal memory for trend detection. `value` is

@@ -46,6 +46,33 @@ else
   echo "[bootstrap] models.bootstrap not set in $CONFIG — using CLI default model" >&2
 fi
 
+# Fold in human calibration grades (thumbs up/down recorded via the review UI) so a
+# re-bootstrap learns the user's taste. Optional; absent on a first run.
+FEEDBACK="state/feedback.jsonl"
+FEEDBACK_NOTE=""
+if [ -s "$FEEDBACK" ]; then
+  # The log is append-only, so a regrade leaves an older contradictory row. Collapse
+  # to the latest verdict per id (skipping malformed lines) so bootstrap sees one
+  # label per item. python3 is present wherever feedback exists (the review server is
+  # Python); only the pathological both-tools-missing case falls back to the raw log.
+  if command -v python3 >/dev/null 2>&1 && [ -f bin/dedupe-feedback.py ]; then
+    FEEDBACK_DATA="$(python3 bin/dedupe-feedback.py "$FEEDBACK")"
+  else
+    FEEDBACK_DATA="$(cat "$FEEDBACK")"
+    echo "[bootstrap] WARNING: python3/dedupe-feedback.py unavailable — feeding raw feedback (regrades not deduped)" >&2
+  fi
+  echo "[bootstrap] including $(printf '%s\n' "$FEEDBACK_DATA" | grep -c .) calibration grade(s) from $FEEDBACK" >&2
+  FEEDBACK_NOTE="
+
+Human calibration grades — the user's thumbs up/down on past surfaced items
+(\`verdict\`: up = should have been surfaced, down = not relevant). Treat these as
+ground truth: tune \`relevance.rubric\` so it would score these correctly, and fold
+the clearest cases into \`relevance.calibration\` (relevant / not_relevant) in your draft.
+\`\`\`jsonl
+$FEEDBACK_DATA
+\`\`\`"
+fi
+
 echo "[bootstrap] model=${MODEL:-(CLI default)} researching subject + anchor -> $DRAFT"
 
 claude -p "$(cat "$PROMPT")
@@ -58,7 +85,7 @@ to that file. Do NOT edit $CONFIG. Mark low-confidence inferences inline.
 
 \`\`\`yaml
 $(cat "$CONFIG")
-\`\`\`" \
+\`\`\`$FEEDBACK_NOTE" \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \

@@ -53,12 +53,13 @@ independent sources** (downgrades/flags rumors), and deepens the so-what with
 cost-bounded (fires only on high-scorers, capped per run); both passes are logged to
 `runs.log` with a `pass` field.
 
-## Phase 4 — one-click calibration
+## Phase 4 — one-click calibration ✅ (shipped, clickable-web variant)
 
 Make grading frictionless so the rubric learns your taste and quality compounds:
-- Stable per-item IDs in every report.
-- `bin/grade.sh <date> <id> up|down ["why"]` — zero-infra, headless-friendly —
-  appends to `relevance.calibration`; the rubric is re-derived on the next bootstrap.
-- `mailto:` grade links in the HTML email that pre-fill a grade (no daemon).
-  (A clickable web dashboard would need a small local server — out of scope unless
-  wanted.)
+- Stable per-item `id` in every report/state record.
+- `bin/review.sh` serves a localhost grading UI (`bin/feedback-server.py`) listing
+  recent surfaced items with 👍 / 👎 buttons; a click records the grade + item context
+  to `state/feedback.jsonl`. Localhost-only — reach it over an SSH/VS Code forward.
+- The next `bin/bootstrap.sh` reads `feedback.jsonl` as ground-truth calibration and
+  tunes `relevance.rubric` / `relevance.calibration` to match (no fragile in-place
+  YAML mutation; you still review/approve the draft).

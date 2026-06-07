@@ -40,6 +40,9 @@ Turn the anchor profile into a 0..1 scoring rubric the monitor applies to each
 candidate item. State plainly what pushes an item up and what pushes it down.
 Where the config already has graded `calibration` examples, confirm your rubric
 would score them correctly; if it wouldn't, fix the rubric, not the examples.
+If the prompt also includes **human calibration grades** (thumbs up/down the user
+gave past surfaced items), treat them as ground truth too: tune the rubric so it
+would score them correctly, and carry the clearest cases into `relevance.calibration`.
 
 ## Interpretation, not just filtering
 The whole point of the anchor is to move from *monitoring* to *intelligence*.
