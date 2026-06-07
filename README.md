@@ -42,6 +42,9 @@ makes the review gate a literal, diffable file promotion.
 - **Node.js** (LTS) — Claude Code installs via npm.
 - **A Claude plan** for Claude Code to authenticate against — your **Max** subscription here.
 - **macOS** for the launchd schedules below (Linux/cron alternative near the end).
+- **jq** (`brew install jq` / `apt install jq`) — `monitor.sh` parses each run's
+  JSON envelope into `state/runs.log`. Without it the run still works but logs a
+  clear error and skips usage logging.
 - Optional: **msmtp** (`brew install msmtp`) for emailed reports; **gh** for repo creation.
 
 ## One-time setup
@@ -157,6 +160,10 @@ no app running, and slots into the same Unix toolchain as the rest of your home 
 - **Where output goes.** Reports land in `kb/YYYY-MM-DD.{daily,weekly}.md`; stderr
   for each run is alongside as `.err`. The `delivery` block in `monitor.sh` is
   commented out — uncomment the msmtp lines (or wire Slack/Telegram) when ready.
+- **Run usage log.** Each run appends one JSON line to `state/runs.log` —
+  timestamp, mode, turns, duration, token usage, `session_id`, and `cost_usd`.
+  That `cost_usd` is an **API-equivalent estimate**, not actual Max-subscription
+  billing; treat it as a relative signal for tuning run frequency and `--max-turns`.
 - **Refresh.** Re-run `bootstrap.sh` on the `governance.profile_refresh_days`
   cadence; review the new draft against the old `profile.yaml` before promoting.
   Anchors drift — new awards, hires, capabilities — and a stale profile quietly
@@ -165,6 +172,14 @@ no app running, and slots into the same Unix toolchain as the rest of your home 
   `relevance.calibration.not_relevant` and misses into `relevant`, then re-bootstrap
   so the rubric learns your taste. That feedback loop is the whole reason to
   prototype on a domain where you already know good output from noise.
+- **Borderline visibility.** During tuning, the two `monitoring` knobs
+  `show_borderline` (default true) and `borderline_band` (default 0.2) surface
+  near-misses you'd otherwise never see: items scoring in
+  `[threshold - borderline_band, threshold)` get listed in a *Considered (below
+  threshold)* appendix, so a daily with only near-misses still writes a report
+  instead of going silent. They're recorded to state so they aren't re-surfaced.
+  Calibrate from these real examples, then set `show_borderline: false` to return
+  to silent empty days.
 
 ## Troubleshooting
 

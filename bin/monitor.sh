@@ -38,7 +38,10 @@ echo "[monitor:$MODE] $TODAY -> $REPORT"
 # $REPORT itself is left untouched until claude succeeds.
 rm -f "$RUN_REPORT"
 
-claude -p "$(cat "$PROMPT")
+# --output-format json so we can log per-run usage below. The agent still writes
+# the report to $RUN_REPORT via the Write tool, so empty detection stays file-based
+# (the JSON envelope goes to stdout, which we capture instead of the report text).
+RUN_JSON="$(claude -p "$(cat "$PROMPT")
 
 ---
 RUN MODE: $MODE
@@ -56,17 +59,38 @@ $(cat "$PROFILE")
 
 Your state file is ./state/seen.jsonl. Append every newly-evaluated item (full
 record for surfaced items, keys+score for dropped ones) so nothing is re-scored.
-Write the $MODE report to ./$RUN_REPORT. If MODE is daily and nothing clears the
-threshold, write NOTHING to the report file and print exactly NO_MATERIAL_ITEMS." \
+Write the $MODE report to ./$RUN_REPORT, following the report rules in the prompt
+above — including the show_borderline / 'Considered (below threshold)' handling.
+For a daily run, if those rules produce no report at all, write NOTHING to the
+report file and print exactly NO_MATERIAL_ITEMS." \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
   --permission-mode acceptEdits \
   --max-turns 40 \
-  --output-format text \
-  2> "kb/${TODAY}.${MODE}.err"
+  --output-format json \
+  2> "kb/${TODAY}.${MODE}.err")"
 
-# claude exited 0 (set -e would have aborted otherwise). Promote this run's
-# output to $REPORT only now — so a failed rerun never clobbers an earlier report.
+# claude exited 0 (set -e would have aborted otherwise).
+# ---- log per-run usage to state/runs.log ----
+# NOTE: total_cost_usd from the CLI is an API-EQUIVALENT estimate. These runs
+# authenticate against the Max subscription, so this is NOT your actual billing —
+# it's a relative cost/usage signal for tuning run frequency and --max-turns.
+if command -v jq >/dev/null 2>&1; then
+  printf '%s' "$RUN_JSON" | jq -c \
+    --arg ts "$(date -u +%FT%TZ)" --arg mode "$MODE" --arg date "$TODAY" \
+    '{timestamp:$ts, mode:$mode, date:$date,
+      num_turns:.num_turns, duration_ms:.duration_ms, cost_usd:.total_cost_usd,
+      input_tokens:.usage.input_tokens, output_tokens:.usage.output_tokens,
+      cache_read_input_tokens:.usage.cache_read_input_tokens,
+      cache_creation_input_tokens:.usage.cache_creation_input_tokens,
+      session_id:.session_id}' >> state/runs.log \
+    || echo "[monitor:$MODE] WARNING: could not parse run JSON; usage not logged" >&2
+else
+  echo "[monitor:$MODE] ERROR: jq not found — usage not logged. Install jq (brew install jq / apt install jq)." >&2
+fi
+
+# Promote this run's output to $REPORT only now — so a failed rerun never clobbers
+# an earlier report.
 # ---- deliver: plug in whatever channel you want ----
 if [ -s "$RUN_REPORT" ]; then
   mv -f "$RUN_REPORT" "$REPORT"

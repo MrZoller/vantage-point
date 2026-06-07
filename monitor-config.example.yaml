@@ -96,6 +96,10 @@ monitoring:
   dedup:
     by: [url, title_fuzzy]    # don't re-surface the same story reworded
     fuzzy_threshold: 0.85
+  # Tuning aids — surface near-misses while calibrating the rubric. See the
+  # "Considered (below threshold)" appendix in monitor-prompt.md.
+  show_borderline: true     # tuning aid: surface near-miss items below threshold
+  borderline_band: 0.2      # how far below threshold counts as a near-miss
 
 output:
   # NOTE: this block is documentation, not wiring. The report path and delivery

@@ -75,7 +75,28 @@ but dedup against what the dailies already surfaced.
 • [{signal}] {title} ({source})
   {so_what}  → {url}
 ```
-If `N` is 0 and send_if_empty is false: produce no report.
+If `N` is 0 and send_if_empty is false: produce no report — UNLESS
+`monitoring.show_borderline` is true and borderline items exist (see appendix).
+
+**Considered (below threshold) — appendix.** A tuning aid, emitted ONLY when
+`monitoring.show_borderline` is true. List the near-miss items that scored in
+`[relevance.threshold - monitoring.borderline_band, relevance.threshold)` — the
+real examples you calibrate the rubric from instead of guessing. Each line is a
+score, the title, the source, and one line on *why it fell short of the rubric*:
+```
+Considered (below threshold)
+• {score} {title} ({source}) — {one-line reason it fell short of the rubric}
+```
+Borderline behavior (daily), explicitly:
+- Only when `show_borderline` is true. When false, behave exactly as before:
+  silent on empty days, and `NO_MATERIAL_ITEMS` when nothing clears threshold.
+- `show_borderline` true AND ≥1 item clears threshold: append this section after
+  the normal daily report.
+- `show_borderline` true AND nothing clears threshold but borderline items exist:
+  still write the report file containing ONLY this appendix; do NOT emit
+  `NO_MATERIAL_ITEMS`.
+- Either way, borderline items are recorded to `state_file` (step 6, as dropped
+  items with their score) so they are not re-surfaced as new on later runs.
 
 **Weekly (digest).** Top-line → grouped items → Watching → (Quiet on). Readable
 in under two minutes. The goal is that someone looks forward to it, not mutes it.
