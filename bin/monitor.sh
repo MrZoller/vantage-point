@@ -423,33 +423,77 @@ render_md_to_html() {
   esac
 }
 
-# stdin: HTML fragment -> stdout: full styled HTML document. A <style> block (not
-# inline styles) is enough for the clients this tool targets; keeps it readable.
+# Minimal HTML escape for values we drop into the template chrome (subject, etc.).
+_esc() { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
+
+# stdin: HTML body fragment -> stdout: full styled HTML document. A <style> block
+# (not inline styles) renders in the mail/preview clients this tool targets and keeps
+# the template readable. Optional chrome is read from the environment so this stays a
+# pure filter: VP_TITLE / VP_SUBTITLE (header), VP_PREHEADER (hidden inbox preview
+# text), VP_FOOTER (footer line). Each is HTML-escaped. No external assets/images
+# (privacy + reliability) and ASCII-only source per the repo convention.
 wrap_html() {
+  local title subtitle preheader footer
+  title="$(_esc "${VP_TITLE:-}")"; subtitle="$(_esc "${VP_SUBTITLE:-}")"
+  preheader="$(_esc "${VP_PREHEADER:-}")"; footer="$(_esc "${VP_FOOTER:-}")"
   cat <<'HTML_HEAD'
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-         line-height: 1.5; color: #1a1a1a; max-width: 680px; margin: 0 auto; padding: 16px; }
-  h1, h2, h3 { line-height: 1.25; margin: 1.2em 0 0.4em; }
-  h1 { font-size: 1.5em; } h2 { font-size: 1.25em; } h3 { font-size: 1.05em; }
-  a { color: #0b66c3; }
-  ul, ol { padding-left: 1.4em; } li { margin: 0.2em 0; }
-  code { background: #f2f2f2; padding: 0.1em 0.3em; border-radius: 3px; }
-  pre { background: #f6f8fa; padding: 12px; border-radius: 6px; overflow-x: auto; }
-  pre code { background: none; padding: 0; }
-  blockquote { border-left: 3px solid #ddd; margin: 0.6em 0; padding-left: 12px; color: #555; }
-  hr { border: none; border-top: 1px solid #e3e3e3; margin: 1.5em 0; }
-  table { border-collapse: collapse; } th, td { border: 1px solid #ddd; padding: 6px 10px; }
+  body { margin: 0; padding: 0; background: #eef1f5; -webkit-font-smoothing: antialiased;
+         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         color: #1f2933; line-height: 1.55; }
+  .preheader { display: none !important; visibility: hidden; opacity: 0; height: 0; width: 0; overflow: hidden; }
+  .wrap { max-width: 640px; margin: 0 auto; background: #ffffff; }
+  .hd { padding: 28px 32px 22px; border-top: 4px solid #2f5bea; border-bottom: 1px solid #e6e9ef; }
+  .eyebrow { font-size: 11px; letter-spacing: 0.12em; font-weight: 700; color: #2f5bea; text-transform: uppercase; }
+  .title { font-size: 22px; font-weight: 700; line-height: 1.2; margin-top: 5px; color: #10151f; }
+  .sub { font-size: 13px; color: #6b7280; margin-top: 5px; }
+  .body { padding: 6px 32px 22px; }
+  .body h1, .body h2, .body h3 { line-height: 1.25; color: #10151f; }
+  .body h1 { font-size: 19px; margin: 22px 0 8px; }
+  .body h2 { font-size: 14px; margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 1px solid #eceef2;
+             text-transform: uppercase; letter-spacing: 0.05em; color: #4b5563; }
+  .body h3 { font-size: 15px; margin: 18px 0 4px; }
+  .body p { margin: 9px 0; }
+  .body a { color: #2f5bea; text-decoration: none; }
+  .body a:hover { text-decoration: underline; }
+  .body ul, .body ol { padding-left: 20px; margin: 9px 0; }
+  .body li { margin: 7px 0; }
+  .body blockquote { margin: 16px 0; padding: 14px 18px; background: #f3f6ff; border-left: 4px solid #2f5bea;
+                     border-radius: 0 6px 6px 0; color: #28324a; font-size: 15px; }
+  .body blockquote p { margin: 0; }
+  .body code { background: #f1f3f7; padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
+  .body pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 8px; overflow-x: auto; }
+  .body pre code { background: none; padding: 0; color: inherit; }
+  .body hr { border: 0; border-top: 1px solid #e6e9ef; margin: 22px 0; }
+  .body table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+  .body th { text-align: left; background: #f7f8fa; border-bottom: 2px solid #e6e9ef; padding: 8px 10px;
+             font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; color: #6b7280; }
+  .body td { border-bottom: 1px solid #eef1f5; padding: 8px 10px; }
+  .body td.spark { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #2f5bea; }
+  .ft { padding: 16px 32px 26px; border-top: 1px solid #e6e9ef; color: #9aa3af; font-size: 12px; }
+  .ft a { color: #6b7280; }
 </style>
 </head>
 <body>
 HTML_HEAD
+  printf '<span class="preheader">%s</span>\n' "$preheader"
+  printf '<div class="wrap">\n'
+  if [ -n "$title" ]; then
+    printf '<div class="hd"><div class="eyebrow">Vantage Point</div><div class="title">%s</div>' "$title"
+    [ -n "$subtitle" ] && printf '<div class="sub">%s</div>' "$subtitle"
+    printf '</div>\n'
+  fi
+  printf '<div class="body">\n'
   cat
+  printf '\n</div>\n'
+  [ -n "$footer" ] && printf '<div class="ft">%s</div>\n' "$footer"
   cat <<'HTML_FOOT'
+</div>
 </body>
 </html>
 HTML_FOOT
@@ -469,6 +513,27 @@ email_report() {
     subject="[Vantage Point] $MODE $TODAY"
   fi
   subject="$(encode_header "$subject")"   # RFC 2047 if the name has non-ASCII chars
+  # Template chrome for the HTML build (read by wrap_html). A subshell in the pipe
+  # inherits these locals, so no export is needed. Computed in pure bash so the HTML
+  # build needs no extra tools on a minimal PATH (same reasoning as encode_header).
+  local mode_disp preheader line VP_TITLE VP_SUBTITLE VP_PREHEADER VP_FOOTER
+  case "$MODE" in daily) mode_disp="Daily" ;; weekly) mode_disp="Weekly" ;; *) mode_disp="$MODE" ;; esac
+  # Inbox preview: first non-heading line of the report (drop a leading blockquote marker), trimmed.
+  preheader=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      '#'*) continue ;;                 # skip markdown headings
+      '> '*) line="${line#> }" ;;       # unwrap a leading blockquote marker
+      '>'*)  line="${line#>}" ;;
+    esac
+    [ -n "$line" ] || continue
+    preheader="${line:0:160}"; break
+  done < "$report"
+  VP_TITLE="${SUBJECT_NAME:-Market intelligence}"
+  VP_SUBTITLE="${mode_disp} briefing - ${TODAY}"
+  VP_PREHEADER="$preheader"
+  VP_FOOTER="Generated by Vantage Point - ${TODAY}"
   local html
   if html="$(render_md_to_html < "$report" 2>/dev/null)" && [ -n "$html" ]; then
     local boundary="mm-${TODAY}-$$"
