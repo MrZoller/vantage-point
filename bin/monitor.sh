@@ -30,7 +30,7 @@ RUN_REPORT="kb/.${TODAY}.${MODE}.partial.md"
 }
 
 mkdir -p state kb
-touch state/seen.jsonl
+touch state/seen.jsonl state/observations.jsonl
 
 # ---- config readers ----
 # Read a single scalar `key:` nested under a top-level YAML `block:` from a config
@@ -89,9 +89,11 @@ EMAIL_TO="$(cfg_get output email_to)"
 SUBJECT_NAME="$(cfg_get_text subject name)"
 RUN_TIMEOUT="$(cfg_get monitoring run_timeout_seconds)"
 STATE_MAX_LINES="$(cfg_get monitoring state_max_lines)"
+OBS_MAX_LINES="$(cfg_get tracking observations_max_lines)"
 REFRESH_DAYS="$(cfg_get governance profile_refresh_days)"
 case "$RUN_TIMEOUT"     in ''|*[!0-9]*) RUN_TIMEOUT=1800 ;; esac
 case "$STATE_MAX_LINES" in ''|*[!0-9]*) STATE_MAX_LINES=5000 ;; esac
+case "$OBS_MAX_LINES"   in ''|*[!0-9]*) OBS_MAX_LINES=20000 ;; esac
 case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-numeric -> skip check
 
 # ---- single-run lock (shared across modes) ----
@@ -178,18 +180,20 @@ if [ "$RUN_TIMEOUT" != 0 ]; then
   fi
 fi
 
-# ---- prune state so seen.jsonl can't grow without bound (0 disables) ----
-# Cap by line count: schema-agnostic and generous vs the dedup window, so this
+# ---- prune append-only state so it can't grow without bound (0 disables) ----
+# Cap by line count: schema-agnostic and generous vs the dedup/trend window, so this
 # never drops anything still relevant. We hold the lock, so there's no concurrent
-# writer. Prune before the run so claude reads a bounded file.
-if [ "$STATE_MAX_LINES" -gt 0 ]; then
-  cur_lines="$(wc -l < state/seen.jsonl)"
-  if [ "$cur_lines" -gt "$STATE_MAX_LINES" ]; then
-    tail -n "$STATE_MAX_LINES" state/seen.jsonl > state/seen.jsonl.tmp \
-      && mv state/seen.jsonl.tmp state/seen.jsonl
-    echo "[monitor:$MODE] pruned state/seen.jsonl: $cur_lines -> $STATE_MAX_LINES lines" >&2
+# writer. Prune before the run so claude reads bounded files.
+prune_state() {  # <file> <max_lines>
+  [ "$2" -gt 0 ] || return 0
+  local cur; cur="$(wc -l < "$1")"
+  if [ "$cur" -gt "$2" ]; then
+    tail -n "$2" "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+    echo "[monitor:$MODE] pruned $1: $cur -> $2 lines" >&2
   fi
-fi
+}
+prune_state state/seen.jsonl "$STATE_MAX_LINES"
+prune_state state/observations.jsonl "$OBS_MAX_LINES"
 
 # ---- profile staleness (governance.profile_refresh_days) ----
 # Anchors drift; a stale profile silently mis-scores. Warn (don't refuse) when the
@@ -234,12 +238,16 @@ Approved profile — YOUR GROUND TRUTH (derived blocks + relevance rubric):
 $(cat "$PROFILE")
 \`\`\`
 
-Your state file is ./state/seen.jsonl. Append every newly-evaluated item (full
+Your dedup/state file is ./state/seen.jsonl. Append every newly-evaluated item (full
 record for surfaced items, keys+score for dropped ones) so nothing is re-scored.
+Your observations file is ./state/observations.jsonl — your longitudinal metric/event
+memory for trend detection. When tracking.enabled, read the recent observations for
+the tracked entities, append this run's observations, and follow the 'Trend detection'
++ 'What changed' rules in the prompt above (driven by the tracking.* thresholds).
 Write the $MODE report to ./$RUN_REPORT, following the report rules in the prompt
 above — including the show_borderline / 'Considered (below threshold)' handling.
-For a daily run, if those rules produce no report at all, write NOTHING to the
-report file and print exactly NO_MATERIAL_ITEMS." \
+For a daily run, if those rules produce no report at all (no items AND no changes),
+write NOTHING to the report file and print exactly NO_MATERIAL_ITEMS." \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
