@@ -475,6 +475,40 @@ test_dashboard_args() {
 }
 test_dashboard_args
 
+echo "== review.sh: argument handling =="
+test_review_args() {
+  local repo="$TMP/revargs" rc
+  mkdir -p "$repo/bin"
+  cp "$ROOT/bin/review.sh" "$repo/bin/"
+  ( cd "$repo" && bash bin/review.sh --help >/dev/null 2>&1 ); rc=$?
+  assert_eq "--help exits 0" "0" "$rc"
+  ( cd "$repo" && bash bin/review.sh --port abc >/dev/null 2>&1 ); rc=$?
+  assert_eq "--port with a non-numeric value exits 2" "2" "$rc"
+}
+test_review_args
+
+echo "== feedback-server.py: serves items and records grades =="
+test_feedback_server() {
+  if ! command -v curl >/dev/null 2>&1; then pass "feedback server (skipped: no curl)"; return; fi
+  local repo="$TMP/fbrepo" port=8791 home_page
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/feedback-server.py" "$repo/bin/"
+  {
+    printf '{"id":"abc123","title":"Tudor GMT leak","signal":"opportunity","score":0.9,"so_what":"matters","url":"https://x"}\n'
+    printf 'MALFORMED LINE {oops\n'                          # must not break the listing
+    printf '{"id":"def456","title":"Pelagos restock","signal":"shift","score":0.7,"url":"https://y"}\n'
+  } > "$repo/state/seen.jsonl"
+  ( exec python3 "$repo/bin/feedback-server.py" "$port" >/dev/null 2>&1 ) &
+  local srv=$!
+  home_page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/" || true)"
+  curl -s "http://127.0.0.1:$port/grade?id=abc123&v=up" >/dev/null || true
+  kill "$srv" 2>/dev/null || true
+  assert_contains "review page lists a surfaced item (skips the malformed line)" "$home_page" "Tudor GMT leak"
+  assert_contains "a grade is recorded to feedback.jsonl" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"verdict": "up"'
+  assert_contains "the grade captures the item id" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"id": "abc123"'
+}
+test_feedback_server
+
 echo "== monitor.sh: email Subject names the monitored subject =="
 test_email_subject() {
   local repo="$TMP/subjrepo" out rc msg="$TMP/subj.eml"

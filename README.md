@@ -20,7 +20,9 @@ market-monitor/
 │   ├── monitor.sh                # monitor.sh {daily|weekly}
 │   ├── install-launchd.sh        # install/remove the launchd agents (no repo edits)
 │   ├── usage.sh                  # roll up state/runs.log: cost/turns/tokens
-│   └── dashboard.sh              # regenerate kb/index.html (entities + sparklines)
+│   ├── dashboard.sh              # regenerate kb/index.html (entities + sparklines)
+│   ├── review.sh                 # launch the grading UI (thumbs up/down)
+│   └── feedback-server.py        # the grading web app behind review.sh
 └── launchd/
     ├── ai.zoller.marketmonitor.daily.plist    # templates; __MM_ROOT__ filled in at install
     └── ai.zoller.marketmonitor.weekly.plist
@@ -33,6 +35,7 @@ Created at runtime, gitignored (a specific deployment's data):
 ├── profile.yaml                  # you promote the reviewed draft to this (ground truth)
 ├── state/seen.jsonl              # dedup memory: "is this NEW?"
 ├── state/observations.jsonl      # longitudinal metric/event memory: "is this CHANGING?"
+├── state/feedback.jsonl          # your thumbs up/down grades (calibration input)
 └── kb/                           # accumulated reports, per-run logs, and index.html
 ```
 
@@ -338,15 +341,35 @@ high-scorers (often zero on a quiet day) and is capped per run, daily cost stays
 to today's. Both passes are logged to `state/runs.log` with a `pass` field
 (`triage` / `deepdive`) so `bin/usage.sh` accounts for each.
 
+## Calibration (teach it your taste)
+
+The single biggest quality lever is grading real output. Each surfaced item carries a
+short stable `id`, and `bin/review.sh` serves a tiny local web UI listing recent items
+with 👍 / 👎 buttons:
+
+```
+./bin/review.sh                # grading UI on http://localhost:8000
+./bin/review.sh --port 8090
+ssh -L 8000:localhost:8000 you@mini   # reach it from your laptop (or VS Code Remote forward)
+```
+
+A click records the grade — with the item's full context — to `state/feedback.jsonl`
+(localhost-bound, no public listener, like `dashboard.sh --serve`). The next
+`bin/bootstrap.sh` reads those grades as ground-truth calibration and tunes
+`relevance.rubric` (and `relevance.calibration`) to match them, then you review/approve
+the draft as usual. So the loop is: **monitor surfaces → you thumb → re-bootstrap →
+sharper rubric** — quality compounds the longer you run it, with no config editing by hand.
+
 ## Tests
 
 `bash tests/run.sh` runs fast, dependency-light checks for the logic that doesn't
-need the `claude` CLI — the launchd plist generation (including paths with shell/XML
-special characters), `monitor.sh`'s argument and review-gate behavior, the email
-plain-text/HTML rendering, the single-run lock (skip-if-running and stale-lock
-reclaim, via a stub `claude`), state pruning, the profile-staleness warning, and the
-`usage.sh` rollup. CI (`.github/workflows/ci.yml`) runs `shellcheck`, a `bash -n`
-syntax pass, and this suite on every push and pull request.
+need the `claude` CLI — launchd plist generation (including paths with shell/XML
+special characters), `monitor.sh`'s argument/review-gate behavior, email
+plain-text/HTML rendering, the single-run lock (skip + stale-lock reclaim, via a stub
+`claude`), state pruning, the profile-staleness warning, the two-pass deep-dive
+orchestration (including failure/empty-report rollback), the `usage.sh` rollup, the
+dashboard, and the feedback grading server. CI (`.github/workflows/ci.yml`) runs
+`shellcheck`, `bash -n`, a `py_compile` check, and this suite on every push and PR.
 
 ## Troubleshooting
 

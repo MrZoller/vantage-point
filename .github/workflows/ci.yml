@@ -22,5 +22,8 @@ jobs:
             bash -n "$f"
           done
 
+      - name: python compile check
+        run: python3 -m py_compile bin/*.py
+
       - name: unit tests
         run: bash tests/run.sh
