@@ -55,13 +55,15 @@ flowchart LR
   S["Public sources<br/>news, filings, sites, listings"]
   M["Monitor<br/>(daily / weekly)"]
   DD["Deep dive<br/>corroborate sources"]
+  ED["Edit<br/>curate + polish"]
   R["Brief<br/>why it matters → action → confidence"]
   G["Grade 👍 / 👎"]
 
   S --> M
   P --> M
-  M -->|score + detect what changed| R
-  M -->|top items only| DD --> R
+  M -->|score + detect what changed| ED
+  M -->|top items only| DD --> ED
+  ED -->|deliver| R
   R --> G -->|re-run research, then approve| P
 ```
 
@@ -72,7 +74,9 @@ flowchart LR
    and notices what's *changed* since last time. With the optional **deep-dive** pass
    enabled, the few highest-value items get a deeper look that **corroborates across
    multiple sources** before surfacing.
-3. **Brief + learn.** It delivers a tight report (email and/or a dashboard). Items get
+3. **Brief + learn.** It delivers a tight report (email and/or a dashboard) — with an
+   optional **editorial** pass that first curates and polishes it into a designed brief
+   (lead, order, cut, tighten) without adding facts or dropping citations. Items get
    graded up/down, and those grades feed the **next profile refresh** — a re-run of the
    research step that you review and approve. Grading sharpens relevance at the next
    refresh; it doesn't change scoring automatically mid-stream.
@@ -175,7 +179,8 @@ different market by swapping the config and re-running the research step.
 ## Under the hood (for the curious)
 
 Two Claude agents over one config file: a one-time **research** pass that builds the
-reviewed profile, and a lightweight **monitor** that runs on a schedule. It's a small,
+reviewed profile, and a lightweight **monitor** that runs on a schedule (with optional
+deep-dive and editorial passes layered on top). It's a small,
 auditable codebase (shell + a little Python) with a CI test suite, scheduled via the
 OS's own task runner. Full technical detail is in the [README](../README.md) and the
 [roadmap](roadmap.md).
