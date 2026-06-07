@@ -155,6 +155,11 @@ via msmtp when it's set. Leave it blank to skip email and just read reports from
 If `email_to` is set but msmtp isn't installed, the run still succeeds and logs a notice;
 a send failure never loses the report (it's already written to `kb/`).
 
+The email Subject names the monitored market — `[market-monitor: <subject.name>] <mode>
+<date>` — so if you run several agents (one config each) their mail is easy to tell
+apart and filter. With no `subject.name` set it falls back to the bare `[market-monitor]`
+tag.
+
 **Rendered HTML.** Because mail clients don't render markdown, the email is sent as
 HTML when a markdown renderer is installed — `pandoc` or `cmark-gfm`, auto-detected,
 no config needed (`brew install cmark-gfm` is the lightest). It goes out as

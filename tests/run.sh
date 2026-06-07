@@ -182,24 +182,64 @@ PY
 }
 test_email_helpers
 
+echo "== cfg_get_text: parses human-readable subject.name (quotes, escapes, #) =="
+test_cfg_get_text() {
+  local fns="$TMP/cfgfns.sh" cfg="$TMP/c.yaml"
+  awk '/^# ---- config readers ----/{f=1} /^# ---- end config readers ----/{f=0} f' \
+    "$ROOT/bin/monitor.sh" > "$fns"
+  # shellcheck disable=SC1090
+  source "$fns"
+  printf 'subject:\n  name: "Mechanical & microbrand wristwatches"\n' > "$cfg"
+  assert_eq "double-quoted: spaces + &" "Mechanical & microbrand wristwatches" "$(cfg_get_text subject name "$cfg")"
+  printf 'subject:\n  name: Plain Name   # c\n' > "$cfg"
+  assert_eq "unquoted: trailing comment stripped" "Plain Name" "$(cfg_get_text subject name "$cfg")"
+  printf 'subject:\n  name: C# developer tools\n' > "$cfg"
+  assert_eq "unquoted: literal # kept" "C# developer tools" "$(cfg_get_text subject name "$cfg")"
+  cat > "$cfg" <<'YAML'
+subject:
+  name: 'Bob''s Watches'
+YAML
+  assert_eq "single-quoted: doubled-quote escape" "Bob's Watches" "$(cfg_get_text subject name "$cfg")"
+  cat > "$cfg" <<'YAML'
+subject:
+  name: "Bob \"Sig\" Watches"
+YAML
+  assert_eq "double-quoted: internal escaped quotes" 'Bob "Sig" Watches' "$(cfg_get_text subject name "$cfg")"
+}
+test_cfg_get_text
+
+echo "== encode_header: RFC 2047-encodes non-ASCII, passes ASCII through =="
+test_encode_header() {
+  local fns="$TMP/ehfns.sh"
+  awk '/^# ---- email helpers ----/{f=1} /^# Promote this run.s output/{f=0} f' \
+    "$ROOT/bin/monitor.sh" > "$fns"
+  # shellcheck disable=SC1090
+  source "$fns"
+  assert_eq "ASCII passes through unchanged" "[market-monitor: Plain] daily" "$(encode_header "[market-monitor: Plain] daily")"
+  assert_contains "non-ASCII becomes an RFC 2047 encoded-word" "$(encode_header "Café")" "=?UTF-8?B?"
+}
+test_encode_header
+
 # Build an isolated, runnable monitor.sh checkout that needs no real claude: minimal
 # config/profile/prompt + a stub `claude` that records its invocation and prints a
 # JSON envelope without writing a report (so the run ends "nothing material").
 make_fake_repo() {
-  local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}"
+  local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
   cp "$ROOT/bin/monitor.sh" "$repo/bin/"
   cat > "$repo/monitor-config.yaml" <<YAML
 version: 1
 models:
   monitor: sonnet
+subject:
+  name: "Test Market & Co"
 monitoring:
   run_timeout_seconds: $run_timeout
   state_max_lines: 5
 governance:
   profile_refresh_days: 30
 output:
-  email_to: ""
+  email_to: "$email_to"
 YAML
   cat > "$repo/profile.yaml" <<YAML
 subject:
@@ -217,6 +257,7 @@ printf '{"num_turns":1,"total_cost_usd":0.0}\n'
 exit 0
 SH
   chmod +x "$repo/stub/claude"
+  write_capture_msmtp "$repo/stub/msmtp"
 }
 
 # Mirror monitor.sh's proc_start so tests can forge a matching/non-matching owner token.
@@ -280,6 +321,31 @@ test_full_run() {
   if [ -d "$repo/state/.lock" ]; then fail "lock released on exit"; else pass "lock released on exit"; fi
 }
 test_full_run
+
+echo "== monitor.sh: email Subject names the monitored subject =="
+test_email_subject() {
+  local repo="$TMP/subjrepo" out rc msg="$TMP/subj.eml"
+  make_fake_repo "$repo" "2099-01-01" 0 "me@example.com"   # email enabled; subject.name set
+  # A stub claude that writes a report, so the email actually sends.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'report body\n' > "kb/.$(date +%F).daily.partial.md"
+printf '{"num_turns":1}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( MSG_OUT="$msg" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run exits 0" "0" "$rc"
+  if [ -f "$msg" ]; then
+    assert_contains "Subject names the monitored subject (spaces + & preserved)" \
+      "$(grep -i '^Subject:' "$msg")" "[market-monitor: Test Market & Co]"
+  else
+    fail "an email was sent"
+  fi
+}
+test_email_subject
 
 echo "== usage.sh: rolls up runs.log within the window =="
 test_usage() {

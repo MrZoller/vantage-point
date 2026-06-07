@@ -32,6 +32,7 @@ RUN_REPORT="kb/.${TODAY}.${MODE}.partial.md"
 mkdir -p state kb
 touch state/seen.jsonl
 
+# ---- config readers ----
 # Read a single scalar `key:` nested under a top-level YAML `block:` from a config
 # file, dependency-light (no YAML lib). Prints the value (comment/quotes/space
 # stripped) or nothing. Always returns 0, so `x="$(cfg_get ...)"` is safe under set -e.
@@ -42,7 +43,8 @@ cfg_get() {  # <block> <key> [file=$CONFIG]
     inblk && $1 == key":" {
       line=$0
       sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  key: "
-      sub(/[[:space:]]*#.*$/, "", line)                  # drop trailing comment
+      sub(/^#.*$/, "", line)                             # value is only a comment -> empty
+      sub(/[[:space:]]+#.*$/, "", line)                  # drop a real trailing comment
       gsub(/[[:space:]]/, "", line)                      # drop surrounding space
       gsub(/["\047]/, "", line)                          # drop quotes
       print line; exit
@@ -50,9 +52,41 @@ cfg_get() {  # <block> <key> [file=$CONFIG]
   ' "${3:-$CONFIG}"
 }
 
+# Like cfg_get but PRESERVES internal spaces — for human-readable values such as
+# subject.name. Trims ends, unwraps a surrounding quote pair (keeping internal
+# quotes, handling YAML \" and '' escapes), or for an unquoted value drops only a
+# real trailing "# comment" (whitespace before #, so e.g. "C# tools" is kept).
+cfg_get_text() {  # <block> <key> [file=$CONFIG]
+  awk -v blk="$1" -v key="$2" '
+    $0 ~ "^" blk ":[[:space:]]*(#.*)?$" { inblk=1; next }
+    inblk && /^[^[:space:]#]/           { inblk=0 }
+    inblk && $1 == key":" {
+      line=$0
+      sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  key: "
+      sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+      if (line ~ /^"/) {                                 # double-quoted scalar
+        sub(/^"/, "", line)
+        sub(/"[[:space:]]*(#.*)?$/, "", line)            # closing quote (+ trailing comment)
+        gsub(/\\"/, "\"", line)                          # YAML \" -> "
+      } else if (line ~ /^\047/) {                       # single-quoted scalar
+        sub(/^\047/, "", line)
+        sub(/\047[[:space:]]*(#.*)?$/, "", line)
+        gsub(/\047\047/, "\047", line)                   # YAML doubled single-quote escape
+      } else {                                           # unquoted scalar
+        sub(/^#.*$/, "", line)                           # value is only a comment -> empty
+        sub(/[[:space:]]+#.*$/, "", line)                # comment only after whitespace
+        sub(/[[:space:]]+$/, "", line)
+      }
+      print line; exit
+    }
+  ' "${3:-$CONFIG}"
+}
+# ---- end config readers ----
+
 # ---- config knobs (all optional; sane fallbacks) ----
 MODEL="$(cfg_get models monitor)"
 EMAIL_TO="$(cfg_get output email_to)"
+SUBJECT_NAME="$(cfg_get_text subject name)"
 RUN_TIMEOUT="$(cfg_get monitoring run_timeout_seconds)"
 STATE_MAX_LINES="$(cfg_get monitoring state_max_lines)"
 REFRESH_DAYS="$(cfg_get governance profile_refresh_days)"
@@ -234,6 +268,17 @@ else
 fi
 
 # ---- email helpers ----
+# RFC 2047-encode a header value if it contains non-ASCII bytes (raw UTF-8 in mail
+# headers isn't portable). Pure-ASCII values pass through unchanged.
+encode_header() {  # <text> -> stdout: header-safe value
+  local s="$1"
+  if printf '%s' "$s" | LC_ALL=C grep -q '[^ -~]'; then
+    printf '=?UTF-8?B?%s?=' "$(printf '%s' "$s" | base64 | tr -d '\n')"
+  else
+    printf '%s' "$s"
+  fi
+}
+
 # Pick the first available markdown->HTML renderer (none -> empty string).
 # Always returns 0 so `renderer="$(md_renderer)"` is safe under `set -e` when no
 # renderer is installed (the common case).
@@ -294,7 +339,15 @@ HTML_FOOT
 # itself is unchanged on disk. Returns msmtp's exit status.
 email_report() {
   local to="$1" report="$2"
-  local subject="[market-monitor] $MODE $TODAY"
+  # Name the monitored subject in the Subject line so several agents (different
+  # configs) are distinguishable in one inbox; fall back to the bare tag if unset.
+  local subject
+  if [ -n "${SUBJECT_NAME:-}" ]; then
+    subject="[market-monitor: ${SUBJECT_NAME}] $MODE $TODAY"
+  else
+    subject="[market-monitor] $MODE $TODAY"
+  fi
+  subject="$(encode_header "$subject")"   # RFC 2047 if the name has non-ASCII chars
   local html
   if html="$(render_md_to_html < "$report" 2>/dev/null)" && [ -n "$html" ]; then
     local boundary="mm-${TODAY}-$$"
