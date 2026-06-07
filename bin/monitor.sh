@@ -528,6 +528,7 @@ email_report() {
       '>'*)  line="${line#>}" ;;
     esac
     [ -n "$line" ] || continue
+    line="${line//\*/}"; line="${line//\`/}"   # drop markdown emphasis/code marks
     preheader="${line:0:160}"; break
   done < "$report"
   VP_TITLE="${SUBJECT_NAME:-Market intelligence}"

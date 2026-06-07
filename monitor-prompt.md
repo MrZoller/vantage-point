@@ -120,32 +120,38 @@ the one thing that matters, group by signal, and for each item make the SO-WHAT 
 **Daily.** When there's more than one finding (items and/or trend changes), open with
 a single **bottom line** — the one thing to read if nothing else — then the material
 items. No preamble or padding otherwise.
+Write the report as **Markdown** (it renders as a polished HTML brief in mail and
+stays readable as plain text). Lead with the bottom line as a blockquote, group items
+under `##` headings by signal, and give each item a title, the SO-WHAT, an optional
+action, and a linked source + confidence:
 ```
-{date} — {N} items
-★ Bottom line: {the single most important thing this run, one sentence}
+> **Bottom line:** {the single most important thing this run, one sentence}
 
-{What changed — see below, when trends fired}
+## What changed
+{trend lines — see below, when trends fired}
 
-[opportunity]
-• {title} ({source})
-  why: {so_what in the anchor's terms}
-  do:  {recommended action — omit this line if there's no clear one}
-  → {url}  ({confidence})
-[threat] … [shift] …
+## Opportunities
+- **{title}** `[a1b2c3d4]` — {so_what in the anchor's terms}
+  *Do:* {recommended action — omit this line if there's no clear one}. [source]({url}) _({confidence})_
+
+## Threats
+- …same shape…
+
+## Shifts
+- …same shape…
 ```
-Group items under their `[signal]` (opportunity / threat / shift); within a group,
-highest score first. Drop the `★` line when there's only one finding. The `do:` line
-is optional — include it only when a concrete next step is genuinely warranted, never
-manufactured.
+Use the headings `## Opportunities` / `## Threats` / `## Shifts` (only the ones with
+items); within a group, highest score first. Drop the bottom-line blockquote when
+there's only one finding. The `*Do:*` clause is optional — include it only when a
+concrete next step is genuinely warranted, never manufactured.
 
 **What changed (trends).** Emitted when `tracking.enabled` and ≥1 change was flagged
 this run (step 6). Lead the report with it when a move outranks the day's items — a
 market move usually matters more than another release post. Each line names the
 entity, the move (direction + magnitude), the SO-WHAT for the anchor, and confidence:
 ```
-What changed
-• [↓ 12%] Tudor Black Bay 58 secondary_price_usd: $3650 → $3200 over 3 weeks
-  {so_what in the anchor's terms}  (medium)
+## What changed
+- **[↓ 12%] Tudor Black Bay 58** secondary_price_usd: $3650 → $3200 over 3 weeks — {so_what in the anchor's terms} _(medium)_
 ```
 - Daily with material items: put **What changed** first, then the items.
 - Daily with ONLY trend changes (no item cleared threshold): still write the report
