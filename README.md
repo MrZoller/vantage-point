@@ -46,7 +46,9 @@ makes the review gate a literal, diffable file promotion.
 - **jq** (`brew install jq` / `apt install jq`) — `monitor.sh` parses each run's
   JSON envelope into `state/runs.log`. Without it the run still works but logs a
   clear error and skips usage logging.
-- Optional: **msmtp** (`brew install msmtp`) for emailed reports; **gh** for repo creation.
+- Optional: **msmtp** (`brew install msmtp`) for emailed reports; a markdown
+  renderer — **cmark-gfm** (`brew install cmark-gfm`) or **pandoc** — to send those
+  emails as rendered HTML instead of raw markdown; **gh** for repo creation.
 
 ## One-time setup
 
@@ -151,6 +153,15 @@ That's the only switch — `monitor.sh` reads `output.email_to` and emails each 
 via msmtp when it's set. Leave it blank to skip email and just read reports from `kb/`.
 If `email_to` is set but msmtp isn't installed, the run still succeeds and logs a notice;
 a send failure never loses the report (it's already written to `kb/`).
+
+**Rendered HTML.** Because mail clients don't render markdown, the email is sent as
+HTML when a markdown renderer is installed — `pandoc` or `cmark-gfm`, auto-detected,
+no config needed (`brew install cmark-gfm` is the lightest). It goes out as
+`multipart/alternative`: the markdown rides along as the plain-text part, and a lightly
+styled HTML version renders in clients that support it (bare URLs become clickable). No
+renderer? It falls back to a plain-text send. Either way `kb/` stays pure markdown — only
+the email is converted. The startup-adjacent log line notes which form was sent
+(`HTML via cmark-gfm` vs `plain text`).
 
 (The `output.distribution` list in the config is documentation only — it sketches the
 intended multi-channel shape. Only `email_to` is wired today.)
