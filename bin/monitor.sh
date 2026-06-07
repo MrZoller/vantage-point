@@ -32,7 +32,33 @@ RUN_REPORT="kb/.${TODAY}.${MODE}.partial.md"
 mkdir -p state kb
 touch state/seen.jsonl
 
-echo "[monitor:$MODE] $TODAY -> $REPORT"
+# Read models.monitor from the live config with a dependency-light parse (no
+# YAML library). awk walks the `models:` block and pulls the one key, stripping
+# any inline comment and quotes. No match -> empty string (never aborts under
+# set -e, since this is an assignment).
+MODEL="$(awk '
+  $0 ~ /^models:[[:space:]]*(#.*)?$/ { inblk=1; next }
+  inblk && /^[^[:space:]#]/         { inblk=0 }
+  inblk && $1 == "monitor:" {
+    line=$0
+    sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  monitor: "
+    sub(/[[:space:]]*#.*$/, "", line)                  # drop trailing comment
+    gsub(/[[:space:]]/, "", line)                      # drop surrounding space
+    gsub(/["\047]/, "", line)                          # drop quotes
+    print line; exit
+  }
+' "$CONFIG")"
+
+# Fall back to the CLI default by omitting --model when the key is absent/blank.
+# Print a notice so a typo'd config is visible rather than silently defaulting.
+MODEL_ARGS=()
+if [ -n "$MODEL" ]; then
+  MODEL_ARGS=(--model "$MODEL")
+else
+  echo "[monitor:$MODE] models.monitor not set in $CONFIG — using CLI default model" >&2
+fi
+
+echo "[monitor:$MODE] model=${MODEL:-(CLI default)} $TODAY -> $REPORT"
 
 # Clear only this run's scratch file (a leftover from an aborted earlier run).
 # $REPORT itself is left untouched until claude succeeds.
@@ -63,6 +89,7 @@ Write the $MODE report to ./$RUN_REPORT, following the report rules in the promp
 above — including the show_borderline / 'Considered (below threshold)' handling.
 For a daily run, if those rules produce no report at all, write NOTHING to the
 report file and print exactly NO_MATERIAL_ITEMS." \
+  ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
   --permission-mode acceptEdits \

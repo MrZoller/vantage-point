@@ -20,6 +20,15 @@
 
 version: 1
 
+# Which Claude model each agent runs on. bootstrap is infrequent and depth
+# matters, so it's worth spending Opus there; monitor runs daily doing shallow
+# scoring, so keep it cheap on Sonnet. Values may be aliases ("opus"/"sonnet")
+# or full model IDs — what's accepted depends on your plan and Claude Code
+# version. Remove or blank a key to fall back to the CLI default model.
+models:
+  bootstrap: opus     # infrequent; depth matters — spend here
+  monitor:   sonnet   # daily, shallow scoring — keep it cheap
+
 subject:
   name: "Mechanical & microbrand wristwatches"
   description: >
