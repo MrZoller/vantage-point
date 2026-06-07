@@ -11,6 +11,11 @@
 #   ./bin/install-launchd.sh uninstall  # unload + remove both agents
 set -euo pipefail
 
+# Make ${var//pat/repl} a strictly literal replace on every bash. Bash 5.2
+# otherwise treats '&' in the replacement as the matched text (patsub_replacement),
+# which would corrupt a checkout path containing '&'. No-op on bash < 5.2.
+shopt -u patsub_replacement 2>/dev/null || true
+
 # Project root = parent of this script's bin/ dir. This is what gets baked into
 # the generated plists, so the schedules always point at THIS checkout.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,8 +47,15 @@ for label in "${LABELS[@]}"; do
   dst="$LA_DIR/$label.plist"
   [ -f "$src" ] || { echo "missing template $src" >&2; exit 1; }
 
-  # Bake the real path in; '|' delimiter avoids clashing with '/' in the path.
-  sed "s|__MM_ROOT__|$ROOT|g" "$src" > "$dst"
+  # XML-escape the path before injecting it, so a checkout path containing &, <
+  # or > still produces a valid plist (otherwise launchd installs a broken agent).
+  # Escape & first, or it would re-escape the & in the entities added afterwards.
+  root_xml="$ROOT"
+  root_xml="${root_xml//&/&amp;}"
+  root_xml="${root_xml//</&lt;}"
+  root_xml="${root_xml//>/&gt;}"
+  template="$(cat "$src")"
+  printf '%s\n' "${template//__MM_ROOT__/$root_xml}" > "$dst"
 
   # Catch a malformed plist before launchd does (no-op if plutil is absent).
   if command -v plutil >/dev/null 2>&1; then
