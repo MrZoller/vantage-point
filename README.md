@@ -234,7 +234,8 @@ model (with a one-line notice on stderr) — nothing is hardcoded.
   monitor here). Daily recurring runs are exactly the use case the $200 Max tier's
   extra headroom buys you.
 - **Where output goes.** Reports land in `kb/YYYY-MM-DD.{daily,weekly}.md`; stderr
-  for each run is alongside as `.err`. Email delivery is wired and active whenever
+  for each monitor run is alongside as `.err` (bootstrap logs to `bootstrap.err` at
+  the repo root). Email delivery is wired and active whenever
   `output.email_to` is set (sent via msmtp — see "Email delivery" above); the
   Slack/Telegram lines in `monitor.sh`'s deliver block are commented placeholders
   to wire up if you want another channel.

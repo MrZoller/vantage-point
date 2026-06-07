@@ -375,6 +375,42 @@ test_full_run() {
 }
 test_full_run
 
+echo "== monitor.sh: wraps the claude run in timeout when run_timeout_seconds > 0 =="
+test_run_timeout_wrap() {
+  local repo="$TMP/torepo" out rc marker="$TMP/timeout_used"
+  make_fake_repo "$repo" "2099-01-01" 1800     # run_timeout_seconds = 1800 (> 0)
+  # A stub `timeout` (first on PATH) that records it was used, then runs the wrapped cmd.
+  cat > "$repo/stub/timeout" <<'SH'
+#!/usr/bin/env bash
+echo used >> "$TIMEOUT_USED"
+shift          # drop the duration argument
+exec "$@"
+SH
+  chmod +x "$repo/stub/timeout"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( TIMEOUT_USED="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "wrapped run exits 0" "0" "$rc"
+  if [ -f "$marker" ]; then pass "the claude run is wrapped in timeout"; else fail "the claude run is wrapped in timeout"; fi
+}
+test_run_timeout_wrap
+
+echo "== monitor.sh: a wall-clock timeout fails the run and cleanup surfaces it =="
+test_run_timeout_expiry() {
+  local repo="$TMP/toexprepo" out rc
+  make_fake_repo "$repo" "2099-01-01" 1800
+  # A stub `timeout` that simulates expiry: exit 124 (timeout's convention) without claude.
+  printf '#!/usr/bin/env bash\nexit 124\n' > "$repo/stub/timeout"
+  chmod +x "$repo/stub/timeout"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  if [ "$rc" -ne 0 ]; then pass "a timed-out run exits nonzero"; else fail "a timed-out run exits nonzero"; fi
+  assert_contains "cleanup surfaces the failure" "$out" "run FAILED"
+  if [ -d "$repo/state/.lock" ]; then fail "lock released after a timeout"; else pass "lock released after a timeout"; fi
+}
+test_run_timeout_expiry
+
 # A stub claude that, on the triage call, writes a report + a deep-dive queue with a
 # high-scoring item, and on the deep-dive call (prompt contains DEEPDIVE_FIXTURE)
 # records that it ran. Used by the two-pass tests.
@@ -620,21 +656,43 @@ PY
 }
 test_feedback_state_file
 
-echo "== dedupe-feedback.py: latest verdict per id wins (used by bootstrap) =="
+echo "== dedupe-feedback.py: latest verdict per id wins BY TIMESTAMP (used by bootstrap) =="
 test_feedback_dedupe() {
   local fb="$TMP/fb.jsonl" out
+  # The latest grade ('down', 2026-06-02) is placed BEFORE the older one on purpose, so
+  # this fails if dedup ever falls back to "last line in the file wins" (append order).
   printf '%s\n' \
-    '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' \
+    '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
     'MALFORMED {oops' \
     'null' \
-    '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
+    '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' \
     '{"timestamp":"2026-06-01T00:00:00Z","id":"xyz","verdict":"up"}' > "$fb"
   out="$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb")"
   assert_eq "regraded + valid ids collapse to one row each (bad/null lines skipped)" "2" "$(printf '%s\n' "$out" | grep -c .)"
-  assert_contains "the regraded id keeps its latest verdict" "$out" '"id": "abc", "verdict": "down"'
+  assert_contains "the regraded id keeps its newest-timestamp verdict" "$out" '"id": "abc", "verdict": "down"'
   assert_eq "the stale up verdict for abc is dropped (only xyz is up)" "1" "$(printf '%s\n' "$out" | grep -c '"verdict": "up"')"
 }
 test_feedback_dedupe
+
+echo "== feedback-server.py: latest_verdicts picks the newest timestamp, not file order =="
+test_feedback_latest_verdict() {
+  local repo="$TMP/fbverdict" out
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/feedback-server.py" "$repo/bin/"
+  # Newest grade ('down') appears first; append-order would wrongly return 'up'.
+  printf '%s\n' \
+    '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
+    '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' > "$repo/state/feedback.jsonl"
+  out="$(python3 - "$repo/bin/feedback-server.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fb", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("VERDICT", m.latest_verdicts().get("abc"))
+PY
+)"
+  assert_contains "returns the newest-timestamp verdict" "$out" "VERDICT down"
+}
+test_feedback_latest_verdict
 
 echo "== monitor.sh: email Subject names the monitored subject =="
 test_email_subject() {

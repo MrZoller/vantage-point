@@ -43,6 +43,8 @@ touch state/observations.jsonl   # the dedup state file is touched once STATE_FI
 # Read a single scalar `key:` nested under a top-level YAML `block:` from a config
 # file, dependency-light (no YAML lib). Prints the value (comment/quotes/space
 # stripped) or nothing. Always returns 0, so `x="$(cfg_get ...)"` is safe under set -e.
+# NOTE: matches `key:` at ANY indentation within the block (first match wins), so don't
+# add a sub-block whose child key collides with a sibling key you read from that block.
 cfg_get() {  # <block> <key> [file=$CONFIG]
   awk -v blk="$1" -v key="$2" '
     $0 ~ "^" blk ":[[:space:]]*(#.*)?$" { inblk=1; next }
@@ -132,6 +134,9 @@ LOCK="state/.lock"
 LOCK_SETUP_GRACE=30   # secs a lock may sit without an owner token before its creator is assumed dead
 
 proc_start() {  # normalized start time of pid $1 (empty if it isn't running)
+  # If ps lacks `-o lstart=` (rare), this is empty for every pid and the staleness
+  # guarantee degrades to PID-only — still consistent (a live owner matches itself),
+  # just without recycled-PID detection.
   ps -o lstart= -p "$1" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'
 }
 

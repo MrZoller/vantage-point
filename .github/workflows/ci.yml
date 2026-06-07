@@ -19,7 +19,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # shellcheck is an OS-independent static analyzer and isn't preinstalled on
       # the macOS runner image, so run it on Linux only. The macOS leg still runs

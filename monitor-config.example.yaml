@@ -103,6 +103,9 @@ monitoring:
     # The pattern that gets read instead of muted:
     daily:  { mode: terse,  send_if_empty: false }   # silent on "nothing material"
     weekly: { mode: digest, day: Mon, time: "07:00" }
+    # NOTE: cadence shapes the agent's behavior (mode/send_if_empty), but the actual
+    # run *times* live in the launchd plists (bin/install-launchd.sh) -- editing the
+    # day/time here does not reschedule anything; change the plists for that.
   lookback_hours: 30          # small overlap so runs don't leave gaps
   state_file: ./state/seen.jsonl    # longitudinal memory -> dedup + "is this NEW?"
   # Reliability knobs (read by bin/monitor.sh; all optional with sane defaults):

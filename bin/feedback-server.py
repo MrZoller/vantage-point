@@ -112,12 +112,21 @@ def recent_items():
 
 
 def latest_verdicts():
-    """id -> most recent verdict, from the feedback log."""
-    verdicts = {}
+    """id -> most recent verdict (by timestamp), from the feedback log.
+
+    The log is append-only, but pick by timestamp rather than file order so a manual
+    edit/merge that reorders rows still surfaces the genuinely latest grade. ISO-8601
+    UTC timestamps compare lexicographically; ties keep the later line.
+    """
+    latest = {}   # id -> record
     for rec in read_jsonl(FEEDBACK):
-        if rec.get("id"):
-            verdicts[rec["id"]] = rec.get("verdict")
-    return verdicts
+        rid = rec.get("id")
+        if not rid:
+            continue
+        prev = latest.get(rid)
+        if prev is None or rec.get("timestamp", "") >= prev.get("timestamp", ""):
+            latest[rid] = rec
+    return {rid: rec.get("verdict") for rid, rec in latest.items()}
 
 
 def record(item, verdict):
