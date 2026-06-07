@@ -342,7 +342,7 @@ write_twopass_stub() {  # $1 = repo
 case "$*" in
   *DEEPDIVE_FIXTURE*)                       # the deep-dive pass
     [ -n "${DD_MARKER:-}" ] && echo "ran" >> "$DD_MARKER"
-    printf '{"num_turns":2,"total_cost_usd":0.0}\n'; exit 0 ;;
+    printf '{"num_turns":2,"total_cost_usd":0.0}\n'; exit "${DD_EXIT:-0}" ;;
   *)                                        # the triage pass
     printf '# report\n* item\n' > "kb/.$(date +%F).daily.partial.md"
     printf '{"url":"u","title":"t","signal":"opportunity","score":0.9,"so_what":"x"}\n' \
@@ -381,6 +381,20 @@ test_deepdive_disabled() {
   if [ -f "$dd" ]; then fail "deep-dive pass NOT invoked when disabled"; else pass "deep-dive pass NOT invoked when disabled"; fi
 }
 test_deepdive_disabled
+
+echo "== monitor.sh: a failed deep-dive keeps the triage report =="
+test_deepdive_failure() {
+  local repo="$TMP/ddfailrepo" out rc
+  make_fake_repo "$repo"
+  write_twopass_stub "$repo"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( DD_EXIT=1 HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run still exits 0 despite deep-dive failure" "0" "$rc"
+  assert_contains "warns that the deep-dive failed" "$out" "deep-dive failed"
+  if [ -f "$repo/kb/$(date +%F).daily.md" ]; then pass "triage report still promoted"; else fail "triage report still promoted"; fi
+}
+test_deepdive_failure
 
 echo "== dashboard.sh: renders entities, sparklines, events, report links =="
 test_dashboard() {

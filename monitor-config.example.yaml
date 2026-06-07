@@ -28,9 +28,9 @@ version: 1
 models:
   bootstrap: opus     # infrequent; depth matters — spend here
   monitor:   sonnet   # daily, shallow scoring — keep it cheap
-  deepdive:  opus     # OPTIONAL second pass: investigate + corroborate the few
-                      # highest-scoring items on a stronger model. Remove this key
-                      # to disable the deep-dive pass entirely (monitor stays single-pass).
+  # deepdive: opus    # OPTIONAL second pass, OFF by default. Uncomment to enable:
+                      # investigate + corroborate the few highest-scoring items on a
+                      # stronger model (see monitoring.deepdive_* and the README).
 
 subject:
   name: "Mechanical & microbrand wristwatches"

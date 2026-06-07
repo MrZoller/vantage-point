@@ -319,9 +319,9 @@ read a report rendered via VS Code's markdown preview, or in the emailed HTML.
 
 ## Deep dive (two-pass investigation)
 
-The daily monitor is intentionally cheap and shallow. Set **`models.deepdive`** and it
-gains a second pass on a stronger model that runs *only* on the handful of items triage
-scored highest:
+The daily monitor is intentionally cheap and shallow. It's single-pass by default —
+uncomment **`models.deepdive`** in your config to add a second pass on a stronger model
+that runs *only* on the handful of items triage scored highest:
 
 1. **Triage** (the `monitor` model) sweeps, scores, and reports as usual, and queues
    its top survivors — those scoring `>= monitoring.deepdive_threshold` (default 0.85),

@@ -299,9 +299,17 @@ log_usage triage "$RUN_JSON"
 # Runs only when models.deepdive is set AND triage produced a report with queued
 # candidates — so most days there's no second call and cost is unchanged.
 if [ -n "$DEEPDIVE_MODEL" ] && [ -s "$RUN_REPORT" ] && [ -s "$QUEUE" ]; then
+  # Enforce the cost guard in code: never investigate more than deepdive_max_items,
+  # no matter what triage queued.
+  head -n "$DEEPDIVE_MAX" "$QUEUE" > "$QUEUE.tmp" && mv "$QUEUE.tmp" "$QUEUE"
   n_dd="$(wc -l < "$QUEUE" | tr -d ' ')"
-  echo "[monitor:$MODE] deep-dive: investigating $n_dd item(s) on $DEEPDIVE_MODEL" >&2
+  echo "[monitor:$MODE] deep-dive: investigating $n_dd item(s) (cap $DEEPDIVE_MAX) on $DEEPDIVE_MODEL" >&2
   if [ -f "$DEEPDIVE_PROMPT" ]; then
+    # The deep-dive enriches $RUN_REPORT in place. Back it up first so a failed or
+    # timed-out deep pass can't suppress (or leave half-edited) the valid triage
+    # report — enrichment is optional; the triage report must survive.
+    cp "$RUN_REPORT" "$RUN_REPORT.pre-dd"
+    dd_rc=0
     DD_JSON="$(${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} claude -p "$(cat "$DEEPDIVE_PROMPT")
 
 ---
@@ -332,9 +340,17 @@ report's structure." \
       --permission-mode acceptEdits \
       --max-turns 40 \
       --output-format json \
-      2>> "kb/${TODAY}.${MODE}.err")"
-    log_usage deepdive "$DD_JSON"
-    echo "[monitor:$MODE] deep-dive complete" >&2
+      2>> "kb/${TODAY}.${MODE}.err")" || dd_rc=$?
+    if [ "$dd_rc" -eq 0 ]; then
+      log_usage deepdive "$DD_JSON"
+      rm -f "$RUN_REPORT.pre-dd"
+      echo "[monitor:$MODE] deep-dive complete" >&2
+    else
+      # Failed/timed out: restore the pristine triage report and carry on. The
+      # report still ships; it just isn't enriched.
+      mv -f "$RUN_REPORT.pre-dd" "$RUN_REPORT"
+      echo "[monitor:$MODE] WARNING: deep-dive failed (exit $dd_rc) — keeping the triage report" >&2
+    fi
   else
     echo "[monitor:$MODE] WARNING: $DEEPDIVE_PROMPT missing — skipping deep-dive (triage report stands)" >&2
   fi
