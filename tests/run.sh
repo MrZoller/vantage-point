@@ -558,6 +558,29 @@ test_feedback_server() {
 }
 test_feedback_server
 
+echo "== feedback-server.py: review UI honors monitoring.state_file =="
+test_feedback_state_file() {
+  local repo="$TMP/fbstate" out
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/feedback-server.py" "$repo/bin/"
+  printf 'monitoring:\n  state_file: ./state/custom-seen.jsonl   # relocated dedup file\n' \
+    > "$repo/monitor-config.yaml"
+  printf '{"id":"c1","title":"Custom-path item","signal":"opportunity","score":0.8,"url":"https://z"}\n' \
+    > "$repo/state/custom-seen.jsonl"
+  # Import the server module (no HTTP needed) so SEEN resolves against the repo's config.
+  out="$(python3 - "$repo/bin/feedback-server.py" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("fb", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("SEEN_BASENAME", os.path.basename(m.SEEN))
+print("TITLES", "|".join(i.get("title", "") for i in m.recent_items()))
+PY
+)"
+  assert_contains "resolves SEEN to the configured state_file" "$out" "SEEN_BASENAME custom-seen.jsonl"
+  assert_contains "review UI reads items from the configured state_file" "$out" "Custom-path item"
+}
+test_feedback_state_file
+
 echo "== dedupe-feedback.py: latest verdict per id wins (used by bootstrap) =="
 test_feedback_dedupe() {
   local fb="$TMP/fb.jsonl" out
