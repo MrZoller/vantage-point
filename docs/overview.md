@@ -17,9 +17,11 @@ For setup and operations, see the [README](../README.md).
   priorities, not in the abstract. It explains *why something matters and what to do*,
   detects **trends** (not just events), **corroborates** before surfacing (no rumor
   spam), and **learns** from thumbs-up/down feedback.
-- **Why it's trustworthy:** a human approves its understanding before it runs, it cites
-  every source, it stays quiet on slow days, and it runs on infrastructure and a
-  subscription you control — no new vendor, and public data stays where it is.
+- **Why it's trustworthy:** a human approves its understanding before anything runs, it
+  cites every source, and it runs on your own machine and existing Claude subscription —
+  no extra vendor to onboard. (The analysis runs *through* Claude, so the profile and the
+  content it reads are sent to Anthropic like any Claude Code use — see the data note
+  under [Why it's trustworthy](#why-its-trustworthy).)
 
 ---
 
@@ -41,8 +43,8 @@ why, or what to do about it.*
 | Keyword matches, in the abstract | Scored against a defined stakeholder's interests (an "anchor") |
 | A link with a headline | The **so-what** + a suggested action + a confidence level |
 | Point-in-time events | **Trend detection** — price moves, repeated signals, hiring spikes over time |
-| Repeats rumors | **Corroborates** across independent sources; flags the unconfirmed |
-| Fires on everything | **Silence beats noise** — nothing on empty days |
+| Repeats rumors | **Corroborates** across independent sources (optional deep-dive pass); flags the unconfirmed |
+| Fires on everything | **Silence beats noise** — nothing on empty days (once tuned) |
 | Static | **Learns** from 👍/👎 feedback and gets more relevant over time |
 
 ## How it works
@@ -60,17 +62,20 @@ flowchart LR
   P --> M
   M -->|score + detect what changed| R
   M -->|top items only| DD --> R
-  R --> G --> P
+  R --> G -->|re-run research, then approve| P
 ```
 
 1. **Profile (once).** The agent does deep research to build a profile of the market,
    the stakeholder's interests, and a scoring rubric — then **a human reviews and
    approves it.** Nothing is trusted until a person signs off (the quality gate).
 2. **Monitor (daily/weekly).** It sweeps sources, scores each item against the profile,
-   notices what's *changed* since last time, and — for the few highest-value items —
-   does a deeper pass that **corroborates across multiple sources** before surfacing.
+   and notices what's *changed* since last time. With the optional **deep-dive** pass
+   enabled, the few highest-value items get a deeper look that **corroborates across
+   multiple sources** before surfacing.
 3. **Brief + learn.** It delivers a tight report (email and/or a dashboard). Items get
-   graded up/down; the next refresh folds that feedback into the rubric.
+   graded up/down, and those grades feed the **next profile refresh** — a re-run of the
+   research step that you review and approve. Grading sharpens relevance at the next
+   refresh; it doesn't change scoring automatically mid-stream.
 
 ## What you actually receive
 
@@ -122,12 +127,20 @@ digest can drop straight into a review meeting or planning agenda.
 
 - **Human-in-the-loop.** A person approves the agent's understanding before it's used,
   and people make the decisions — it surfaces and interprets, it doesn't act on its own.
-- **Corroboration.** High-value items are verified across independent sources; anything
-  unconfirmed is flagged or downgraded, not amplified.
-- **Cites everything.** Every surfaced item links to its source.
-- **No noise.** It sends nothing when nothing's material — it won't train people to mute it.
-- **Private & self-hosted.** It runs on a machine you control; it reads **public** sources
-  and keeps the priorities and output local — no third-party SaaS ingesting your strategy.
+- **Corroboration (when enabled).** With the optional deep-dive pass turned on, high-value
+  items are verified across independent sources and anything unconfirmed is flagged or
+  downgraded. (Without it, the monitor is single-pass — items are scored and surfaced but
+  not independently cross-checked.)
+- **Cites everything.** Every surfaced item links to its source, so it's one click to verify.
+- **No noise (once tuned).** A tuned monitor stays silent on days with nothing material.
+  During initial calibration a "near-misses" tuning aid is on by default and can still
+  send a short digest on quiet days; you switch it off once the rubric is dialed in.
+- **Self-hosted, no extra vendor.** It runs on a machine you control on your existing
+  Claude subscription — there's no additional SaaS product collecting your data, and the
+  reports/state stay on your box. **Data note:** the analysis runs *through* Claude, so
+  the profile/config and the public content it reads are sent to Anthropic as part of
+  normal Claude Code usage. Treat the config the way you'd treat anything you send your
+  LLM provider, and govern sensitive material under your Claude/Anthropic data terms.
 - **Cost-bounded.** Runs on an existing Claude subscription, with guards on how much work
   each run can do.
 
@@ -149,8 +162,12 @@ Low commitment, low cost:
 
 1. **Pick a scope** — one market + one anchor (e.g., a competitive set, or a target list).
 2. **Seed & approve** the profile (~30 minutes with someone who knows the space).
-3. **Run it for 2–3 weeks**, spending ~2 minutes a day grading items so it calibrates.
-4. **Review the weekly digest** and decide whether it earns a standing slot.
+3. **Run it for 2–3 weeks**, spending ~2 minutes a day grading items. Partway through,
+   **re-run the research step** to fold those grades into a refreshed, re-approved profile
+   — that's when relevance visibly improves (grading alone doesn't change scoring until
+   the refresh).
+4. **Review the weekly digest** and decide whether it earns a standing slot. Once the
+   rubric feels right, turn off the borderline tuning aid for quieter empty days.
 
 Nothing is locked in — if it's not pulling its weight, stop. It can be re-pointed at a
 different market by swapping the config and re-running the research step.
