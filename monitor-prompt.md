@@ -132,7 +132,7 @@ action, and a linked source + confidence:
 
 ## Opportunities
 - **{title}** `[a1b2c3d4]` — {so_what in the anchor's terms}
-  *Do:* {recommended action — omit this line if there's no clear one}. [source]({url}) _({confidence})_
+  [source]({url}) _({confidence})_ — *Do:* {recommended action; drop the "Do:" part when none is warranted}
 
 ## Threats
 - …same shape…
@@ -142,8 +142,9 @@ action, and a linked source + confidence:
 ```
 Use the headings `## Opportunities` / `## Threats` / `## Shifts` (only the ones with
 items); within a group, highest score first. Drop the bottom-line blockquote when
-there's only one finding. The `*Do:*` clause is optional — include it only when a
-concrete next step is genuinely warranted, never manufactured.
+there's only one finding. Every item ALWAYS carries its `[source](url)` and
+`_(confidence)_`; only the trailing `*Do:*` clause is optional — add it when a concrete
+next step is genuinely warranted, never manufactured.
 
 **What changed (trends).** Emitted when `tracking.enabled` and ≥1 change was flagged
 this run (step 6). Lead the report with it when a move outranks the day's items — a

@@ -424,7 +424,15 @@ render_md_to_html() {
 }
 
 # Minimal HTML escape for values we drop into the template chrome (subject, etc.).
-_esc() { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
+# bash 5.2+ defaults patsub_replacement ON, which expands '&' in a ${//} replacement
+# to the matched text and would mangle < / > into <lt; / >gt;; disable it so the
+# replacements stay literal (no-op on bash 3.2, which has no such option).
+_esc() {
+  local s="$1"
+  shopt -u patsub_replacement 2>/dev/null || true
+  s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"
+  printf '%s' "$s"
+}
 
 # stdin: HTML body fragment -> stdout: full styled HTML document. A <style> block
 # (not inline styles) renders in the mail/preview clients this tool targets and keeps
