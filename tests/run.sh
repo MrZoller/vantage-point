@@ -182,6 +182,98 @@ PY
 }
 test_email_helpers
 
+# Build an isolated, runnable monitor.sh checkout that needs no real claude: minimal
+# config/profile/prompt + a stub `claude` that records its invocation and prints a
+# JSON envelope without writing a report (so the run ends "nothing material").
+make_fake_repo() {
+  local repo="$1" lastboot="${2:-2099-01-01}"
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
+  cp "$ROOT/bin/monitor.sh" "$repo/bin/"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  monitor: sonnet
+monitoring:
+  run_timeout_seconds: 0
+  state_max_lines: 5
+governance:
+  profile_refresh_days: 30
+output:
+  email_to: ""
+YAML
+  cat > "$repo/profile.yaml" <<YAML
+subject:
+  derived:
+    last_bootstrapped: $lastboot
+anchor:
+  derived:
+    last_bootstrapped: $lastboot
+YAML
+  printf 'monitor prompt (test fixture)\n' > "$repo/monitor-prompt.md"
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_RAN:-}" ] && : > "$CLAUDE_RAN"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+}
+
+echo "== monitor.sh: skips when a live lock is held =="
+test_lock_skip() {
+  local repo="$TMP/lockrepo" out rc
+  make_fake_repo "$repo"
+  mkdir -p "$repo/state/.lock.daily"
+  echo "$$" > "$repo/state/.lock.daily/pid"   # owned by this (live) test process
+  local marker="$repo/claude_ran"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "skip exits 0" "0" "$rc"
+  assert_contains "prints 'in progress — skipping'" "$out" "in progress — skipping"
+  if [ -f "$marker" ]; then fail "claude was NOT invoked while locked"; else pass "claude was NOT invoked while locked"; fi
+}
+test_lock_skip
+
+echo "== monitor.sh: reclaims stale lock, prunes state, warns on stale profile =="
+test_full_run() {
+  local repo="$TMP/runrepo" out rc
+  make_fake_repo "$repo" "2000-01-01"                 # old profile -> staleness warning
+  seq 1 20 | sed 's/^/{"n":/; s/$/}/' > "$repo/state/seen.jsonl"   # 20 lines > state_max_lines (5)
+  mkdir -p "$repo/state/.lock.daily"
+  echo "2147483646" > "$repo/state/.lock.daily/pid"   # a pid that isn't running -> stale
+  local marker="$repo/claude_ran"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run exits 0" "0" "$rc"
+  assert_contains "reclaims the stale lock" "$out" "reclaiming stale lock"
+  assert_contains "prunes oversized state" "$out" "pruned state/seen.jsonl"
+  assert_contains "warns on stale profile" "$out" "profile is"
+  if [ -f "$marker" ]; then pass "claude ran after reclaiming the lock"; else fail "claude ran after reclaiming the lock"; fi
+  local n; n="$(wc -l < "$repo/state/seen.jsonl" | tr -d ' ')"
+  assert_eq "seen.jsonl pruned to state_max_lines" "5" "$n"
+  if [ -d "$repo/state/.lock.daily" ]; then fail "lock released on exit"; else pass "lock released on exit"; fi
+}
+test_full_run
+
+echo "== usage.sh: rolls up runs.log within the window =="
+test_usage() {
+  local repo="$TMP/usagerepo" out now
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/usage.sh" "$repo/bin/"
+  now="$(date -u +%FT%TZ)"
+  {
+    printf '{"timestamp":"%s","mode":"daily","num_turns":10,"cost_usd":0.02}\n' "$now"
+    printf '{"timestamp":"%s","mode":"weekly","num_turns":30,"cost_usd":0.10}\n' "$now"
+    printf '{"timestamp":"2000-01-01T00:00:00Z","mode":"daily","num_turns":99,"cost_usd":9.99}\n'
+  } > "$repo/state/runs.log"
+  out="$( bash "$repo/bin/usage.sh" 30 2>&1 )"
+  assert_contains "counts only in-window runs" "$out" "runs:    2"
+  assert_contains "sums turns in window (40, not 139)" "$out" "turns:   40"
+}
+test_usage
+
 echo
 echo "tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
