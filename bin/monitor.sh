@@ -50,9 +50,29 @@ cfg_get() {  # <block> <key> [file=$CONFIG]
   ' "${3:-$CONFIG}"
 }
 
+# Like cfg_get but PRESERVES internal spaces — for human-readable values such as
+# subject.name. Trims ends, then unwraps surrounding quotes (taking the quoted text
+# literally) or, if unquoted, drops a trailing "# comment".
+cfg_get_text() {  # <block> <key> [file=$CONFIG]
+  awk -v blk="$1" -v key="$2" '
+    $0 ~ "^" blk ":[[:space:]]*(#.*)?$" { inblk=1; next }
+    inblk && /^[^[:space:]#]/           { inblk=0 }
+    inblk && $1 == key":" {
+      line=$0
+      sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  key: "
+      sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+      if (line ~ /^".*"/)         { sub(/^"/, "", line); sub(/".*$/, "", line) }
+      else if (line ~ /^\047.*\047/) { sub(/^\047/, "", line); sub(/\047.*$/, "", line) }
+      else                        { sub(/[[:space:]]*#.*$/, "", line); sub(/[[:space:]]+$/, "", line) }
+      print line; exit
+    }
+  ' "${3:-$CONFIG}"
+}
+
 # ---- config knobs (all optional; sane fallbacks) ----
 MODEL="$(cfg_get models monitor)"
 EMAIL_TO="$(cfg_get output email_to)"
+SUBJECT_NAME="$(cfg_get_text subject name)"
 RUN_TIMEOUT="$(cfg_get monitoring run_timeout_seconds)"
 STATE_MAX_LINES="$(cfg_get monitoring state_max_lines)"
 REFRESH_DAYS="$(cfg_get governance profile_refresh_days)"
@@ -294,7 +314,14 @@ HTML_FOOT
 # itself is unchanged on disk. Returns msmtp's exit status.
 email_report() {
   local to="$1" report="$2"
-  local subject="[market-monitor] $MODE $TODAY"
+  # Name the monitored subject in the Subject line so several agents (different
+  # configs) are distinguishable in one inbox; fall back to the bare tag if unset.
+  local subject
+  if [ -n "${SUBJECT_NAME:-}" ]; then
+    subject="[market-monitor: ${SUBJECT_NAME}] $MODE $TODAY"
+  else
+    subject="[market-monitor] $MODE $TODAY"
+  fi
   local html
   if html="$(render_md_to_html < "$report" 2>/dev/null)" && [ -n "$html" ]; then
     local boundary="mm-${TODAY}-$$"
