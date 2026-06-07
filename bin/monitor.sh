@@ -21,6 +21,7 @@ CONFIG="monitor-config.yaml"
 PROFILE="profile.yaml"
 PROMPT="monitor-prompt.md"
 DEEPDIVE_PROMPT="deepdive-prompt.md"
+EDITOR_PROMPT="editor-prompt.md"
 TODAY="$(date +%F)"
 REPORT="kb/${TODAY}.${MODE}.md"
 # This run writes here; we promote it to $REPORT only after claude exits 0, so a
@@ -95,6 +96,7 @@ cfg_get_text() {  # <block> <key> [file=$CONFIG]
 # ---- config knobs (all optional; sane fallbacks) ----
 MODEL="$(cfg_get models monitor)"
 DEEPDIVE_MODEL="$(cfg_get models deepdive)"   # unset -> no deep-dive pass (triage only)
+EDITOR_MODEL="$(cfg_get models editor)"       # unset -> no editorial pass (deliver as-written)
 EMAIL_TO="$(cfg_get output email_to)"
 DASHBOARD="$(cfg_get output dashboard)"
 STATE_FILE="$(cfg_get monitoring state_file)"      # dedup memory; honored, not hardcoded
@@ -199,6 +201,8 @@ else
 fi
 DEEPDIVE_MODEL_ARGS=()
 [ -n "$DEEPDIVE_MODEL" ] && DEEPDIVE_MODEL_ARGS=(--model "$DEEPDIVE_MODEL")
+EDITOR_MODEL_ARGS=()
+[ -n "$EDITOR_MODEL" ] && EDITOR_MODEL_ARGS=(--model "$EDITOR_MODEL")
 
 # Wall-clock bound on the claude run so a network stall can't hang the job forever.
 # 0 disables it; needs timeout/gtimeout (coreutils) - skipped with a note if absent.
@@ -243,7 +247,7 @@ if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
   fi
 fi
 
-echo "[monitor:$MODE] model=${MODEL:-(CLI default)}${DEEPDIVE_MODEL:+ deepdive=$DEEPDIVE_MODEL} $TODAY -> $REPORT"
+echo "[monitor:$MODE] model=${MODEL:-(CLI default)}${DEEPDIVE_MODEL:+ deepdive=$DEEPDIVE_MODEL}${EDITOR_MODEL:+ editor=$EDITOR_MODEL} $TODAY -> $REPORT"
 
 # Clear this run's scratch files (leftovers from an aborted earlier run).
 # $REPORT itself is left untouched until claude succeeds.
@@ -383,6 +387,64 @@ report's structure." \
   fi
 fi
 rm -f "$QUEUE"
+
+# ---- editorial pass (optional; curate + polish the report before delivery) ----
+# A dedicated editor runs ONLY when models.editor is set AND triage produced a report
+# to deliver, so silent days cost nothing. It re-orders, cuts marginal items, and
+# tightens prose to the house style - WITHOUT adding facts, changing figures, or
+# dropping any item's source/confidence. Runs after deep-dive (it polishes the
+# enriched report) and is non-destructive: a failed or report-emptying pass restores
+# the pre-edit report and ships that.
+if [ -n "$EDITOR_MODEL" ] && [ -s "$RUN_REPORT" ]; then
+  if [ -f "$EDITOR_PROMPT" ]; then
+    echo "[monitor:$MODE] editorial pass on $EDITOR_MODEL" >&2
+    cp "$RUN_REPORT" "$RUN_REPORT.pre-ed"
+    ed_rc=0
+    ED_JSON="$(${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} claude -p "$(cat "$EDITOR_PROMPT")
+
+---
+RUN MODE: $MODE
+TODAY: $TODAY
+
+Config (subject, anchor, scope, rubric context):
+\`\`\`yaml
+$(cat "$CONFIG")
+\`\`\`
+
+Approved profile - YOUR GROUND TRUTH:
+\`\`\`yaml
+$(cat "$PROFILE")
+\`\`\`
+
+The drafted report to edit IN PLACE is ./$RUN_REPORT. Edit it per the prompt above:
+lead with the single most important finding, order by importance, cut or merge
+marginal items, and tighten to the house style. Keep the Markdown shape (bottom-line
+blockquote, ## sections, item ids). Do NOT add facts, change any figure, or remove an
+item's source link or confidence." \
+      ${EDITOR_MODEL_ARGS[@]+"${EDITOR_MODEL_ARGS[@]}"} \
+      --allowedTools "Read,Write,Edit" \
+      --disallowedTools "Bash,WebSearch,WebFetch" \
+      --permission-mode acceptEdits \
+      --max-turns 15 \
+      --output-format json \
+      2>> "kb/${TODAY}.${MODE}.err")" || ed_rc=$?
+    if [ "$ed_rc" -eq 0 ] && [ -s "$RUN_REPORT" ]; then
+      log_usage editor "$ED_JSON"
+      rm -f "$RUN_REPORT.pre-ed"
+      echo "[monitor:$MODE] editorial pass complete" >&2
+    else
+      if [ "$ed_rc" -eq 0 ]; then log_usage editor "$ED_JSON"; fi   # it ran; account for spend
+      mv -f "$RUN_REPORT.pre-ed" "$RUN_REPORT"
+      if [ "$ed_rc" -eq 0 ]; then
+        echo "[monitor:$MODE] WARNING: editorial pass left an empty report - kept the unedited report" >&2
+      else
+        echo "[monitor:$MODE] WARNING: editorial pass failed (exit $ed_rc) - kept the unedited report" >&2
+      fi
+    fi
+  else
+    echo "[monitor:$MODE] WARNING: $EDITOR_PROMPT missing - skipping editorial pass (report stands)" >&2
+  fi
+fi
 
 # ---- email helpers ----
 # RFC 2047-encode a header value if it contains non-ASCII bytes (raw UTF-8 in mail

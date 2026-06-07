@@ -13,9 +13,11 @@ stays consistent instead of re-deriving them.
 - **bootstrap** (`bin/bootstrap.sh` + `bootstrap-prompt.md`): one-time deep research →
   writes `profile.draft.yaml`; a human promotes it to `profile.yaml` (the review gate).
 - **monitor** (`bin/monitor.sh` + `monitor-prompt.md`): scheduled daily/weekly run —
-  sweep → dedup → score → trends → optional deep-dive → report → deliver.
+  sweep → dedup → score → trends → optional deep-dive → optional edit → report → deliver.
 - **deep-dive** (`deepdive-prompt.md`): optional 2nd pass (`models.deepdive`) that
   corroborates the top items on a stronger model.
+- **editor** (`editor-prompt.md`): optional final pass (`models.editor`) that curates +
+  polishes the report before delivery — non-destructive, no new facts, citations kept.
 - Both are `claude -p` calls wrapped in shell. Helpers: `dashboard.sh` (→ `kb/index.html`),
   `review.sh`/`feedback-server.py` (grading UI → `state/feedback.jsonl`), `usage.sh`,
   `install-launchd.sh`, `dedupe-feedback.py`.

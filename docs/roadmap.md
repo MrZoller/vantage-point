@@ -64,6 +64,21 @@ Make grading frictionless so the rubric learns your taste and quality compounds:
   tunes `relevance.rubric` / `relevance.calibration` to match (no fragile in-place
   YAML mutation; you still review/approve the draft).
 
+## Phase 5 — presentation + editorial polish ✅ (shipped)
+
+Make the delivered report look and read like a designed brief, not a data dump:
+- A redesigned email/HTML template (`wrap_html` in `bin/monitor.sh`): a header card
+  (subject + "Daily/Weekly briefing — date"), a hidden inbox preheader, a bottom-line
+  callout, uppercase section dividers, a styled watchlist table with sparklines, and a
+  footer. Deterministic (no per-run LLM cost), no external assets, ASCII-only source.
+  Reports are authored as Markdown so they render as the brief and stay readable as
+  plain text.
+- An optional **editorial pass** (`models.editor`, `editor-prompt.md`): a dedicated
+  editor curates + polishes the report before delivery (lead, order, cut/merge,
+  tighten) — strictly editorial (no new facts, figures unchanged, citations kept; no
+  web/Bash tools), non-destructive (restores the unedited report on failure/empty),
+  and logged to `runs.log` as `pass: editor`. Opt-in and runs only on delivered days.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

@@ -31,6 +31,10 @@ models:
   # deepdive: opus    # OPTIONAL second pass, OFF by default. Uncomment to enable:
                       # investigate + corroborate the few highest-scoring items on a
                       # stronger model (see monitoring.deepdive_* and the README).
+  # editor:   opus    # OPTIONAL final pass, OFF by default. Uncomment to enable:
+                      # a dedicated editor curates + polishes the report before
+                      # delivery (lead, order, cut, tighten) without adding facts or
+                      # dropping citations. Runs only on days a report is delivered.
 
 subject:
   name: "Mechanical & microbrand wristwatches"
