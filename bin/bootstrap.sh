@@ -33,7 +33,7 @@ to that file. Do NOT edit $CONFIG. Mark low-confidence inferences inline.
 \`\`\`yaml
 $(cat "$CONFIG")
 \`\`\`" \
-  --allowedTools "Read,Write,Edit,WebSearch,WebFetch,Bash" \
+  --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --permission-mode acceptEdits \
   --max-turns 80 \
   --output-format text \
