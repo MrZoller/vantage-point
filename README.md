@@ -22,7 +22,8 @@ market-monitor/
 │   ├── usage.sh                  # roll up state/runs.log: cost/turns/tokens
 │   ├── dashboard.sh              # regenerate kb/index.html (entities + sparklines)
 │   ├── review.sh                 # launch the grading UI (thumbs up/down)
-│   └── feedback-server.py        # the grading web app behind review.sh
+│   ├── feedback-server.py        # the grading web app behind review.sh
+│   └── dedupe-feedback.py        # collapse feedback.jsonl to latest-per-id (for bootstrap)
 └── launchd/
     ├── ai.zoller.marketmonitor.daily.plist    # templates; __MM_ROOT__ filled in at install
     └── ai.zoller.marketmonitor.weekly.plist

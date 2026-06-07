@@ -510,20 +510,19 @@ test_feedback_server() {
 }
 test_feedback_server
 
-echo "== bootstrap feedback dedupe: latest verdict per id wins =="
+echo "== dedupe-feedback.py: latest verdict per id wins (used by bootstrap) =="
 test_feedback_dedupe() {
-  # Mirror the collapse bootstrap.sh applies to feedback.jsonl before calibrating.
   local fb="$TMP/fb.jsonl" out
   printf '%s\n' \
     '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' \
     'MALFORMED {oops' \
+    'null' \
     '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
     '{"timestamp":"2026-06-01T00:00:00Z","id":"xyz","verdict":"up"}' > "$fb"
-  out="$(jq -rRn '
-    [ inputs | fromjson? | select(type == "object" and .id) ]
-    | group_by(.id) | map(max_by(.timestamp)) | .[] | @json' "$fb")"
-  assert_eq "regraded + valid ids collapse to one row each" "2" "$(printf '%s\n' "$out" | grep -c .)"
-  assert_contains "the regraded id keeps its latest verdict" "$out" '"id":"abc","verdict":"down"'
+  out="$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb")"
+  assert_eq "regraded + valid ids collapse to one row each (bad/null lines skipped)" "2" "$(printf '%s\n' "$out" | grep -c .)"
+  assert_contains "the regraded id keeps its latest verdict" "$out" '"id": "abc", "verdict": "down"'
+  assert_eq "the stale up verdict for abc is dropped (only xyz is up)" "1" "$(printf '%s\n' "$out" | grep -c '"verdict": "up"')"
 }
 test_feedback_dedupe
 

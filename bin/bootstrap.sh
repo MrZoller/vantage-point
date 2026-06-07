@@ -53,13 +53,13 @@ FEEDBACK_NOTE=""
 if [ -s "$FEEDBACK" ]; then
   # The log is append-only, so a regrade leaves an older contradictory row. Collapse
   # to the latest verdict per id (skipping malformed lines) so bootstrap sees one
-  # label per item. Needs jq; without it, fall back to the raw log.
-  if command -v jq >/dev/null 2>&1; then
-    FEEDBACK_DATA="$(jq -rRn '
-      [ inputs | fromjson? | select(type == "object" and .id) ]
-      | group_by(.id) | map(max_by(.timestamp)) | .[] | @json' "$FEEDBACK")"
+  # label per item. python3 is present wherever feedback exists (the review server is
+  # Python); only the pathological both-tools-missing case falls back to the raw log.
+  if command -v python3 >/dev/null 2>&1 && [ -f bin/dedupe-feedback.py ]; then
+    FEEDBACK_DATA="$(python3 bin/dedupe-feedback.py "$FEEDBACK")"
   else
     FEEDBACK_DATA="$(cat "$FEEDBACK")"
+    echo "[bootstrap] WARNING: python3/dedupe-feedback.py unavailable — feeding raw feedback (regrades not deduped)" >&2
   fi
   echo "[bootstrap] including $(printf '%s\n' "$FEEDBACK_DATA" | grep -c .) calibration grade(s) from $FEEDBACK" >&2
   FEEDBACK_NOTE="
