@@ -152,7 +152,9 @@ tracking:
 output:
   # Reports always land in kb/. Set email_to to ALSO email each report via msmtp
   # (install msmtp + configure ~/.msmtprc — see the README). Leave it blank or
-  # remove it to skip email and just read reports from kb/.
+  # remove it to skip email and just read reports from kb/. The same switch makes
+  # bootstrap email a "profile draft ready for review" summary (approval stays the
+  # local `cp profile.draft.yaml profile.yaml`).
   email_to: ""                # e.g. "you@example.com"; blank = no email
   knowledge_base: ./kb/       # accumulate over time; don't just email into the void
   dashboard: true             # regenerate kb/index.html each run (tracked entities +

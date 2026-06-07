@@ -79,6 +79,22 @@ Make the delivered report look and read like a designed brief, not a data dump:
   web/Bash tools), non-destructive (restores the unedited report on failure/empty),
   and logged to `runs.log` as `pass: editor`. Opt-in and runs only on delivered days.
 
+## Phase 6 — bootstrap delivery ✅ (shipped)
+
+Turn bootstrap's output into the first intelligence deliverable and lower the friction
+on the review gate:
+- The research pass also writes `profile.draft.summary.md` — a human-readable digest
+  (bottom line, market map, key players, anchor, rubric highlights, low-confidence
+  flags to check).
+- When `output.email_to` is set, `bootstrap.sh` emails that summary as a "profile draft
+  ready for review" message (optionally editor-polished first via `models.editor`). It's
+  a review *aid* — approval stays the deliberate local `cp profile.draft.yaml
+  profile.yaml`, which the email spells out. Opt-in and fail-safe (a send/edit failure
+  never loses the on-disk draft).
+- Extracted the shared `bin/config-lib.sh` (cfg readers) and `bin/email-lib.sh`
+  (rendering + `send_email`) so monitor and bootstrap share one implementation (and
+  bootstrap drops its bespoke, drift-prone config parser).
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

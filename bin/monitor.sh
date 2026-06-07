@@ -17,6 +17,12 @@ cd "$ROOT"
 # the test stubs, or a user's own claude earlier in PATH).
 export PATH="$PATH:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin"
 
+# Shared helpers (config readers + email rendering/sending), also used by bootstrap.sh.
+# shellcheck source=bin/config-lib.sh
+. "$ROOT/bin/config-lib.sh"
+# shellcheck source=bin/email-lib.sh
+. "$ROOT/bin/email-lib.sh"
+
 CONFIG="monitor-config.yaml"
 PROFILE="profile.yaml"
 PROMPT="monitor-prompt.md"
@@ -39,59 +45,6 @@ QUEUE="state/.deepdive.${MODE}.queue.jsonl"
 
 mkdir -p state kb
 touch state/observations.jsonl   # the dedup state file is touched once STATE_FILE is resolved
-
-# ---- config readers ----
-# Read a single scalar `key:` nested under a top-level YAML `block:` from a config
-# file, dependency-light (no YAML lib). Prints the value (comment/quotes/space
-# stripped) or nothing. Always returns 0, so `x="$(cfg_get ...)"` is safe under set -e.
-# NOTE: matches `key:` at ANY indentation within the block (first match wins), so don't
-# add a sub-block whose child key collides with a sibling key you read from that block.
-cfg_get() {  # <block> <key> [file=$CONFIG]
-  awk -v blk="$1" -v key="$2" '
-    $0 ~ "^" blk ":[[:space:]]*(#.*)?$" { inblk=1; next }
-    inblk && /^[^[:space:]#]/           { inblk=0 }
-    inblk && $1 == key":" {
-      line=$0
-      sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  key: "
-      sub(/^#.*$/, "", line)                             # value is only a comment -> empty
-      sub(/[[:space:]]+#.*$/, "", line)                  # drop a real trailing comment
-      gsub(/[[:space:]]/, "", line)                      # drop surrounding space
-      gsub(/["\047]/, "", line)                          # drop quotes
-      print line; exit
-    }
-  ' "${3:-$CONFIG}"
-}
-
-# Like cfg_get but PRESERVES internal spaces - for human-readable values such as
-# subject.name. Trims ends, unwraps a surrounding quote pair (keeping internal
-# quotes, handling YAML \" and '' escapes), or for an unquoted value drops only a
-# real trailing "# comment" (whitespace before #, so e.g. "C# tools" is kept).
-cfg_get_text() {  # <block> <key> [file=$CONFIG]
-  awk -v blk="$1" -v key="$2" '
-    $0 ~ "^" blk ":[[:space:]]*(#.*)?$" { inblk=1; next }
-    inblk && /^[^[:space:]#]/           { inblk=0 }
-    inblk && $1 == key":" {
-      line=$0
-      sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  key: "
-      sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
-      if (line ~ /^"/) {                                 # double-quoted scalar
-        sub(/^"/, "", line)
-        sub(/"[[:space:]]*(#.*)?$/, "", line)            # closing quote (+ trailing comment)
-        gsub(/\\"/, "\"", line)                          # YAML \" -> "
-      } else if (line ~ /^\047/) {                       # single-quoted scalar
-        sub(/^\047/, "", line)
-        sub(/\047[[:space:]]*(#.*)?$/, "", line)
-        gsub(/\047\047/, "\047", line)                   # YAML doubled single-quote escape
-      } else {                                           # unquoted scalar
-        sub(/^#.*$/, "", line)                           # value is only a comment -> empty
-        sub(/[[:space:]]+#.*$/, "", line)                # comment only after whitespace
-        sub(/[[:space:]]+$/, "", line)
-      }
-      print line; exit
-    }
-  ' "${3:-$CONFIG}"
-}
-# ---- end config readers ----
 
 # ---- config knobs (all optional; sane fallbacks) ----
 MODEL="$(cfg_get models monitor)"
@@ -446,195 +399,25 @@ item's source link or confidence." \
   fi
 fi
 
-# ---- email helpers ----
-# RFC 2047-encode a header value if it contains non-ASCII bytes (raw UTF-8 in mail
-# headers isn't portable). Pure-ASCII values pass through unchanged.
-encode_header() {  # <text> -> stdout: header-safe value
-  local s="$1"
-  # Detect non-ASCII bytes in pure bash (no external tool), so this stays correct
-  # even on a minimal PATH where grep is absent - a missing grep must never let raw
-  # UTF-8 ship un-encoded in a header. The C locale makes the bracket range match
-  # raw bytes 0x20-0x7e (printable ASCII); anything outside it triggers encoding.
-  if ( LC_ALL=C; case "$s" in *[!\ -~]*) exit 0 ;; *) exit 1 ;; esac ); then
-    printf '=?UTF-8?B?%s?=' "$(printf '%s' "$s" | base64 | tr -d '\n')"
-  else
-    printf '%s' "$s"
-  fi
-}
-
-# Pick the first available markdown->HTML renderer (none -> empty string).
-# Always returns 0 so `renderer="$(md_renderer)"` is safe under `set -e` when no
-# renderer is installed (the common case).
-md_renderer() {
-  local r
-  for r in pandoc cmark-gfm cmark; do
-    command -v "$r" >/dev/null 2>&1 && { echo "$r"; return 0; }
-  done
-  return 0
-}
-
-# stdin: markdown -> stdout: HTML fragment. Returns nonzero if no renderer exists,
-# so callers can fall back to plain text. Bare URLs become clickable where the
-# renderer supports autolinking (pandoc gfm, cmark-gfm).
-render_md_to_html() {
-  case "$(md_renderer)" in
-    pandoc)    pandoc -f gfm -t html ;;
-    cmark-gfm) cmark-gfm -e autolink -e table -e strikethrough -e tagfilter ;;
-    cmark)     cmark ;;
-    *)         return 1 ;;
-  esac
-}
-
-# Minimal HTML escape for values we drop into the template chrome (subject, etc.).
-# bash 5.2+ defaults patsub_replacement ON, which expands '&' in a ${//} replacement
-# to the matched text and would mangle < / > into <lt; / >gt;; disable it so the
-# replacements stay literal (no-op on bash 3.2, which has no such option).
-_esc() {
-  local s="$1"
-  shopt -u patsub_replacement 2>/dev/null || true
-  s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"
-  printf '%s' "$s"
-}
-
-# stdin: HTML body fragment -> stdout: full styled HTML document. A <style> block
-# (not inline styles) renders in the mail/preview clients this tool targets and keeps
-# the template readable. Optional chrome is read from the environment so this stays a
-# pure filter: VP_TITLE / VP_SUBTITLE (header), VP_PREHEADER (hidden inbox preview
-# text), VP_FOOTER (footer line). Each is HTML-escaped. No external assets/images
-# (privacy + reliability) and ASCII-only source per the repo convention.
-wrap_html() {
-  local title subtitle preheader footer
-  title="$(_esc "${VP_TITLE:-}")"; subtitle="$(_esc "${VP_SUBTITLE:-}")"
-  preheader="$(_esc "${VP_PREHEADER:-}")"; footer="$(_esc "${VP_FOOTER:-}")"
-  cat <<'HTML_HEAD'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  body { margin: 0; padding: 0; background: #eef1f5; -webkit-font-smoothing: antialiased;
-         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-         color: #1f2933; line-height: 1.55; }
-  .preheader { display: none !important; visibility: hidden; opacity: 0; height: 0; width: 0; overflow: hidden; }
-  .wrap { max-width: 640px; margin: 0 auto; background: #ffffff; }
-  .hd { padding: 28px 32px 22px; border-top: 4px solid #2f5bea; border-bottom: 1px solid #e6e9ef; }
-  .eyebrow { font-size: 11px; letter-spacing: 0.12em; font-weight: 700; color: #2f5bea; text-transform: uppercase; }
-  .title { font-size: 22px; font-weight: 700; line-height: 1.2; margin-top: 5px; color: #10151f; }
-  .sub { font-size: 13px; color: #6b7280; margin-top: 5px; }
-  .body { padding: 6px 32px 22px; }
-  .body h1, .body h2, .body h3 { line-height: 1.25; color: #10151f; }
-  .body h1 { font-size: 19px; margin: 22px 0 8px; }
-  .body h2 { font-size: 14px; margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 1px solid #eceef2;
-             text-transform: uppercase; letter-spacing: 0.05em; color: #4b5563; }
-  .body h3 { font-size: 15px; margin: 18px 0 4px; }
-  .body p { margin: 9px 0; }
-  .body a { color: #2f5bea; text-decoration: none; }
-  .body a:hover { text-decoration: underline; }
-  .body ul, .body ol { padding-left: 20px; margin: 9px 0; }
-  .body li { margin: 7px 0; }
-  .body blockquote { margin: 16px 0; padding: 14px 18px; background: #f3f6ff; border-left: 4px solid #2f5bea;
-                     border-radius: 0 6px 6px 0; color: #28324a; font-size: 15px; }
-  .body blockquote p { margin: 0; }
-  .body code { background: #f1f3f7; padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
-  .body pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 8px; overflow-x: auto; }
-  .body pre code { background: none; padding: 0; color: inherit; }
-  .body hr { border: 0; border-top: 1px solid #e6e9ef; margin: 22px 0; }
-  .body table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
-  .body th { text-align: left; background: #f7f8fa; border-bottom: 2px solid #e6e9ef; padding: 8px 10px;
-             font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; color: #6b7280; }
-  .body td { border-bottom: 1px solid #eef1f5; padding: 8px 10px; }
-  .body td.spark { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #2f5bea; }
-  .ft { padding: 16px 32px 26px; border-top: 1px solid #e6e9ef; color: #9aa3af; font-size: 12px; }
-  .ft a { color: #6b7280; }
-</style>
-</head>
-<body>
-HTML_HEAD
-  printf '<span class="preheader">%s</span>\n' "$preheader"
-  printf '<div class="wrap">\n'
-  if [ -n "$title" ]; then
-    printf '<div class="hd"><div class="eyebrow">Vantage Point</div><div class="title">%s</div>' "$title"
-    [ -n "$subtitle" ] && printf '<div class="sub">%s</div>' "$subtitle"
-    printf '</div>\n'
-  fi
-  printf '<div class="body">\n'
-  cat
-  printf '\n</div>\n'
-  [ -n "$footer" ] && printf '<div class="ft">%s</div>\n' "$footer"
-  cat <<'HTML_FOOT'
-</div>
-</body>
-</html>
-HTML_FOOT
-}
-
-# Email the report. Sends multipart/alternative (markdown text + rendered HTML)
-# when a renderer is available; otherwise a utf-8 plain-text message. The report
-# itself is unchanged on disk. Returns msmtp's exit status.
-email_report() {
-  local to="$1" report="$2"
+# ---- email delivery ----
+# The escapers/renderer/template/sender live in bin/email-lib.sh (shared with
+# bootstrap.sh); email_report just composes the monitor's chrome and hands off.
+email_report() {  # <to> <report-file>
+  local to="$1" report="$2" subject mode_disp
   # Name the monitored subject in the Subject line so several agents (different
   # configs) are distinguishable in one inbox; fall back to the bare tag if unset.
-  local subject
   if [ -n "${SUBJECT_NAME:-}" ]; then
     subject="[Vantage Point: ${SUBJECT_NAME}] $MODE $TODAY"
   else
     subject="[Vantage Point] $MODE $TODAY"
   fi
-  subject="$(encode_header "$subject")"   # RFC 2047 if the name has non-ASCII chars
-  # Template chrome for the HTML build (read by wrap_html). A subshell in the pipe
-  # inherits these locals, so no export is needed. Computed in pure bash so the HTML
-  # build needs no extra tools on a minimal PATH (same reasoning as encode_header).
-  local mode_disp preheader line VP_TITLE VP_SUBTITLE VP_PREHEADER VP_FOOTER
   case "$MODE" in daily) mode_disp="Daily" ;; weekly) mode_disp="Weekly" ;; *) mode_disp="$MODE" ;; esac
-  # Inbox preview: first non-heading line of the report (drop a leading blockquote marker), trimmed.
-  preheader=""
-  while IFS= read -r line || [ -n "$line" ]; do
-    [ -n "$line" ] || continue
-    case "$line" in
-      '#'*) continue ;;                 # skip markdown headings
-      '> '*) line="${line#> }" ;;       # unwrap a leading blockquote marker
-      '>'*)  line="${line#>}" ;;
-    esac
-    [ -n "$line" ] || continue
-    line="${line//\*/}"; line="${line//\`/}"   # drop markdown emphasis/code marks
-    preheader="${line:0:160}"; break
-  done < "$report"
+  local VP_TITLE VP_SUBTITLE VP_PREHEADER VP_FOOTER
   VP_TITLE="${SUBJECT_NAME:-Market intelligence}"
   VP_SUBTITLE="${mode_disp} briefing - ${TODAY}"
-  VP_PREHEADER="$preheader"
+  VP_PREHEADER="$(email_preheader "$report")"
   VP_FOOTER="Generated by Vantage Point - ${TODAY}"
-  local html
-  if html="$(render_md_to_html < "$report" 2>/dev/null)" && [ -n "$html" ]; then
-    local boundary="mm-${TODAY}-$$"
-    {
-      printf 'To: %s\n' "$to"
-      printf 'Subject: %s\n' "$subject"
-      printf 'MIME-Version: 1.0\n'
-      printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$boundary"
-      printf -- '--%s\n' "$boundary"
-      printf 'Content-Type: text/plain; charset=utf-8\n'
-      printf 'Content-Transfer-Encoding: 8bit\n\n'
-      cat "$report"; printf '\n'
-      printf -- '--%s\n' "$boundary"
-      printf 'Content-Type: text/html; charset=utf-8\n'
-      printf 'Content-Transfer-Encoding: 8bit\n\n'
-      printf '%s\n' "$html" | wrap_html
-      printf '\n--%s--\n' "$boundary"
-    } | msmtp "$to"
-  else
-    # No renderer (or render failed): plain text, but declare utf-8 so the
-    # bullets/arrows/em-dashes in reports don't get mangled.
-    {
-      printf 'To: %s\n' "$to"
-      printf 'Subject: %s\n' "$subject"
-      printf 'MIME-Version: 1.0\n'
-      printf 'Content-Type: text/plain; charset=utf-8\n'
-      printf 'Content-Transfer-Encoding: 8bit\n\n'
-      cat "$report"
-    } | msmtp "$to"
-  fi
+  send_email "$to" "$subject" "$report"
 }
 
 # Promote this run's output to $REPORT only now - so a failed rerun never clobbers
