@@ -442,9 +442,9 @@ email_report() {
   # configs) are distinguishable in one inbox; fall back to the bare tag if unset.
   local subject
   if [ -n "${SUBJECT_NAME:-}" ]; then
-    subject="[market-monitor: ${SUBJECT_NAME}] $MODE $TODAY"
+    subject="[Vantage Point: ${SUBJECT_NAME}] $MODE $TODAY"
   else
-    subject="[market-monitor] $MODE $TODAY"
+    subject="[Vantage Point] $MODE $TODAY"
   fi
   subject="$(encode_header "$subject")"   # RFC 2047 if the name has non-ASCII chars
   local html

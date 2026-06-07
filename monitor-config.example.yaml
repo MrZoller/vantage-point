@@ -1,5 +1,5 @@
 # ============================================================
-# market-monitor config
+# Vantage Point config
 # Two-input model: SUBJECT (the market) x ANCHOR (whose interests define relevance)
 #
 # Core idea: relevance is the RELATIONSHIP between a news item and the anchor's

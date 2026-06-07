@@ -68,7 +68,7 @@ esc() {  # minimal HTML escaping for text we inject
 <html>
 <head>
 <meta charset="utf-8">
-<title>market-monitor</title>
+<title>Vantage Point</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
          line-height: 1.5; color: #1a1a1a; max-width: 820px; margin: 0 auto; padding: 24px; }
@@ -87,7 +87,7 @@ esc() {  # minimal HTML escaping for text we inject
 <body>
 HTML_HEAD
 
-  printf '<h1>market-monitor</h1>\n'
+  printf '<h1>Vantage Point</h1>\n'
   printf '<div class="meta">generated %s</div>\n' "$(esc "$(date '+%Y-%m-%d %H:%M %Z')")"
 
   # ---- tracked entities (numeric metrics) ----

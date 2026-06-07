@@ -56,7 +56,7 @@ make_min_bin() {
 assert_plist_ok() {
   if [ ! -f "$2" ]; then fail "$1: plist exists"; return; fi
   pass "$1: plist exists"
-  if grep -q '__MM_ROOT__' "$2"; then fail "$1: no __MM_ROOT__ token remains"; else pass "$1: no __MM_ROOT__ token remains"; fi
+  if grep -q '__VP_ROOT__' "$2"; then fail "$1: no __VP_ROOT__ token remains"; else pass "$1: no __VP_ROOT__ token remains"; fi
   local got
   got="$(python3 - "$2" <<'PY'
 import sys, plistlib
@@ -81,8 +81,8 @@ test_install_launchd() {
   ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 ); rc=$?
   assert_eq "installer exits 0" "0" "$rc"
   local la="$home/Library/LaunchAgents"
-  assert_plist_ok "daily"  "$la/ai.zoller.marketmonitor.daily.plist"  "$co/bin/monitor.sh"
-  assert_plist_ok "weekly" "$la/ai.zoller.marketmonitor.weekly.plist" "$co/bin/monitor.sh"
+  assert_plist_ok "daily"  "$la/ai.zoller.vantagepoint.daily.plist"  "$co/bin/monitor.sh"
+  assert_plist_ok "weekly" "$la/ai.zoller.vantagepoint.weekly.plist" "$co/bin/monitor.sh"
 }
 test_install_launchd
 
@@ -98,13 +98,36 @@ test_uninstall() {
   ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
   ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" uninstall >/dev/null 2>&1 )
   local la="$home/Library/LaunchAgents"
-  if [ -f "$la/ai.zoller.marketmonitor.daily.plist" ] || [ -f "$la/ai.zoller.marketmonitor.weekly.plist" ]; then
+  if [ -f "$la/ai.zoller.vantagepoint.daily.plist" ] || [ -f "$la/ai.zoller.vantagepoint.weekly.plist" ]; then
     fail "uninstall removed both plists"
   else
     pass "uninstall removed both plists"
   fi
 }
 test_uninstall
+
+echo "== install-launchd: retires pre-rename (market-monitor) agents =="
+test_install_retires_legacy() {
+  local co="$TMP/legacy/checkout"
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  local home="$TMP/legacyhome" la
+  la="$home/Library/LaunchAgents"
+  mkdir -p "$la"
+  printf 'old daily plist\n'  > "$la/ai.zoller.marketmonitor.daily.plist"   # pre-rename agent
+  printf 'old weekly plist\n' > "$la/ai.zoller.marketmonitor.weekly.plist"
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.marketmonitor.daily.plist" ] || [ -f "$la/ai.zoller.marketmonitor.weekly.plist" ]; then
+    fail "legacy market-monitor agents removed"
+  else
+    pass "legacy market-monitor agents removed"
+  fi
+  if [ -f "$la/ai.zoller.vantagepoint.daily.plist" ]; then pass "new agent installed"; else fail "new agent installed"; fi
+}
+test_install_retires_legacy
 
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {
@@ -215,7 +238,7 @@ test_encode_header() {
     "$ROOT/bin/monitor.sh" > "$fns"
   # shellcheck disable=SC1090
   source "$fns"
-  assert_eq "ASCII passes through unchanged" "[market-monitor: Plain] daily" "$(encode_header "[market-monitor: Plain] daily")"
+  assert_eq "ASCII passes through unchanged" "[Vantage Point: Plain] daily" "$(encode_header "[Vantage Point: Plain] daily")"
   assert_contains "non-ASCII becomes an RFC 2047 encoded-word" "$(encode_header "Café")" "=?UTF-8?B?"
 }
 test_encode_header
@@ -544,7 +567,7 @@ SH
   assert_eq "run exits 0" "0" "$rc"
   if [ -f "$msg" ]; then
     assert_contains "Subject names the monitored subject (spaces + & preserved)" \
-      "$(grep -i '^Subject:' "$msg")" "[market-monitor: Test Market & Co]"
+      "$(grep -i '^Subject:' "$msg")" "[Vantage Point: Test Market & Co]"
   else
     fail "an email was sent"
   fi
