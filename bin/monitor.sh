@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# monitor.sh {daily|weekly} — the recurring agent.
+# monitor.sh {daily|weekly} - the recurring agent.
 # Sweeps sources, dedups against state, scores against the APPROVED profile,
 # writes the report to kb/, and (optionally) delivers it.
 set -euo pipefail
@@ -32,12 +32,12 @@ QUEUE="state/.deepdive.${MODE}.queue.jsonl"
 
 # The review gate, enforced in code: refuse to run on an unapproved profile.
 [ -f "$PROFILE" ] || {
-  echo "no approved $PROFILE — run bin/bootstrap.sh and approve the draft first" >&2
+  echo "no approved $PROFILE - run bin/bootstrap.sh and approve the draft first" >&2
   exit 1
 }
 
 mkdir -p state kb
-touch state/seen.jsonl state/observations.jsonl
+touch state/observations.jsonl   # the dedup state file is touched once STATE_FILE is resolved
 
 # ---- config readers ----
 # Read a single scalar `key:` nested under a top-level YAML `block:` from a config
@@ -59,7 +59,7 @@ cfg_get() {  # <block> <key> [file=$CONFIG]
   ' "${3:-$CONFIG}"
 }
 
-# Like cfg_get but PRESERVES internal spaces — for human-readable values such as
+# Like cfg_get but PRESERVES internal spaces - for human-readable values such as
 # subject.name. Trims ends, unwraps a surrounding quote pair (keeping internal
 # quotes, handling YAML \" and '' escapes), or for an unquoted value drops only a
 # real trailing "# comment" (whitespace before #, so e.g. "C# tools" is kept).
@@ -95,6 +95,10 @@ MODEL="$(cfg_get models monitor)"
 DEEPDIVE_MODEL="$(cfg_get models deepdive)"   # unset -> no deep-dive pass (triage only)
 EMAIL_TO="$(cfg_get output email_to)"
 DASHBOARD="$(cfg_get output dashboard)"
+STATE_FILE="$(cfg_get monitoring state_file)"      # dedup memory; honored, not hardcoded
+[ -n "$STATE_FILE" ] || STATE_FILE="state/seen.jsonl"
+STATE_FILE="${STATE_FILE#./}"                       # normalize so "./state/..." == default
+mkdir -p "$(dirname "$STATE_FILE")"; touch "$STATE_FILE"
 SUBJECT_NAME="$(cfg_get_text subject name)"
 RUN_TIMEOUT="$(cfg_get monitoring run_timeout_seconds)"
 STATE_MAX_LINES="$(cfg_get monitoring state_max_lines)"
@@ -110,12 +114,12 @@ case "$DEEPDIVE_MAX"    in ''|*[!0-9]*) DEEPDIVE_MAX=5 ;; esac
 case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-numeric -> skip check
 
 # ---- single-run lock (shared across modes) ----
-# daily and weekly share state/seen.jsonl, so ONE lock guards all modes — never two
+# daily and weekly share state/seen.jsonl, so ONE lock guards all modes - never two
 # monitors at once, whatever the mode (so keep the daily/weekly schedules from
 # overlapping; the defaults are 30 min apart). An overlapping or manual run just
 # skips. A crashed run leaves a stale lock; it's reclaimed when its owner process is
 # gone. We identify the owner by PID *and* start time, so a recycled PID (different
-# start time) is correctly seen as stale and a live owner is never reclaimed — no
+# start time) is correctly seen as stale and a live owner is never reclaimed - no
 # matter how long it runs (claude + email/render), and regardless of whether a
 # timeout is configured or enforceable.
 LOCK="state/.lock"
@@ -151,7 +155,7 @@ acquire_lock() {
   echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown})" >&2
   # Reclaim race-safely: rename the inspected dir out of the way (only one renamer
   # of a given dir can win), then let the final mkdir be the sole ownership arbiter
-  # — concurrent reclaimers can't both end up owning.
+  # - concurrent reclaimers can't both end up owning.
   mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"
   mkdir "$LOCK" 2>/dev/null
 }
@@ -159,17 +163,17 @@ acquire_lock() {
 if acquire_lock; then
   printf '%s %s\n' "$$" "$(proc_start "$$")" > "$LOCK/owner"
 else
-  echo "[monitor:$MODE] another run is in progress — skipping" >&2
+  echo "[monitor:$MODE] another run is in progress - skipping" >&2
   exit 0
 fi
 
-# Release the lock on exit, and surface a hard failure (a set -e abort — e.g. the
+# Release the lock on exit, and surface a hard failure (a set -e abort - e.g. the
 # claude run errored or timed out) that would otherwise vanish into the launchd log.
 cleanup() {
   local rc=$?
   rm -rf "$LOCK" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
-    echo "[monitor:$MODE] run FAILED (exit $rc) — see kb/${TODAY}.${MODE}.err" >&2
+    echo "[monitor:$MODE] run FAILED (exit $rc) - see kb/${TODAY}.${MODE}.err" >&2
   fi
   return 0
 }
@@ -180,18 +184,18 @@ MODEL_ARGS=()
 if [ -n "$MODEL" ]; then
   MODEL_ARGS=(--model "$MODEL")
 else
-  echo "[monitor:$MODE] models.monitor not set in $CONFIG — using CLI default model" >&2
+  echo "[monitor:$MODE] models.monitor not set in $CONFIG - using CLI default model" >&2
 fi
 DEEPDIVE_MODEL_ARGS=()
 [ -n "$DEEPDIVE_MODEL" ] && DEEPDIVE_MODEL_ARGS=(--model "$DEEPDIVE_MODEL")
 
 # Wall-clock bound on the claude run so a network stall can't hang the job forever.
-# 0 disables it; needs timeout/gtimeout (coreutils) — skipped with a note if absent.
+# 0 disables it; needs timeout/gtimeout (coreutils) - skipped with a note if absent.
 TIMEOUT_CMD=()
 if [ "$RUN_TIMEOUT" != 0 ]; then
   if   command -v timeout  >/dev/null 2>&1; then TIMEOUT_CMD=(timeout  "$RUN_TIMEOUT")
   elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_CMD=(gtimeout "$RUN_TIMEOUT")
-  else echo "[monitor:$MODE] note: no timeout/gtimeout — run is not time-bounded (brew install coreutils)" >&2
+  else echo "[monitor:$MODE] note: no timeout/gtimeout - run is not time-bounded (brew install coreutils)" >&2
   fi
 fi
 
@@ -207,7 +211,7 @@ prune_state() {  # <file> <max_lines>
     echo "[monitor:$MODE] pruned $1: $cur -> $2 lines" >&2
   fi
 }
-prune_state state/seen.jsonl "$STATE_MAX_LINES"
+prune_state "$STATE_FILE" "$STATE_MAX_LINES"
 prune_state state/observations.jsonl "$OBS_MAX_LINES"
 
 # ---- profile staleness (governance.profile_refresh_days) ----
@@ -221,10 +225,10 @@ if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
   if [ -n "$boot_epoch" ]; then
     age_days=$(( ( $(date +%s) - boot_epoch ) / 86400 ))
     if [ "$age_days" -gt "$REFRESH_DAYS" ]; then
-      echo "[monitor:$MODE] WARNING: profile is ${age_days}d old (> profile_refresh_days=$REFRESH_DAYS) — re-run bin/bootstrap.sh to refresh" >&2
+      echo "[monitor:$MODE] WARNING: profile is ${age_days}d old (> profile_refresh_days=$REFRESH_DAYS) - re-run bin/bootstrap.sh to refresh" >&2
     fi
   else
-    echo "[monitor:$MODE] note: couldn't parse profile last_bootstrapped ('$last_boot') — skipping staleness check" >&2
+    echo "[monitor:$MODE] note: couldn't parse profile last_bootstrapped ('$last_boot') - skipping staleness check" >&2
   fi
 fi
 
@@ -248,25 +252,25 @@ Config (subject, anchor, seeds, scope, cadence, thresholds, output, governance):
 $(cat "$CONFIG")
 \`\`\`
 
-Approved profile — YOUR GROUND TRUTH (derived blocks + relevance rubric):
+Approved profile - YOUR GROUND TRUTH (derived blocks + relevance rubric):
 \`\`\`yaml
 $(cat "$PROFILE")
 \`\`\`
 
-Your dedup/state file is ./state/seen.jsonl. Append every newly-evaluated item (full
+Your dedup/state file is ./$STATE_FILE. Append every newly-evaluated item (full
 record for surfaced items, keys+score for dropped ones) so nothing is re-scored.
-Your observations file is ./state/observations.jsonl — your longitudinal metric/event
+Your observations file is ./state/observations.jsonl - your longitudinal metric/event
 memory for trend detection. When tracking.enabled, read the recent observations for
 the tracked entities, append this run's observations, and follow the 'Trend detection'
 + 'What changed' rules in the prompt above (driven by the tracking.* thresholds).
 Write the $MODE report to ./$RUN_REPORT, following the report rules in the prompt
-above — including the show_borderline / 'Considered (below threshold)' handling.
+above - including the show_borderline / 'Considered (below threshold)' handling.
 For a daily run, if those rules produce no report at all (no items AND no changes),
 write NOTHING to the report file and print exactly NO_MATERIAL_ITEMS.
 
 DEEP-DIVE QUEUE: ${DEEPDIVE_MODEL:+enabled}${DEEPDIVE_MODEL:-disabled}. When enabled,
-also append your highest-scoring surfaced items — those with score >= $DEEPDIVE_THRESHOLD,
-at most $DEEPDIVE_MAX of them, highest first — to ./$QUEUE, one JSON object per line:
+also append your highest-scoring surfaced items - those with score >= $DEEPDIVE_THRESHOLD,
+at most $DEEPDIVE_MAX of them, highest first - to ./$QUEUE, one JSON object per line:
 {\"url\":...,\"title\":...,\"signal\":...,\"score\":...,\"so_what\":...}. A separate
 stronger agent will investigate these and enrich them in the report; you just queue
 them. Do not write the queue when it's disabled." \
@@ -281,11 +285,11 @@ them. Do not write the queue when it's disabled." \
 # claude exited 0 (set -e would have aborted otherwise).
 # ---- log per-pass usage to state/runs.log ----
 # NOTE: total_cost_usd from the CLI is an API-EQUIVALENT estimate. These runs
-# authenticate against the Max subscription, so this is NOT your actual billing —
+# authenticate against the Max subscription, so this is NOT your actual billing -
 # it's a relative cost/usage signal for tuning run frequency and --max-turns.
 log_usage() {  # <pass-label> <run-json>
   command -v jq >/dev/null 2>&1 || {
-    echo "[monitor:$MODE] ERROR: jq not found — usage not logged ($1). Install jq." >&2; return 0; }
+    echo "[monitor:$MODE] ERROR: jq not found - usage not logged ($1). Install jq." >&2; return 0; }
   printf '%s' "$2" | jq -c \
     --arg ts "$(date -u +%FT%TZ)" --arg mode "$MODE" --arg date "$TODAY" --arg pass "$1" \
     '{timestamp:$ts, mode:$mode, date:$date, pass:$pass,
@@ -300,7 +304,7 @@ log_usage triage "$RUN_JSON"
 
 # ---- deep-dive pass (optional; stronger model on triage's top survivors) ----
 # Runs only when models.deepdive is set AND triage produced a report with queued
-# candidates — so most days there's no second call and cost is unchanged.
+# candidates - so most days there's no second call and cost is unchanged.
 if [ -n "$DEEPDIVE_MODEL" ] && [ -s "$RUN_REPORT" ] && [ -s "$QUEUE" ]; then
   # Enforce the cost guard in code: never investigate more than deepdive_max_items,
   # no matter what triage queued.
@@ -310,7 +314,7 @@ if [ -n "$DEEPDIVE_MODEL" ] && [ -s "$RUN_REPORT" ] && [ -s "$QUEUE" ]; then
   if [ -f "$DEEPDIVE_PROMPT" ]; then
     # The deep-dive enriches $RUN_REPORT in place and may append corroborating
     # observations. Back BOTH up first: a failed, timed-out, or report-emptying pass
-    # must leave the valid triage report AND the trusted observations intact —
+    # must leave the valid triage report AND the trusted observations intact -
     # enrichment is optional and must be non-destructive.
     cp "$RUN_REPORT" "$RUN_REPORT.pre-dd"
     cp state/observations.jsonl state/observations.jsonl.pre-dd
@@ -326,7 +330,7 @@ Config (subject, anchor, scope, rubric context):
 $(cat "$CONFIG")
 \`\`\`
 
-Approved profile — YOUR GROUND TRUTH:
+Approved profile - YOUR GROUND TRUTH:
 \`\`\`yaml
 $(cat "$PROFILE")
 \`\`\`
@@ -336,7 +340,7 @@ The current report is ./$RUN_REPORT and your longitudinal memory is
 ./state/observations.jsonl. For each queued item, investigate per the prompt above
 (fetch the primary source, corroborate across independent sources, deepen the
 so-what with history/context), then EDIT ./$RUN_REPORT in place to enrich exactly
-those items — add corroboration status and adjusted confidence, and DOWNGRADE or
+those items - add corroboration status and adjusted confidence, and DOWNGRADE or
 flag anything you can't corroborate. Do not remove non-queued items or change the
 report's structure." \
       ${DEEPDIVE_MODEL_ARGS[@]+"${DEEPDIVE_MODEL_ARGS[@]}"} \
@@ -358,13 +362,13 @@ report's structure." \
       mv -f "$RUN_REPORT.pre-dd" "$RUN_REPORT"
       mv -f state/observations.jsonl.pre-dd state/observations.jsonl
       if [ "$dd_rc" -eq 0 ]; then
-        echo "[monitor:$MODE] WARNING: deep-dive left an empty report — restored the triage report" >&2
+        echo "[monitor:$MODE] WARNING: deep-dive left an empty report - restored the triage report" >&2
       else
-        echo "[monitor:$MODE] WARNING: deep-dive failed (exit $dd_rc) — restored the triage report" >&2
+        echo "[monitor:$MODE] WARNING: deep-dive failed (exit $dd_rc) - restored the triage report" >&2
       fi
     fi
   else
-    echo "[monitor:$MODE] WARNING: $DEEPDIVE_PROMPT missing — skipping deep-dive (triage report stands)" >&2
+    echo "[monitor:$MODE] WARNING: $DEEPDIVE_PROMPT missing - skipping deep-dive (triage report stands)" >&2
   fi
 fi
 rm -f "$QUEUE"
@@ -374,7 +378,11 @@ rm -f "$QUEUE"
 # headers isn't portable). Pure-ASCII values pass through unchanged.
 encode_header() {  # <text> -> stdout: header-safe value
   local s="$1"
-  if printf '%s' "$s" | LC_ALL=C grep -q '[^ -~]'; then
+  # Detect non-ASCII bytes in pure bash (no external tool), so this stays correct
+  # even on a minimal PATH where grep is absent - a missing grep must never let raw
+  # UTF-8 ship un-encoded in a header. The C locale makes the bracket range match
+  # raw bytes 0x20-0x7e (printable ASCII); anything outside it triggers encoding.
+  if ( LC_ALL=C; case "$s" in *[!\ -~]*) exit 0 ;; *) exit 1 ;; esac ); then
     printf '=?UTF-8?B?%s?=' "$(printf '%s' "$s" | base64 | tr -d '\n')"
   else
     printf '%s' "$s"
@@ -482,13 +490,13 @@ email_report() {
   fi
 }
 
-# Promote this run's output to $REPORT only now — so a failed rerun never clobbers
+# Promote this run's output to $REPORT only now - so a failed rerun never clobbers
 # an earlier report.
 # ---- deliver: plug in whatever channel you want ----
 if [ -s "$RUN_REPORT" ]; then
   mv -f "$RUN_REPORT" "$REPORT"
   echo "[monitor:$MODE] report ready: $REPORT"
-  # Email via msmtp when output.email_to is set (configure ~/.msmtprc — see README).
+  # Email via msmtp when output.email_to is set (configure ~/.msmtprc - see README).
   # Failure to send never fails the run: the report is already safe in $REPORT.
   if [ -n "$EMAIL_TO" ]; then
     if command -v msmtp >/dev/null 2>&1; then
@@ -497,13 +505,13 @@ if [ -s "$RUN_REPORT" ]; then
         if [ -n "$renderer" ]; then
           echo "[monitor:$MODE] emailed report to $EMAIL_TO (HTML via $renderer)"
         else
-          echo "[monitor:$MODE] emailed report to $EMAIL_TO (plain text — install pandoc or cmark-gfm for HTML)"
+          echo "[monitor:$MODE] emailed report to $EMAIL_TO (plain text - install pandoc or cmark-gfm for HTML)"
         fi
       else
-        echo "[monitor:$MODE] WARNING: msmtp failed — report still in $REPORT" >&2
+        echo "[monitor:$MODE] WARNING: msmtp failed - report still in $REPORT" >&2
       fi
     else
-      echo "[monitor:$MODE] output.email_to set but msmtp not found — skipping email (report in $REPORT)" >&2
+      echo "[monitor:$MODE] output.email_to set but msmtp not found - skipping email (report in $REPORT)" >&2
     fi
   fi
   #
@@ -512,7 +520,7 @@ else
   # Nothing material this run. Drop the empty scratch file; leave any existing
   # $REPORT from an earlier successful run today in place.
   rm -f "$RUN_REPORT"
-  echo "[monitor:$MODE] nothing material — no report written (silence is correct)."
+  echo "[monitor:$MODE] nothing material - no report written (silence is correct)."
 fi
 
 # ---- refresh the kb/index.html dashboard (best-effort; never fails the run) ----

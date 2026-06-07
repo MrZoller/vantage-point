@@ -24,6 +24,17 @@ FEEDBACK = os.path.join(ROOT, "state", "feedback.jsonl")
 MAX_ITEMS = 60
 
 
+def safe_url(u):
+    """Only http/https are safe in a rendered href. Reject javascript:/data:/etc.
+
+    `url` comes from agent-written state/seen.jsonl (semi-trusted, LLM-derived from
+    web sweeps), so a value like `javascript:...` would otherwise become a clickable
+    link that executes on click. Returns the url if safe, else "" (link is dropped).
+    """
+    u = str(u).strip()
+    return u if u.lower().startswith(("http://", "https://")) else ""
+
+
 def read_jsonl(path):
     """Parse a JSONL file, skipping malformed lines (append-only, agent-written)."""
     out = []
@@ -121,8 +132,10 @@ def render(items, verdicts, just=None):
                      '<a class="up%s" href="/grade?id=%s&v=up" title="relevant">&#128077;</a>'
                      '<a class="down%s" href="/grade?id=%s&v=down" title="not relevant">&#128078;</a>'
                      % (up_on, rid, down_on, rid))
-        if it.get("url"):
-            parts.append('<a href="%s" target="_blank">source</a>' % html.escape(str(it["url"])))
+        link = safe_url(it.get("url"))
+        if link:
+            parts.append('<a href="%s" target="_blank" rel="noopener noreferrer">source</a>'
+                         % html.escape(link))
         if v:
             parts.append('<span class="verdict">graded: %s</span>' % html.escape(v))
         parts.append("</div></div>")

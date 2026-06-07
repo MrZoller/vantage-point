@@ -234,8 +234,10 @@ model (with a one-line notice on stderr) — nothing is hardcoded.
   monitor here). Daily recurring runs are exactly the use case the $200 Max tier's
   extra headroom buys you.
 - **Where output goes.** Reports land in `kb/YYYY-MM-DD.{daily,weekly}.md`; stderr
-  for each run is alongside as `.err`. The `delivery` block in `monitor.sh` is
-  commented out — uncomment the msmtp lines (or wire Slack/Telegram) when ready.
+  for each run is alongside as `.err`. Email delivery is wired and active whenever
+  `output.email_to` is set (sent via msmtp — see "Email delivery" above); the
+  Slack/Telegram lines in `monitor.sh`'s deliver block are commented placeholders
+  to wire up if you want another channel.
 - **Run usage log.** Each run appends one JSON line to `state/runs.log` —
   timestamp, mode, turns, duration, token usage, `session_id`, and `cost_usd`.
   That `cost_usd` is an **API-equivalent estimate**, not actual Max-subscription

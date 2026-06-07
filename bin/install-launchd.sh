@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install-launchd.sh [uninstall] — (re)install the daily + weekly launchd agents
+# install-launchd.sh [uninstall] - (re)install the daily + weekly launchd agents
 # WITHOUT editing anything tracked in the repo.
 #
 # It generates the real plists from the launchd/*.plist templates into
@@ -27,7 +27,7 @@ LABELS=(ai.zoller.vantagepoint.daily ai.zoller.vantagepoint.weekly)
 LEGACY_LABELS=(ai.zoller.marketmonitor.daily ai.zoller.marketmonitor.weekly)
 
 command -v launchctl >/dev/null 2>&1 || {
-  echo "launchctl not found — launchd is macOS-only. On Linux use cron (see README)." >&2
+  echo "launchctl not found - launchd is macOS-only. On Linux use cron (see README)." >&2
   exit 1
 }
 

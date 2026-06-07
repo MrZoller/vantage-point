@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# bootstrap.sh — one-time (and slow-refresh) profile builder.
+# bootstrap.sh - one-time (and slow-refresh) profile builder.
 # Researches subject + anchor from their seeds and writes profile.draft.yaml
-# for you to review. It deliberately does NOT touch profile.yaml — approving
+# for you to review. It deliberately does NOT touch profile.yaml - approving
 # the draft is a human step (the governance gate).
 set -euo pipefail
 
@@ -43,7 +43,7 @@ MODEL_ARGS=()
 if [ -n "$MODEL" ]; then
   MODEL_ARGS=(--model "$MODEL")
 else
-  echo "[bootstrap] models.bootstrap not set in $CONFIG — using CLI default model" >&2
+  echo "[bootstrap] models.bootstrap not set in $CONFIG - using CLI default model" >&2
 fi
 
 # Fold in human calibration grades (thumbs up/down recorded via the review UI) so a
@@ -59,12 +59,12 @@ if [ -s "$FEEDBACK" ]; then
     FEEDBACK_DATA="$(python3 bin/dedupe-feedback.py "$FEEDBACK")"
   else
     FEEDBACK_DATA="$(cat "$FEEDBACK")"
-    echo "[bootstrap] WARNING: python3/dedupe-feedback.py unavailable — feeding raw feedback (regrades not deduped)" >&2
+    echo "[bootstrap] WARNING: python3/dedupe-feedback.py unavailable - feeding raw feedback (regrades not deduped)" >&2
   fi
   echo "[bootstrap] including $(printf '%s\n' "$FEEDBACK_DATA" | grep -c .) calibration grade(s) from $FEEDBACK" >&2
   FEEDBACK_NOTE="
 
-Human calibration grades — the user's thumbs up/down on past surfaced items
+Human calibration grades - the user's thumbs up/down on past surfaced items
 (\`verdict\`: up = should have been surfaced, down = not relevant). Treat these as
 ground truth: tune \`relevance.rubric\` so it would score these correctly, and fold
 the clearest cases into \`relevance.calibration\` (relevant / not_relevant) in your draft.
@@ -80,7 +80,7 @@ claude -p "$(cat "$PROMPT")
 ---
 Below is the config you are profiling. Read its subject, anchor, seeds, scope,
 and any calibration examples, then research the public web. Write the filled
-\`derived\` blocks and \`relevance.rubric\` as valid YAML to ./$DRAFT — and ONLY
+\`derived\` blocks and \`relevance.rubric\` as valid YAML to ./$DRAFT - and ONLY
 to that file. Do NOT edit $CONFIG. Mark low-confidence inferences inline.
 
 \`\`\`yaml

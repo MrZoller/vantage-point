@@ -5,13 +5,23 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Run on macOS too: the agents deploy on a macOS mini, so this is the only leg
+    # that exercises the BSD coreutils (date/sed/stat/ps) the conventions target —
+    # an all-Ubuntu matrix would never catch a GNU-vs-BSD divergence.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      # shellcheck and python3 are preinstalled on ubuntu-latest runners.
+      # shellcheck, jq, and python3 are preinstalled on both runner images.
       - name: shellcheck
         run: shellcheck bin/*.sh tests/run.sh
 

@@ -162,11 +162,11 @@ echo "[dashboard] wrote $OUT"
 
 # ---- optional: serve kb/ over HTTP so it's viewable via an SSH-forwarded port ----
 if [ "$SERVE" = 1 ]; then
-  command -v python3 >/dev/null 2>&1 || { echo "[dashboard] python3 not found — cannot --serve" >&2; exit 1; }
+  command -v python3 >/dev/null 2>&1 || { echo "[dashboard] python3 not found - cannot --serve" >&2; exit 1; }
   echo "[dashboard] serving kb/ at http://localhost:$PORT/  (Ctrl-C to stop)"
   echo "[dashboard] over SSH:  ssh -L $PORT:localhost:$PORT you@host   then open the URL locally"
   # `cd kb` (not --directory) for compatibility with older python3; exec so Ctrl-C
-  # stops cleanly. Bind to localhost only — pair with SSH port-forwarding, not a
+  # stops cleanly. Bind to localhost only - pair with SSH port-forwarding, not a
   # public listener.
   cd kb && exec python3 -m http.server "$PORT" --bind 127.0.0.1
 fi
