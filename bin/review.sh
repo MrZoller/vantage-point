@@ -21,7 +21,7 @@ case "${1:-}" in
   *) echo "usage: review.sh [--port N]" >&2; exit 2 ;;
 esac
 
-command -v python3 >/dev/null 2>&1 || { echo "python3 not found — cannot serve the review UI" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found - cannot serve the review UI" >&2; exit 1; }
 
 # Refresh the dashboard too, best-effort, so it's current alongside grading.
 if [ -f bin/dashboard.sh ]; then bash bin/dashboard.sh >/dev/null 2>&1 || true; fi

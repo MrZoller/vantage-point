@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# usage.sh [days] — summarize per-run usage from state/runs.log (default: last 30 days).
+# usage.sh [days] - summarize per-run usage from state/runs.log (default: last 30 days).
 # monitor.sh appends one JSON line per run; this rolls them up so you can tune run
 # frequency and --max-turns.
 #
 # NOTE: cost_usd is an API-EQUIVALENT estimate from the CLI, NOT your actual
-# Max-subscription billing — treat it as a relative signal, not a bill.
+# Max-subscription billing - treat it as a relative signal, not a bill.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,8 +15,8 @@ DAYS="${1:-30}"
 case "$DAYS" in
   ''|*[!0-9]*) echo "usage: bin/usage.sh [days]   (days must be a positive integer)" >&2; exit 2 ;;
 esac
-command -v jq >/dev/null 2>&1 || { echo "jq not found — install it (brew install jq / apt install jq)" >&2; exit 1; }
-[ -f "$LOG" ] || { echo "no $LOG yet — run bin/monitor.sh first" >&2; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "jq not found - install it (brew install jq / apt install jq)" >&2; exit 1; }
+[ -f "$LOG" ] || { echo "no $LOG yet - run bin/monitor.sh first" >&2; exit 0; }
 
 # Slurp the log, keep rows within the window, and total the usage fields. A run can
 # log multiple pass rows (triage + deepdive); count runs from triage/legacy rows
@@ -28,9 +28,9 @@ jq -rs --argjson days "$DAYS" '
   | ($all | map(select((.pass // "triage") == "triage")))                 as $runs
   | "window:  last \($days) days",
     "runs:    \($runs | length)",
-    "by mode: " + (if ($runs | length) == 0 then "—"
+    "by mode: " + (if ($runs | length) == 0 then "-"
                    else ($runs | group_by(.mode) | map("\(.[0].mode)=\(length)") | join(", ")) end),
-    "passes:  " + (if ($all | length) == 0 then "—"
+    "passes:  " + (if ($all | length) == 0 then "-"
                    else ($all | group_by(.pass // "triage") | map("\(.[0].pass // "triage")=\(length)") | join(", ")) end),
     "cost:    $\(((((($all | map(.cost_usd // 0) | add) // 0)) * 100) | round) / 100) (API-equivalent estimate)",
     "turns:   \(($all | map(.num_turns // 0) | add) // 0)",

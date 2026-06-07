@@ -5,14 +5,28 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Run on macOS too: the agents deploy on a macOS mini, so this is the only leg
+    # that exercises the BSD coreutils (date/sed/stat/ps) the conventions target —
+    # an all-Ubuntu matrix would never catch a GNU-vs-BSD divergence.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      # shellcheck and python3 are preinstalled on ubuntu-latest runners.
+      # shellcheck is an OS-independent static analyzer and isn't preinstalled on
+      # the macOS runner image, so run it on Linux only. The macOS leg still runs
+      # bash -n + the unit tests, which is where the BSD/bash-3.2 coverage matters
+      # (run steps there execute under the system /bin/bash 3.2).
       - name: shellcheck
+        if: runner.os == 'Linux'
         run: shellcheck bin/*.sh tests/run.sh
 
       - name: syntax check (bash -n)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/run.sh — fast, dependency-light checks for the parts of the scripts that
+# tests/run.sh - fast, dependency-light checks for the parts of the scripts that
 # don't require the `claude` CLI. Run locally with `bash tests/run.sh`; CI runs
 # the same file. Each check prints PASS/FAIL; the script exits nonzero if any fail.
 set -uo pipefail
@@ -39,7 +39,7 @@ make_install_stubs() {
   chmod +x "$dir/launchctl" "$dir/plutil"
 }
 
-# A minimal PATH dir containing ONLY bash, cat, and a capturing msmtp — and no
+# A minimal PATH dir containing ONLY bash, cat, and a capturing msmtp - and no
 # markdown renderer, whatever the host has installed. Lets the email tests pin
 # which branch (plain vs HTML) they exercise instead of depending on /usr/bin.
 make_min_bin() {
@@ -133,7 +133,7 @@ echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {
   # Run from an ISOLATED copy with no profile.yaml, so the review gate always
   # triggers regardless of whether the developer approved one in the real
-  # checkout — otherwise this test could fall through and spend a real claude run.
+  # checkout - otherwise this test could fall through and spend a real claude run.
   local rc out repo="$TMP/gaterepo"
   mkdir -p "$repo/bin"
   cp "$ROOT/bin/monitor.sh" "$repo/bin/"
@@ -161,7 +161,7 @@ test_email_helpers() {
   fi
 
   local report="$TMP/report.md"
-  printf '# Daily — 1 item\n\n* item with a bare url https://example.com/x\n' > "$report"
+  printf '# Daily - 1 item\n\n* item with a bare url https://example.com/x\n' > "$report"
 
   # ---- plain-text fallback: PATH has NO renderer (deterministic, host-independent) ----
   local pbin="$TMP/pbin"; make_min_bin "$pbin"
@@ -238,8 +238,22 @@ test_encode_header() {
     "$ROOT/bin/monitor.sh" > "$fns"
   # shellcheck disable=SC1090
   source "$fns"
+  # Build the non-ASCII needle from bytes at runtime (keeps this file pure ASCII): "Cafe" + U+00E9.
+  local cafe; cafe="Caf$(printf '\303\251')"
   assert_eq "ASCII passes through unchanged" "[Vantage Point: Plain] daily" "$(encode_header "[Vantage Point: Plain] daily")"
-  assert_contains "non-ASCII becomes an RFC 2047 encoded-word" "$(encode_header "Café")" "=?UTF-8?B?"
+  assert_contains "non-ASCII becomes an RFC 2047 encoded-word" "$(encode_header "$cafe")" "=?UTF-8?B?"
+
+  # Regression: detection must NOT depend on an external grep. On a PATH with no grep
+  # (but with base64/tr for the encode branch), a non-ASCII subject must still be
+  # encoded and an ASCII one must pass through - proving raw UTF-8 can't slip into a
+  # header just because grep is missing from a minimal launchd-style PATH.
+  local nbin="$TMP/nogrep"; mkdir -p "$nbin"
+  local t; for t in bash cat base64 tr; do ln -s "$(command -v "$t")" "$nbin/$t"; done
+  local enc asc
+  enc="$( PATH="$nbin" bash -c 'set -e; . "$1"; encode_header "$2"' _ "$fns" "$cafe" )"
+  asc="$( PATH="$nbin" bash -c 'set -e; . "$1"; encode_header "$2"' _ "$fns" "plain ascii" )"
+  assert_contains "non-ASCII is encoded even with no grep on PATH" "$enc" "=?UTF-8?B?"
+  assert_eq "ASCII passes through even with no grep on PATH" "plain ascii" "$asc"
 }
 test_encode_header
 
@@ -306,7 +320,7 @@ test_lock_skip() {
   out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
   assert_eq "skip exits 0" "0" "$rc"
-  assert_contains "prints 'in progress — skipping'" "$out" "in progress — skipping"
+  assert_contains "prints 'in progress - skipping'" "$out" "in progress - skipping"
   if [ -f "$marker" ]; then fail "claude was NOT invoked while locked"; else pass "claude was NOT invoked while locked"; fi
 }
 test_lock_skip
@@ -351,6 +365,11 @@ test_full_run() {
   assert_eq "seen.jsonl pruned to state_max_lines" "5" "$n"
   local o; o="$(wc -l < "$repo/state/observations.jsonl" | tr -d ' ')"
   assert_eq "observations.jsonl pruned to observations_max_lines" "5" "$o"
+  # The fixture claude writes no report, so this is the "silence is correct" path:
+  # the core ethos must be positively asserted, not just exercised.
+  assert_contains "prints the silence message on a quiet day" "$out" "nothing material"
+  if [ -f "$repo/kb/$(date +%F).daily.md" ]; then fail "no report written on a quiet day"; else pass "no report written on a quiet day"; fi
+  if [ -f "$repo/kb/.$(date +%F).daily.partial.md" ]; then fail "empty scratch file cleaned up"; else pass "empty scratch file cleaned up"; fi
   if [ -f "$repo/kb/index.html" ]; then pass "dashboard refreshed (kb/index.html)"; else fail "dashboard refreshed (kb/index.html)"; fi
   if [ -d "$repo/state/.lock" ]; then fail "lock released on exit"; else pass "lock released on exit"; fi
 }
@@ -521,6 +540,7 @@ test_feedback_server() {
     printf 'MALFORMED LINE {oops\n'                          # must not break the listing
     printf 'null\n'                                          # valid JSON, non-object -> must be skipped
     printf '{"id":"def456","title":"Pelagos restock","signal":"shift","score":0.7,"url":"https://y"}\n'
+    printf '{"id":"evil","title":"XSS attempt","signal":"opportunity","score":0.5,"url":"javascript:alert(1)"}\n'
   } > "$repo/state/seen.jsonl"
   ( exec python3 "$repo/bin/feedback-server.py" "$port" >/dev/null 2>&1 ) &
   local srv=$!
@@ -528,10 +548,77 @@ test_feedback_server() {
   curl -s "http://127.0.0.1:$port/grade?id=abc123&v=up" >/dev/null || true
   kill "$srv" 2>/dev/null || true
   assert_contains "review page lists a surfaced item (skips the malformed line)" "$home_page" "Tudor GMT leak"
+  assert_contains "renders a safe http(s) source link" "$home_page" 'href="https://x"'
+  case "$home_page" in
+    *'href="javascript'*) fail "drops a javascript: url instead of linking it" ;;
+    *) pass "drops a javascript: url instead of linking it" ;;
+  esac
   assert_contains "a grade is recorded to feedback.jsonl" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"verdict": "up"'
   assert_contains "the grade captures the item id" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"id": "abc123"'
 }
 test_feedback_server
+
+echo "== monitor.sh: an absolute state_file is named to Claude verbatim (no .// prefix) =="
+test_state_file_absolute() {
+  local repo="$TMP/absrepo" out abs="$TMP/abs-seen.jsonl" args="$TMP/abs_args"
+  make_fake_repo "$repo"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  monitor: sonnet
+monitoring:
+  run_timeout_seconds: 0
+  state_max_lines: 5
+  state_file: $abs
+tracking:
+  observations_max_lines: 5
+governance:
+  profile_refresh_days: 30
+output:
+  email_to: ""
+YAML
+  # A stub claude that records the prompt it was handed, so we can inspect the path ref.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "prompt names the absolute path verbatim" "$(cat "$args" 2>/dev/null)" "Your dedup/state file is $abs."
+  case "$(cat "$args" 2>/dev/null)" in
+    *".//"*) fail "no doubled .// prefix on an absolute state_file" ;;
+    *) pass "no doubled .// prefix on an absolute state_file" ;;
+  esac
+  if [ -f "$abs" ]; then pass "absolute state_file is created"; else fail "absolute state_file is created"; fi
+}
+test_state_file_absolute
+
+echo "== feedback-server.py: review UI honors monitoring.state_file =="
+test_feedback_state_file() {
+  local repo="$TMP/fbstate" out
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/feedback-server.py" "$repo/bin/"
+  printf 'monitoring:\n  state_file: ./state/custom-seen.jsonl   # relocated dedup file\n' \
+    > "$repo/monitor-config.yaml"
+  printf '{"id":"c1","title":"Custom-path item","signal":"opportunity","score":0.8,"url":"https://z"}\n' \
+    > "$repo/state/custom-seen.jsonl"
+  # Import the server module (no HTTP needed) so SEEN resolves against the repo's config.
+  out="$(python3 - "$repo/bin/feedback-server.py" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("fb", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("SEEN_BASENAME", os.path.basename(m.SEEN))
+print("TITLES", "|".join(i.get("title", "") for i in m.recent_items()))
+PY
+)"
+  assert_contains "resolves SEEN to the configured state_file" "$out" "SEEN_BASENAME custom-seen.jsonl"
+  assert_contains "review UI reads items from the configured state_file" "$out" "Custom-path item"
+}
+test_feedback_state_file
 
 echo "== dedupe-feedback.py: latest verdict per id wins (used by bootstrap) =="
 test_feedback_dedupe() {
@@ -605,6 +692,75 @@ test_usage_empty() {
   assert_contains "reports zero cost (no jq null error)" "$out" "cost:    \$0"
 }
 test_usage_empty
+
+# An isolated bootstrap.sh checkout with a stub `claude`. The stub is installed under
+# the fake HOME's .npm-global/bin, which bootstrap.sh PREPENDS to PATH - so it wins
+# over any real claude on the host, keeping the test hermetic (no network call).
+make_fake_bootstrap_repo() {  # <repo> <home> [nomodel]
+  local repo="$1" home="$2"
+  mkdir -p "$repo/bin" "$repo/state" "$home/.npm-global/bin"
+  cp "$ROOT/bin/bootstrap.sh" "$ROOT/bin/dedupe-feedback.py" "$repo/bin/"
+  if [ "${3:-}" = nomodel ]; then
+    printf 'version: 1\nmodels:\n  monitor: sonnet\n' > "$repo/monitor-config.yaml"
+  else
+    printf 'version: 1\nmodels:\n  bootstrap: opus\n' > "$repo/monitor-config.yaml"
+  fi
+  printf 'bootstrap prompt (test fixture)\n' > "$repo/bootstrap-prompt.md"
+  cat > "$home/.npm-global/bin/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf 'derived: {}\n' > profile.draft.yaml
+exit 0
+SH
+  chmod +x "$home/.npm-global/bin/claude"
+}
+
+echo "== bootstrap.sh: refuses to run without its config/prompt =="
+test_bootstrap_gates() {
+  local repo="$TMP/bootgate" out rc
+  mkdir -p "$repo/bin"
+  cp "$ROOT/bin/bootstrap.sh" "$repo/bin/"
+  out="$( cd "$repo" && bash bin/bootstrap.sh 2>&1 )"; rc=$?
+  assert_eq "missing config exits 1" "1" "$rc"
+  assert_contains "names the missing config" "$out" "monitor-config.yaml"
+  printf 'version: 1\n' > "$repo/monitor-config.yaml"
+  out="$( cd "$repo" && bash bin/bootstrap.sh 2>&1 )"; rc=$?
+  assert_eq "missing prompt exits 1" "1" "$rc"
+  assert_contains "names the missing prompt" "$out" "bootstrap-prompt.md"
+}
+test_bootstrap_gates
+
+echo "== bootstrap.sh: models.bootstrap drives --model (else CLI default) =="
+test_bootstrap_model() {
+  local repo="$TMP/bootmodel" home="$TMP/boothome" out args="$TMP/boot_args"
+  make_fake_bootstrap_repo "$repo" "$home"
+  out="$( cd "$repo" && CLAUDE_ARGS="$args" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "announces the configured bootstrap model" "$out" "model=opus"
+  assert_contains "passes --model opus to claude" "$(cat "$args" 2>/dev/null)" "--model opus"
+  local repo2="$TMP/bootnomodel" home2="$TMP/boothome2" args2="$TMP/boot_args2"
+  make_fake_bootstrap_repo "$repo2" "$home2" nomodel
+  out="$( cd "$repo2" && CLAUDE_ARGS="$args2" HOME="$home2" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "notes the CLI default when bootstrap model unset" "$out" "using CLI default model"
+  case "$(cat "$args2" 2>/dev/null)" in
+    *--model*) fail "omits --model when unset" ;;
+    *) pass "omits --model when unset" ;;
+  esac
+}
+test_bootstrap_model
+
+echo "== bootstrap.sh: folds in deduped calibration grades =="
+test_bootstrap_feedback() {
+  local repo="$TMP/bootfb" home="$TMP/boothome3" out args="$TMP/boot_args3"
+  make_fake_bootstrap_repo "$repo" "$home"
+  printf '%s\n' \
+    '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' \
+    '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
+    '{"timestamp":"2026-06-01T00:00:00Z","id":"xyz","verdict":"up"}' > "$repo/state/feedback.jsonl"
+  out="$( cd "$repo" && CLAUDE_ARGS="$args" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "folds in deduped calibration grades (2, not 3)" "$out" "including 2 calibration grade"
+  assert_contains "passes the calibration block to claude" "$(cat "$args" 2>/dev/null)" "calibration grades"
+}
+test_bootstrap_feedback
 
 echo
 echo "tests: $PASS passed, $FAIL failed"

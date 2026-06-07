@@ -12,6 +12,7 @@ Stdlib only.
 """
 import html
 import json
+import re
 import sys
 import os
 from datetime import datetime, timezone
@@ -19,9 +20,59 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SEEN = os.path.join(ROOT, "state", "seen.jsonl")
+
+
+def resolve_state_file():
+    """Resolve monitoring.state_file the same way bin/monitor.sh does.
+
+    monitor.sh honors a configured dedup path (default state/seen.jsonl), so the
+    review UI must read the SAME file or it shows nothing when state_file is
+    relocated. We mirror the cfg_get awk helper with a minimal block/key scan
+    (no YAML lib, per the repo's dependency-light convention).
+    """
+    cfg = os.path.join(ROOT, "monitor-config.yaml")
+    value = ""
+    try:
+        with open(cfg, encoding="utf-8") as f:
+            in_block = False
+            for line in f:
+                line = line.rstrip("\n")
+                if not in_block:
+                    if re.match(r"^monitoring:[ \t]*(#.*)?$", line):
+                        in_block = True
+                    continue
+                if line and line[0] not in " \t#":   # an unindented line ends the block
+                    break
+                parts = line.split()
+                if parts and parts[0] == "state_file:":
+                    value = line.split("state_file:", 1)[1]
+                    value = re.sub(r"\s+#.*$", "", value)        # drop a trailing comment
+                    value = re.sub(r"\s+", "", value)            # cfg_get strips whitespace
+                    value = value.replace('"', "").replace("'", "")
+                    break
+    except FileNotFoundError:
+        pass
+    if not value:
+        value = "state/seen.jsonl"
+    if value.startswith("./"):                                   # normalize like monitor.sh
+        value = value[2:]
+    return os.path.join(ROOT, value)
+
+
+SEEN = resolve_state_file()
 FEEDBACK = os.path.join(ROOT, "state", "feedback.jsonl")
 MAX_ITEMS = 60
+
+
+def safe_url(u):
+    """Only http/https are safe in a rendered href. Reject javascript:/data:/etc.
+
+    `url` comes from agent-written state/seen.jsonl (semi-trusted, LLM-derived from
+    web sweeps), so a value like `javascript:...` would otherwise become a clickable
+    link that executes on click. Returns the url if safe, else "" (link is dropped).
+    """
+    u = str(u).strip()
+    return u if u.lower().startswith(("http://", "https://")) else ""
 
 
 def read_jsonl(path):
@@ -121,8 +172,10 @@ def render(items, verdicts, just=None):
                      '<a class="up%s" href="/grade?id=%s&v=up" title="relevant">&#128077;</a>'
                      '<a class="down%s" href="/grade?id=%s&v=down" title="not relevant">&#128078;</a>'
                      % (up_on, rid, down_on, rid))
-        if it.get("url"):
-            parts.append('<a href="%s" target="_blank">source</a>' % html.escape(str(it["url"])))
+        link = safe_url(it.get("url"))
+        if link:
+            parts.append('<a href="%s" target="_blank" rel="noopener noreferrer">source</a>'
+                         % html.escape(link))
         if v:
             parts.append('<span class="verdict">graded: %s</span>' % html.escape(v))
         parts.append("</div></div>")
