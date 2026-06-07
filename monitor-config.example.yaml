@@ -98,7 +98,9 @@ monitoring:
     fuzzy_threshold: 0.85
 
 output:
-  report_template: ./templates/digest.md
+  # NOTE: this block is documentation, not wiring. The report path and delivery
+  # channel are controlled by bin/monitor.sh (REPORT=... and the commented msmtp
+  # block), not by these keys. Editing them here has no effect — change the script.
   knowledge_base: ./kb/       # accumulate over time; don't just email into the void
   distribution:
     - { type: email, to: "me@example.com" }   # or: file, slack, telegram, discord

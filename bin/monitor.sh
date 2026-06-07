@@ -19,6 +19,9 @@ PROFILE="profile.yaml"
 PROMPT="monitor-prompt.md"
 TODAY="$(date +%F)"
 REPORT="kb/${TODAY}.${MODE}.md"
+# This run writes here; we promote it to $REPORT only after claude exits 0, so a
+# transient failure on a same-day rerun can't destroy an earlier good report.
+RUN_REPORT="kb/.${TODAY}.${MODE}.partial.md"
 
 # The review gate, enforced in code: refuse to run on an unapproved profile.
 [ -f "$PROFILE" ] || {
@@ -30,6 +33,10 @@ mkdir -p state kb
 touch state/seen.jsonl
 
 echo "[monitor:$MODE] $TODAY -> $REPORT"
+
+# Clear only this run's scratch file (a leftover from an aborted earlier run).
+# $REPORT itself is left untouched until claude succeeds.
+rm -f "$RUN_REPORT"
 
 claude -p "$(cat "$PROMPT")
 
@@ -49,16 +56,20 @@ $(cat "$PROFILE")
 
 Your state file is ./state/seen.jsonl. Append every newly-evaluated item (full
 record for surfaced items, keys+score for dropped ones) so nothing is re-scored.
-Write the $MODE report to ./$REPORT. If MODE is daily and nothing clears the
+Write the $MODE report to ./$RUN_REPORT. If MODE is daily and nothing clears the
 threshold, write NOTHING to the report file and print exactly NO_MATERIAL_ITEMS." \
-  --allowedTools "Read,Write,Edit,WebSearch,WebFetch,Bash" \
+  --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
+  --disallowedTools "Bash" \
   --permission-mode acceptEdits \
   --max-turns 40 \
   --output-format text \
   2> "kb/${TODAY}.${MODE}.err"
 
+# claude exited 0 (set -e would have aborted otherwise). Promote this run's
+# output to $REPORT only now — so a failed rerun never clobbers an earlier report.
 # ---- deliver: plug in whatever channel you want ----
-if [ -s "$REPORT" ]; then
+if [ -s "$RUN_REPORT" ]; then
+  mv -f "$RUN_REPORT" "$REPORT"
   echo "[monitor:$MODE] report ready: $REPORT"
   # Email via msmtp (configure ~/.msmtprc against Google Workspace SMTP):
   # { printf 'Subject: [market-monitor] %s %s\n\n' "$MODE" "$TODAY"; cat "$REPORT"; } \
@@ -66,5 +77,8 @@ if [ -s "$REPORT" ]; then
   #
   # ...or push to Claude Code Channels / Telegram / Slack, or just read it from kb/.
 else
+  # Nothing material this run. Drop the empty scratch file; leave any existing
+  # $REPORT from an earlier successful run today in place.
+  rm -f "$RUN_REPORT"
   echo "[monitor:$MODE] nothing material — no report written (silence is correct)."
 fi
