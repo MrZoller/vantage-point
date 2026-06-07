@@ -1,4 +1,4 @@
-# market-monitor — runnable loop
+# Vantage Point — an autonomous market-intelligence agent
 
 Two agents over one config. **bootstrap** does the expensive research once and
 writes a profile you review; **monitor** runs cheaply every day/week against that
@@ -8,7 +8,7 @@ approved profile. Both are just `claude -p` invocations wrapped in shell.
 
 Committed to git (the reusable engine):
 ```
-market-monitor/
+vantage-point/
 ├── README.md
 ├── .gitignore
 ├── monitor-config.example.yaml   # template: subject, anchor, seeds, scope, calibration
@@ -25,8 +25,8 @@ market-monitor/
 │   ├── feedback-server.py        # the grading web app behind review.sh
 │   └── dedupe-feedback.py        # collapse feedback.jsonl to latest-per-id (for bootstrap)
 └── launchd/
-    ├── ai.zoller.marketmonitor.daily.plist    # templates; __MM_ROOT__ filled in at install
-    └── ai.zoller.marketmonitor.weekly.plist
+    ├── ai.zoller.vantagepoint.daily.plist    # templates; __VP_ROOT__ filled in at install
+    └── ai.zoller.vantagepoint.weekly.plist
 ```
 
 Created at runtime, gitignored (a specific deployment's data):
@@ -60,7 +60,7 @@ makes the review gate a literal, diffable file promotion.
 
 ## One-time setup
 
-1. Drop all the files into `~/market-monitor`, create your live config, and make
+1. Drop all the files into `~/vantage-point`, create your live config, and make
    the scripts executable:
    ```
    cp monitor-config.example.yaml monitor-config.yaml
@@ -114,11 +114,11 @@ To change *when* runs fire, edit the `StartCalendarInterval` in the
 
 Kick one off immediately to confirm wiring:
 ```
-launchctl kickstart -k gui/$(id -u)/ai.zoller.marketmonitor.daily
+launchctl kickstart -k gui/$(id -u)/ai.zoller.vantagepoint.daily
 ```
 
 (Older macOS without `launchctl bootstrap`/`bootout`: `cp launchd/*.plist
-~/Library/LaunchAgents/` after substituting `__MM_ROOT__` yourself, then
+~/Library/LaunchAgents/` after substituting `__VP_ROOT__` yourself, then
 `launchctl load -w ~/Library/LaunchAgents/<plist>`.)
 
 Make sure the mini doesn't sleep through the schedule (Energy settings → prevent
@@ -162,9 +162,9 @@ via msmtp when it's set. Leave it blank to skip email and just read reports from
 If `email_to` is set but msmtp isn't installed, the run still succeeds and logs a notice;
 a send failure never loses the report (it's already written to `kb/`).
 
-The email Subject names the monitored market — `[market-monitor: <subject.name>] <mode>
+The email Subject names the monitored market — `[Vantage Point: <subject.name>] <mode>
 <date>` — so if you run several agents (one config each) their mail is easy to tell
-apart and filter. With no `subject.name` set it falls back to the bare `[market-monitor]`
+apart and filter. With no `subject.name` set it falls back to the bare `[Vantage Point]`
 tag.
 
 **Rendered HTML.** Because mail clients don't render markdown, the email is sent as
@@ -183,8 +183,8 @@ intended multi-channel shape. Only `email_to` is wired today.)
 
 launchd is macOS-only. On the Ubuntu box, skip the plists and use cron (`crontab -e`):
 ```
-30 6 * * *  $HOME/market-monitor/bin/monitor.sh daily  >> $HOME/market-monitor/state/daily.log 2>&1
-0  7 * * 1  $HOME/market-monitor/bin/monitor.sh weekly >> $HOME/market-monitor/state/weekly.log 2>&1
+30 6 * * *  $HOME/vantage-point/bin/monitor.sh daily  >> $HOME/vantage-point/state/daily.log 2>&1
+0  7 * * 1  $HOME/vantage-point/bin/monitor.sh weekly >> $HOME/vantage-point/state/weekly.log 2>&1
 ```
 cron also runs with a minimal PATH, so the same `which claude` caveat applies — make
 sure that path is in the `export PATH=` line in `bin/*.sh` (the `/opt/homebrew` entry
@@ -381,7 +381,7 @@ dashboard, and the feedback grading server. CI (`.github/workflows/ci.yml`) runs
   `./bin/bootstrap.sh`, review `profile.draft.yaml`, then `cp profile.draft.yaml profile.yaml`.
 - **Job never fired.** Re-run `./bin/install-launchd.sh` (it regenerates the plist with
   the correct path), confirm the agent is loaded
-  (`launchctl print gui/$(id -u)/ai.zoller.marketmonitor.daily`), and the mini was awake.
+  (`launchctl print gui/$(id -u)/ai.zoller.vantagepoint.daily`), and the mini was awake.
   launchd logs go to `state/daily.out.log` / `state/daily.err.log`.
 - **Empty daily, no email.** Correct behavior when nothing clears threshold — the run
   prints `NO_MATERIAL_ITEMS` and writes no report. Check `kb/<date>.daily.err` to confirm

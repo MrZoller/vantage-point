@@ -4,7 +4,7 @@
 #
 # It generates the real plists from the launchd/*.plist templates into
 # ~/Library/LaunchAgents, substituting this checkout's absolute path for the
-# __MM_ROOT__ token, then loads them. The committed templates are never touched,
+# __VP_ROOT__ token, then loads them. The committed templates are never touched,
 # so a fresh clone stays clean and `git status` never shows local plist edits.
 #
 #   ./bin/install-launchd.sh            # install / reinstall both agents
@@ -21,7 +21,7 @@ shopt -u patsub_replacement 2>/dev/null || true
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LA_DIR="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
-LABELS=(ai.zoller.marketmonitor.daily ai.zoller.marketmonitor.weekly)
+LABELS=(ai.zoller.vantagepoint.daily ai.zoller.vantagepoint.weekly)
 
 command -v launchctl >/dev/null 2>&1 || {
   echo "launchctl not found — launchd is macOS-only. On Linux use cron (see README)." >&2
@@ -55,7 +55,7 @@ for label in "${LABELS[@]}"; do
   root_xml="${root_xml//</&lt;}"
   root_xml="${root_xml//>/&gt;}"
   template="$(cat "$src")"
-  printf '%s\n' "${template//__MM_ROOT__/$root_xml}" > "$dst"
+  printf '%s\n' "${template//__VP_ROOT__/$root_xml}" > "$dst"
 
   # Catch a malformed plist before launchd does (no-op if plutil is absent).
   if command -v plutil >/dev/null 2>&1; then
@@ -69,4 +69,4 @@ for label in "${LABELS[@]}"; do
 done
 
 echo "[install-launchd] done. Kick a run now to confirm wiring:"
-echo "  launchctl kickstart -k $DOMAIN/ai.zoller.marketmonitor.daily"
+echo "  launchctl kickstart -k $DOMAIN/ai.zoller.vantagepoint.daily"

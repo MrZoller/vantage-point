@@ -4,12 +4,12 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>ai.zoller.marketmonitor.weekly</string>
+  <string>ai.zoller.vantagepoint.weekly</string>
 
   <key>ProgramArguments</key>
   <array>
     <!-- Path is filled in by bin/install-launchd.sh; edit this template, not your copy. -->
-    <string>__MM_ROOT__/bin/monitor.sh</string>
+    <string>__VP_ROOT__/bin/monitor.sh</string>
     <string>weekly</string>
   </array>
 
@@ -22,8 +22,8 @@
   </dict>
 
   <key>StandardOutPath</key>
-  <string>__MM_ROOT__/state/weekly.out.log</string>
+  <string>__VP_ROOT__/state/weekly.out.log</string>
   <key>StandardErrorPath</key>
-  <string>__MM_ROOT__/state/weekly.err.log</string>
+  <string>__VP_ROOT__/state/weekly.err.log</string>
 </dict>
 </plist>

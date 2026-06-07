@@ -86,7 +86,7 @@ def record(item, verdict):
 
 
 PAGE_HEAD = """<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>market-monitor - grade</title><style>
+<title>Vantage Point - grade</title><style>
  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
    line-height:1.45;color:#1a1a1a;max-width:760px;margin:0 auto;padding:24px}
  h1{font-size:1.4em}.muted{color:#888}.item{border-bottom:1px solid #eee;padding:12px 0}
