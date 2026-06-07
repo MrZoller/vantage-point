@@ -25,8 +25,9 @@ jq -rs --argjson days "$DAYS" '
   | map(select((.timestamp | fromdateiso8601) >= $cutoff))
   | "window:  last \($days) days",
     "runs:    \(length)",
-    "by mode: " + ((group_by(.mode) | map("\(.[0].mode)=\(length)") | join(", ")) // "—"),
-    "cost:    $\(((map(.cost_usd // 0) | add) * 100 | round) / 100) (API-equivalent estimate)",
-    "turns:   \(map(.num_turns // 0) | add)",
-    "tokens:  in \(map(.input_tokens // 0) | add), out \(map(.output_tokens // 0) | add), cache-read \(map(.cache_read_input_tokens // 0) | add)"
+    "by mode: " + (if length == 0 then "—"
+                   else (group_by(.mode) | map("\(.[0].mode)=\(length)") | join(", ")) end),
+    "cost:    $\(((((map(.cost_usd // 0) | add) // 0) * 100) | round) / 100) (API-equivalent estimate)",
+    "turns:   \((map(.num_turns // 0) | add) // 0)",
+    "tokens:  in \((map(.input_tokens // 0) | add) // 0), out \((map(.output_tokens // 0) | add) // 0), cache-read \((map(.cache_read_input_tokens // 0) | add) // 0)"
 ' "$LOG"

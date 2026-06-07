@@ -67,7 +67,11 @@ case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-nu
 # skips. A crashed run leaves a stale lock, reclaimed when its owner is gone OR the
 # lock is older than any legitimate run could be (which also covers PID reuse).
 LOCK="state/.lock"
-LOCK_MAX_AGE=$(( RUN_TIMEOUT > 0 ? RUN_TIMEOUT + 600 : 7200 ))
+# Reclaim a lock whose owner has outlived any legitimate run (this also covers an
+# OS reusing the dead run's PID). With the timeout disabled (0) a real run has no
+# upper time bound, so age-based reclaim is OFF and we rely on owner-liveness alone.
+LOCK_MAX_AGE=$(( RUN_TIMEOUT > 0 ? RUN_TIMEOUT + 600 : 0 ))
+LOCK_SETUP_GRACE=30   # secs a lock may sit without a pid file before its owner is assumed dead
 
 lock_age_secs() {  # age (s) of the lock dir; huge if it's gone
   local mtime
@@ -81,10 +85,14 @@ acquire_lock() {
   local oldpid age
   oldpid="$(cat "$LOCK/pid" 2>/dev/null || true)"
   age="$(lock_age_secs)"
-  # Treat as active (skip) while young AND either still being set up (no pid yet)
-  # or owned by a live process. Anything older than a legitimate run is a crash.
-  if [ "$age" -lt "$LOCK_MAX_AGE" ] && { [ -z "$oldpid" ] || kill -0 "$oldpid" 2>/dev/null; }; then
-    return 1
+  if [ -z "$oldpid" ]; then
+    # Lock exists but no pid yet: another acquirer is mid-setup. Writing the pid
+    # takes milliseconds, so treat it as active only briefly.
+    if [ "$age" -lt "$LOCK_SETUP_GRACE" ]; then return 1; fi
+  elif kill -0 "$oldpid" 2>/dev/null; then
+    # Owner alive -> active, unless a time-bounded run has gone on impossibly long
+    # (only meaningful when a timeout is configured; disabled => no upper bound).
+    if [ "$LOCK_MAX_AGE" -le 0 ] || [ "$age" -lt "$LOCK_MAX_AGE" ]; then return 1; fi
   fi
   echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown}, age ${age}s)" >&2
   # Reclaim race-safely: rename the inspected dir out of the way (only one renamer

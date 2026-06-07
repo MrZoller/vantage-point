@@ -186,7 +186,7 @@ test_email_helpers
 # config/profile/prompt + a stub `claude` that records its invocation and prints a
 # JSON envelope without writing a report (so the run ends "nothing material").
 make_fake_repo() {
-  local repo="$1" lastboot="${2:-2099-01-01}"
+  local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
   cp "$ROOT/bin/monitor.sh" "$repo/bin/"
   cat > "$repo/monitor-config.yaml" <<YAML
@@ -194,7 +194,7 @@ version: 1
 models:
   monitor: sonnet
 monitoring:
-  run_timeout_seconds: 0
+  run_timeout_seconds: $run_timeout
   state_max_lines: 5
 governance:
   profile_refresh_days: 30
@@ -238,7 +238,7 @@ test_lock_skip
 echo "== monitor.sh: a live-pid lock that is too old is reclaimed (PID-reuse guard) =="
 test_lock_too_old() {
   local repo="$TMP/oldlockrepo" out rc
-  make_fake_repo "$repo"                       # run_timeout_seconds:0 -> LOCK_MAX_AGE 7200s
+  make_fake_repo "$repo" "2099-01-01" 60       # run_timeout 60s -> LOCK_MAX_AGE 660s
   mkdir -p "$repo/state/.lock"
   echo "$$" > "$repo/state/.lock/pid"          # a LIVE pid (this process)...
   touch -d '3 hours ago' "$repo/state/.lock"   # ...but the lock is far older than any run
@@ -290,6 +290,21 @@ test_usage() {
   assert_contains "sums turns in window (40, not 139)" "$out" "turns:   40"
 }
 test_usage
+
+echo "== usage.sh: an empty window reports zeros without erroring =="
+test_usage_empty() {
+  local repo="$TMP/usageemptyrepo" out rc
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/usage.sh" "$repo/bin/"
+  # Only an out-of-window run exists, so the 30-day window is empty.
+  printf '{"timestamp":"2000-01-01T00:00:00Z","mode":"daily","num_turns":99,"cost_usd":9.99}\n' \
+    > "$repo/state/runs.log"
+  out="$( bash "$repo/bin/usage.sh" 30 2>&1 )"; rc=$?
+  assert_eq "exits 0 on an empty window" "0" "$rc"
+  assert_contains "reports zero runs" "$out" "runs:    0"
+  assert_contains "reports zero cost (no jq null error)" "$out" "cost:    \$0"
+}
+test_usage_empty
 
 echo
 echo "tests: $PASS passed, $FAIL failed"
