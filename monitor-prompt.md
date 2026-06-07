@@ -108,13 +108,30 @@ data point is not a trend, so record it and wait rather than inferring a move.
 ```
 
 ## Report shapes
-**Daily (terse).** No preamble, no padding. Just the material items:
+The goal is a report that gets *read and acted on*, not skimmed and muted. Lead with
+the one thing that matters, group by signal, and for each item make the SO-WHAT and
+(when there is one) the recommended action explicit. Stay terse — richer ≠ longer.
+
+**Daily.** When there's more than one finding (items and/or trend changes), open with
+a single **bottom line** — the one thing to read if nothing else — then the material
+items. No preamble or padding otherwise.
 ```
 {date} — {N} items
+★ Bottom line: {the single most important thing this run, one sentence}
 
-• [{signal}] {title} ({source})
-  {so_what}  → {url}
+{What changed — see below, when trends fired}
+
+[opportunity]
+• {title} ({source})
+  why: {so_what in the anchor's terms}
+  do:  {recommended action — omit this line if there's no clear one}
+  → {url}  ({confidence})
+[threat] … [shift] …
 ```
+Group items under their `[signal]` (opportunity / threat / shift); within a group,
+highest score first. Drop the `★` line when there's only one finding. The `do:` line
+is optional — include it only when a concrete next step is genuinely warranted, never
+manufactured.
 
 **What changed (trends).** Emitted when `tracking.enabled` and ≥1 change was flagged
 this run (step 6). Lead the report with it when a move outranks the day's items — a
@@ -153,8 +170,21 @@ Borderline behavior (daily), explicitly:
 - Either way, borderline items are recorded to `state_file` (step 6, as dropped
   items with their score) so they are not re-surfaced as new on later runs.
 
-**Weekly (digest).** Top-line → grouped items → Watching → (Quiet on). Readable
-in under two minutes. The goal is that someone looks forward to it, not mutes it.
+**Weekly (digest).** Bottom line → What changed → Watchlist status → grouped items
+(opportunity / threat / shift) → Watching → (Quiet on). Readable in under two minutes;
+someone should look forward to it, not mute it.
+
+Include a **Watchlist status** table — a one-glance snapshot of each tracked entity
+(from `tracking.watch` + the profile). Render a unicode sparkline of recent values
+(`▁▂▃▄▅▆▇█`, oldest→newest) so a trend reads at a glance:
+```
+Watchlist status
+| Entity                 | Latest        | Recent     | Note                         |
+|------------------------|---------------|------------|------------------------------|
+| Tudor Black Bay 58     | $3,200 (↓12%) | ▇▆▅▃▂▁     | dipping; tracked-buy zone    |
+| Pelagos 39             | 4 listings    | ▁▂▂▃       | quiet                        |
+```
+(The same data also lands in the always-on `kb/index.html` dashboard.)
 
 ## Honesty constraints
 - **Silence beats noise.** If nothing is material, say nothing (daily) or say so
