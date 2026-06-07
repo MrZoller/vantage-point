@@ -32,6 +32,7 @@ RUN_REPORT="kb/.${TODAY}.${MODE}.partial.md"
 mkdir -p state kb
 touch state/seen.jsonl
 
+# ---- config readers ----
 # Read a single scalar `key:` nested under a top-level YAML `block:` from a config
 # file, dependency-light (no YAML lib). Prints the value (comment/quotes/space
 # stripped) or nothing. Always returns 0, so `x="$(cfg_get ...)"` is safe under set -e.
@@ -42,7 +43,8 @@ cfg_get() {  # <block> <key> [file=$CONFIG]
     inblk && $1 == key":" {
       line=$0
       sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  key: "
-      sub(/[[:space:]]*#.*$/, "", line)                  # drop trailing comment
+      sub(/^#.*$/, "", line)                             # value is only a comment -> empty
+      sub(/[[:space:]]+#.*$/, "", line)                  # drop a real trailing comment
       gsub(/[[:space:]]/, "", line)                      # drop surrounding space
       gsub(/["\047]/, "", line)                          # drop quotes
       print line; exit
@@ -51,8 +53,9 @@ cfg_get() {  # <block> <key> [file=$CONFIG]
 }
 
 # Like cfg_get but PRESERVES internal spaces — for human-readable values such as
-# subject.name. Trims ends, then unwraps surrounding quotes (taking the quoted text
-# literally) or, if unquoted, drops a trailing "# comment".
+# subject.name. Trims ends, unwraps a surrounding quote pair (keeping internal
+# quotes, handling YAML \" and '' escapes), or for an unquoted value drops only a
+# real trailing "# comment" (whitespace before #, so e.g. "C# tools" is kept).
 cfg_get_text() {  # <block> <key> [file=$CONFIG]
   awk -v blk="$1" -v key="$2" '
     $0 ~ "^" blk ":[[:space:]]*(#.*)?$" { inblk=1; next }
@@ -61,13 +64,24 @@ cfg_get_text() {  # <block> <key> [file=$CONFIG]
       line=$0
       sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  key: "
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
-      if (line ~ /^".*"/)         { sub(/^"/, "", line); sub(/".*$/, "", line) }
-      else if (line ~ /^\047.*\047/) { sub(/^\047/, "", line); sub(/\047.*$/, "", line) }
-      else                        { sub(/[[:space:]]*#.*$/, "", line); sub(/[[:space:]]+$/, "", line) }
+      if (line ~ /^"/) {                                 # double-quoted scalar
+        sub(/^"/, "", line)
+        sub(/"[[:space:]]*(#.*)?$/, "", line)            # closing quote (+ trailing comment)
+        gsub(/\\"/, "\"", line)                          # YAML \" -> "
+      } else if (line ~ /^\047/) {                       # single-quoted scalar
+        sub(/^\047/, "", line)
+        sub(/\047[[:space:]]*(#.*)?$/, "", line)
+        gsub(/\047\047/, "\047", line)                   # YAML doubled single-quote escape
+      } else {                                           # unquoted scalar
+        sub(/^#.*$/, "", line)                           # value is only a comment -> empty
+        sub(/[[:space:]]+#.*$/, "", line)                # comment only after whitespace
+        sub(/[[:space:]]+$/, "", line)
+      }
       print line; exit
     }
   ' "${3:-$CONFIG}"
 }
+# ---- end config readers ----
 
 # ---- config knobs (all optional; sane fallbacks) ----
 MODEL="$(cfg_get models monitor)"
@@ -254,6 +268,17 @@ else
 fi
 
 # ---- email helpers ----
+# RFC 2047-encode a header value if it contains non-ASCII bytes (raw UTF-8 in mail
+# headers isn't portable). Pure-ASCII values pass through unchanged.
+encode_header() {  # <text> -> stdout: header-safe value
+  local s="$1"
+  if printf '%s' "$s" | LC_ALL=C grep -q '[^ -~]'; then
+    printf '=?UTF-8?B?%s?=' "$(printf '%s' "$s" | base64 | tr -d '\n')"
+  else
+    printf '%s' "$s"
+  fi
+}
+
 # Pick the first available markdown->HTML renderer (none -> empty string).
 # Always returns 0 so `renderer="$(md_renderer)"` is safe under `set -e` when no
 # renderer is installed (the common case).
@@ -322,6 +347,7 @@ email_report() {
   else
     subject="[market-monitor] $MODE $TODAY"
   fi
+  subject="$(encode_header "$subject")"   # RFC 2047 if the name has non-ASCII chars
   local html
   if html="$(render_md_to_html < "$report" 2>/dev/null)" && [ -n "$html" ]; then
     local boundary="mm-${TODAY}-$$"

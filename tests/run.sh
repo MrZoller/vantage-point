@@ -182,6 +182,44 @@ PY
 }
 test_email_helpers
 
+echo "== cfg_get_text: parses human-readable subject.name (quotes, escapes, #) =="
+test_cfg_get_text() {
+  local fns="$TMP/cfgfns.sh" cfg="$TMP/c.yaml"
+  awk '/^# ---- config readers ----/{f=1} /^# ---- end config readers ----/{f=0} f' \
+    "$ROOT/bin/monitor.sh" > "$fns"
+  # shellcheck disable=SC1090
+  source "$fns"
+  printf 'subject:\n  name: "Mechanical & microbrand wristwatches"\n' > "$cfg"
+  assert_eq "double-quoted: spaces + &" "Mechanical & microbrand wristwatches" "$(cfg_get_text subject name "$cfg")"
+  printf 'subject:\n  name: Plain Name   # c\n' > "$cfg"
+  assert_eq "unquoted: trailing comment stripped" "Plain Name" "$(cfg_get_text subject name "$cfg")"
+  printf 'subject:\n  name: C# developer tools\n' > "$cfg"
+  assert_eq "unquoted: literal # kept" "C# developer tools" "$(cfg_get_text subject name "$cfg")"
+  cat > "$cfg" <<'YAML'
+subject:
+  name: 'Bob''s Watches'
+YAML
+  assert_eq "single-quoted: doubled-quote escape" "Bob's Watches" "$(cfg_get_text subject name "$cfg")"
+  cat > "$cfg" <<'YAML'
+subject:
+  name: "Bob \"Sig\" Watches"
+YAML
+  assert_eq "double-quoted: internal escaped quotes" 'Bob "Sig" Watches' "$(cfg_get_text subject name "$cfg")"
+}
+test_cfg_get_text
+
+echo "== encode_header: RFC 2047-encodes non-ASCII, passes ASCII through =="
+test_encode_header() {
+  local fns="$TMP/ehfns.sh"
+  awk '/^# ---- email helpers ----/{f=1} /^# Promote this run.s output/{f=0} f' \
+    "$ROOT/bin/monitor.sh" > "$fns"
+  # shellcheck disable=SC1090
+  source "$fns"
+  assert_eq "ASCII passes through unchanged" "[market-monitor: Plain] daily" "$(encode_header "[market-monitor: Plain] daily")"
+  assert_contains "non-ASCII becomes an RFC 2047 encoded-word" "$(encode_header "Café")" "=?UTF-8?B?"
+}
+test_encode_header
+
 # Build an isolated, runnable monitor.sh checkout that needs no real claude: minimal
 # config/profile/prompt + a stub `claude` that records its invocation and prints a
 # JSON envelope without writing a report (so the run ends "nothing material").
