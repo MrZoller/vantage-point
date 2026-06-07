@@ -111,6 +111,16 @@ def recent_items():
     return items
 
 
+def _ts(rec):
+    """A sortable timestamp string; a missing or non-string value sorts earliest.
+
+    The log can be hand-edited, so a row may carry "timestamp": null; coerce to ""
+    rather than letting None >= str raise TypeError on the verdict lookup.
+    """
+    t = rec.get("timestamp")
+    return t if isinstance(t, str) else ""
+
+
 def latest_verdicts():
     """id -> most recent verdict (by timestamp), from the feedback log.
 
@@ -124,7 +134,7 @@ def latest_verdicts():
         if not rid:
             continue
         prev = latest.get(rid)
-        if prev is None or rec.get("timestamp", "") >= prev.get("timestamp", ""):
+        if prev is None or _ts(rec) >= _ts(prev):
             latest[rid] = rec
     return {rid: rec.get("verdict") for rid, rec in latest.items()}
 

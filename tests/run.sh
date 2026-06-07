@@ -665,9 +665,11 @@ test_feedback_dedupe() {
     '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
     'MALFORMED {oops' \
     'null' \
-    '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' \
+    '{"timestamp":null,"id":"abc","verdict":"up"}' \
     '{"timestamp":"2026-06-01T00:00:00Z","id":"xyz","verdict":"up"}' > "$fb"
-  out="$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb")"
+  local rc
+  out="$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb")"; rc=$?
+  assert_eq "exits 0 even with a non-string (null) timestamp" "0" "$rc"
   assert_eq "regraded + valid ids collapse to one row each (bad/null lines skipped)" "2" "$(printf '%s\n' "$out" | grep -c .)"
   assert_contains "the regraded id keeps its newest-timestamp verdict" "$out" '"id": "abc", "verdict": "down"'
   assert_eq "the stale up verdict for abc is dropped (only xyz is up)" "1" "$(printf '%s\n' "$out" | grep -c '"verdict": "up"')"
@@ -679,9 +681,11 @@ test_feedback_latest_verdict() {
   local repo="$TMP/fbverdict" out
   mkdir -p "$repo/bin" "$repo/state"
   cp "$ROOT/bin/feedback-server.py" "$repo/bin/"
-  # Newest grade ('down') appears first; append-order would wrongly return 'up'.
+  # Newest grade ('down') appears first; append-order would wrongly return 'up'. The
+  # null-timestamp row must not crash the comparison (it sorts earliest).
   printf '%s\n' \
     '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
+    '{"timestamp":null,"id":"abc","verdict":"up"}' \
     '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' > "$repo/state/feedback.jsonl"
   out="$(python3 - "$repo/bin/feedback-server.py" <<'PY'
 import importlib.util, sys
