@@ -17,7 +17,8 @@ market-monitor/
 ├── bin/
 │   ├── bootstrap.sh
 │   ├── monitor.sh                # monitor.sh {daily|weekly}
-│   └── install-launchd.sh        # install/remove the launchd agents (no repo edits)
+│   ├── install-launchd.sh        # install/remove the launchd agents (no repo edits)
+│   └── usage.sh                  # roll up state/runs.log: cost/turns/tokens
 └── launchd/
     ├── ai.zoller.marketmonitor.daily.plist    # templates; __MM_ROOT__ filled in at install
     └── ai.zoller.marketmonitor.weekly.plist
@@ -222,10 +223,27 @@ model (with a one-line notice on stderr) — nothing is hardcoded.
   timestamp, mode, turns, duration, token usage, `session_id`, and `cost_usd`.
   That `cost_usd` is an **API-equivalent estimate**, not actual Max-subscription
   billing; treat it as a relative signal for tuning run frequency and `--max-turns`.
+  Run `./bin/usage.sh [days]` (default 30) for a rolled-up summary — runs, cost,
+  turns, and tokens over the window.
+- **Reliability.** `monitor.sh` takes one shared lock (`state/.lock`) across both
+  modes — daily and weekly write the same `state/seen.jsonl`, so they must never run
+  at once — and skips if a run is already going, so an overlapping schedule or a
+  manual run can't corrupt shared state (keep the daily/weekly schedules from
+  overlapping; the defaults are 30 min apart). The lock records its owner by PID and
+  process start time; a crashed run's lock is reclaimed only once that exact process
+  is gone, so a long run (claude plus the email/render step) is never reclaimed out
+  from under itself and a recycled PID can't be mistaken for the original owner. The
+  claude call is wall-clock bounded by `monitoring.run_timeout_seconds` (default
+  1800s, `0` to disable; needs `timeout`/`gtimeout` from coreutils) so a stall can't
+  hang the job, and a hard failure prints a `run FAILED` line instead of vanishing
+  into the launchd log. `state/seen.jsonl` is pruned to `monitoring.state_max_lines`
+  (default 5000, `0` to disable) each run so it can't grow without bound.
 - **Refresh.** Re-run `bootstrap.sh` on the `governance.profile_refresh_days`
   cadence; review the new draft against the old `profile.yaml` before promoting.
   Anchors drift — new awards, hires, capabilities — and a stale profile quietly
-  mis-scores everything.
+  mis-scores everything. `monitor.sh` warns (it doesn't refuse) when the approved
+  profile's `last_bootstrapped` is older than `profile_refresh_days`, so a forgotten
+  refresh is visible in the run log.
 - **Tuning.** First week, read every daily and grade it. Move false positives into
   `relevance.calibration.not_relevant` and misses into `relevant`, then re-bootstrap
   so the rubric learns your taste. That feedback loop is the whole reason to
@@ -243,9 +261,11 @@ model (with a one-line notice on stderr) — nothing is hardcoded.
 
 `bash tests/run.sh` runs fast, dependency-light checks for the logic that doesn't
 need the `claude` CLI — the launchd plist generation (including paths with shell/XML
-special characters), `monitor.sh`'s argument and review-gate behavior, and the email
-plain-text/HTML rendering. CI (`.github/workflows/ci.yml`) runs `shellcheck`, a
-`bash -n` syntax pass, and this suite on every push and pull request.
+special characters), `monitor.sh`'s argument and review-gate behavior, the email
+plain-text/HTML rendering, the single-run lock (skip-if-running and stale-lock
+reclaim, via a stub `claude`), state pruning, the profile-staleness warning, and the
+`usage.sh` rollup. CI (`.github/workflows/ci.yml`) runs `shellcheck`, a `bash -n`
+syntax pass, and this suite on every push and pull request.
 
 ## Troubleshooting
 

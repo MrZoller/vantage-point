@@ -32,25 +32,101 @@ RUN_REPORT="kb/.${TODAY}.${MODE}.partial.md"
 mkdir -p state kb
 touch state/seen.jsonl
 
-# Read models.monitor from the live config with a dependency-light parse (no
-# YAML library). awk walks the `models:` block and pulls the one key, stripping
-# any inline comment and quotes. No match -> empty string (never aborts under
-# set -e, since this is an assignment).
-MODEL="$(awk '
-  $0 ~ /^models:[[:space:]]*(#.*)?$/ { inblk=1; next }
-  inblk && /^[^[:space:]#]/         { inblk=0 }
-  inblk && $1 == "monitor:" {
-    line=$0
-    sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  monitor: "
-    sub(/[[:space:]]*#.*$/, "", line)                  # drop trailing comment
-    gsub(/[[:space:]]/, "", line)                      # drop surrounding space
-    gsub(/["\047]/, "", line)                          # drop quotes
-    print line; exit
-  }
-' "$CONFIG")"
+# Read a single scalar `key:` nested under a top-level YAML `block:` from a config
+# file, dependency-light (no YAML lib). Prints the value (comment/quotes/space
+# stripped) or nothing. Always returns 0, so `x="$(cfg_get ...)"` is safe under set -e.
+cfg_get() {  # <block> <key> [file=$CONFIG]
+  awk -v blk="$1" -v key="$2" '
+    $0 ~ "^" blk ":[[:space:]]*(#.*)?$" { inblk=1; next }
+    inblk && /^[^[:space:]#]/           { inblk=0 }
+    inblk && $1 == key":" {
+      line=$0
+      sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  key: "
+      sub(/[[:space:]]*#.*$/, "", line)                  # drop trailing comment
+      gsub(/[[:space:]]/, "", line)                      # drop surrounding space
+      gsub(/["\047]/, "", line)                          # drop quotes
+      print line; exit
+    }
+  ' "${3:-$CONFIG}"
+}
 
-# Fall back to the CLI default by omitting --model when the key is absent/blank.
-# Print a notice so a typo'd config is visible rather than silently defaulting.
+# ---- config knobs (all optional; sane fallbacks) ----
+MODEL="$(cfg_get models monitor)"
+EMAIL_TO="$(cfg_get output email_to)"
+RUN_TIMEOUT="$(cfg_get monitoring run_timeout_seconds)"
+STATE_MAX_LINES="$(cfg_get monitoring state_max_lines)"
+REFRESH_DAYS="$(cfg_get governance profile_refresh_days)"
+case "$RUN_TIMEOUT"     in ''|*[!0-9]*) RUN_TIMEOUT=1800 ;; esac
+case "$STATE_MAX_LINES" in ''|*[!0-9]*) STATE_MAX_LINES=5000 ;; esac
+case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-numeric -> skip check
+
+# ---- single-run lock (shared across modes) ----
+# daily and weekly share state/seen.jsonl, so ONE lock guards all modes — never two
+# monitors at once, whatever the mode (so keep the daily/weekly schedules from
+# overlapping; the defaults are 30 min apart). An overlapping or manual run just
+# skips. A crashed run leaves a stale lock; it's reclaimed when its owner process is
+# gone. We identify the owner by PID *and* start time, so a recycled PID (different
+# start time) is correctly seen as stale and a live owner is never reclaimed — no
+# matter how long it runs (claude + email/render), and regardless of whether a
+# timeout is configured or enforceable.
+LOCK="state/.lock"
+LOCK_SETUP_GRACE=30   # secs a lock may sit without an owner token before its creator is assumed dead
+
+proc_start() {  # normalized start time of pid $1 (empty if it isn't running)
+  ps -o lstart= -p "$1" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'
+}
+
+lock_age_secs() {  # age (s) of the lock dir; huge if it's gone
+  local mtime
+  mtime="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || echo 0)"
+  echo "$(( $(date +%s) - mtime ))"
+}
+
+# Acquire the lock. Returns 0 (owned) or 1 (held by a live run / lost a reclaim race).
+acquire_lock() {
+  mkdir "$LOCK" 2>/dev/null && return 0   # uncontended
+  local owner oldpid oldstart
+  owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
+  if [ -z "$owner" ]; then
+    # Lock dir exists but the owner token isn't written yet: another acquirer is
+    # mid-setup (milliseconds). Treat as active only briefly; longer => it died there.
+    if [ "$(lock_age_secs)" -lt "$LOCK_SETUP_GRACE" ]; then return 1; fi
+  else
+    oldpid="${owner%% *}"
+    oldstart="${owner#* }"
+    # Active iff that EXACT process is still alive: same PID and same start time.
+    if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null && [ "$(proc_start "$oldpid")" = "$oldstart" ]; then
+      return 1
+    fi
+  fi
+  echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown})" >&2
+  # Reclaim race-safely: rename the inspected dir out of the way (only one renamer
+  # of a given dir can win), then let the final mkdir be the sole ownership arbiter
+  # — concurrent reclaimers can't both end up owning.
+  mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"
+  mkdir "$LOCK" 2>/dev/null
+}
+
+if acquire_lock; then
+  printf '%s %s\n' "$$" "$(proc_start "$$")" > "$LOCK/owner"
+else
+  echo "[monitor:$MODE] another run is in progress — skipping" >&2
+  exit 0
+fi
+
+# Release the lock on exit, and surface a hard failure (a set -e abort — e.g. the
+# claude run errored or timed out) that would otherwise vanish into the launchd log.
+cleanup() {
+  local rc=$?
+  rm -rf "$LOCK" 2>/dev/null || true
+  if [ "$rc" -ne 0 ]; then
+    echo "[monitor:$MODE] run FAILED (exit $rc) — see kb/${TODAY}.${MODE}.err" >&2
+  fi
+  return 0
+}
+trap cleanup EXIT
+
+# Pass --model only when set; otherwise omit it so the CLI default applies.
 MODEL_ARGS=()
 if [ -n "$MODEL" ]; then
   MODEL_ARGS=(--model "$MODEL")
@@ -58,20 +134,46 @@ else
   echo "[monitor:$MODE] models.monitor not set in $CONFIG — using CLI default model" >&2
 fi
 
-# Read output.email_to the same dependency-light way. Blank/absent -> empty
-# string, which the delivery step below treats as "don't email".
-EMAIL_TO="$(awk '
-  $0 ~ /^output:[[:space:]]*(#.*)?$/ { inblk=1; next }
-  inblk && /^[^[:space:]#]/          { inblk=0 }
-  inblk && $1 == "email_to:" {
-    line=$0
-    sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  email_to: "
-    sub(/[[:space:]]*#.*$/, "", line)                  # drop trailing comment
-    gsub(/[[:space:]]/, "", line)                      # drop surrounding space
-    gsub(/["\047]/, "", line)                          # drop quotes
-    print line; exit
-  }
-' "$CONFIG")"
+# Wall-clock bound on the claude run so a network stall can't hang the job forever.
+# 0 disables it; needs timeout/gtimeout (coreutils) — skipped with a note if absent.
+TIMEOUT_CMD=()
+if [ "$RUN_TIMEOUT" != 0 ]; then
+  if   command -v timeout  >/dev/null 2>&1; then TIMEOUT_CMD=(timeout  "$RUN_TIMEOUT")
+  elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_CMD=(gtimeout "$RUN_TIMEOUT")
+  else echo "[monitor:$MODE] note: no timeout/gtimeout — run is not time-bounded (brew install coreutils)" >&2
+  fi
+fi
+
+# ---- prune state so seen.jsonl can't grow without bound (0 disables) ----
+# Cap by line count: schema-agnostic and generous vs the dedup window, so this
+# never drops anything still relevant. We hold the lock, so there's no concurrent
+# writer. Prune before the run so claude reads a bounded file.
+if [ "$STATE_MAX_LINES" -gt 0 ]; then
+  cur_lines="$(wc -l < state/seen.jsonl)"
+  if [ "$cur_lines" -gt "$STATE_MAX_LINES" ]; then
+    tail -n "$STATE_MAX_LINES" state/seen.jsonl > state/seen.jsonl.tmp \
+      && mv state/seen.jsonl.tmp state/seen.jsonl
+    echo "[monitor:$MODE] pruned state/seen.jsonl: $cur_lines -> $STATE_MAX_LINES lines" >&2
+  fi
+fi
+
+# ---- profile staleness (governance.profile_refresh_days) ----
+# Anchors drift; a stale profile silently mis-scores. Warn (don't refuse) when the
+# approved profile is older than the refresh window.
+if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
+  last_boot="$(cfg_get subject last_bootstrapped "$PROFILE")"
+  case "$last_boot" in ''|null) last_boot="$(cfg_get anchor last_bootstrapped "$PROFILE")" ;; esac
+  # GNU `date -d` and BSD `date -j -f` differ; try both, give up quietly if neither parses.
+  boot_epoch="$(date -d "$last_boot" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$last_boot" +%s 2>/dev/null || true)"
+  if [ -n "$boot_epoch" ]; then
+    age_days=$(( ( $(date +%s) - boot_epoch ) / 86400 ))
+    if [ "$age_days" -gt "$REFRESH_DAYS" ]; then
+      echo "[monitor:$MODE] WARNING: profile is ${age_days}d old (> profile_refresh_days=$REFRESH_DAYS) — re-run bin/bootstrap.sh to refresh" >&2
+    fi
+  else
+    echo "[monitor:$MODE] note: couldn't parse profile last_bootstrapped ('$last_boot') — skipping staleness check" >&2
+  fi
+fi
 
 echo "[monitor:$MODE] model=${MODEL:-(CLI default)} $TODAY -> $REPORT"
 
@@ -82,7 +184,7 @@ rm -f "$RUN_REPORT"
 # --output-format json so we can log per-run usage below. The agent still writes
 # the report to $RUN_REPORT via the Write tool, so empty detection stays file-based
 # (the JSON envelope goes to stdout, which we capture instead of the report text).
-RUN_JSON="$(claude -p "$(cat "$PROMPT")
+RUN_JSON="$(${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} claude -p "$(cat "$PROMPT")
 
 ---
 RUN MODE: $MODE
