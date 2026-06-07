@@ -65,3 +65,9 @@ Write valid YAML for the `derived` blocks and `relevance.rubric`, matching the
 config schema. Set each `last_bootstrapped` to today's date. Assume a human reads
 and edits this before `monitor` ever runs — your job is to give them a strong,
 clearly-hedged first draft, not a finished verdict.
+
+Also write a short, human-readable Markdown **review summary** (the runner names the
+file) so the reviewer can triage the draft from their inbox: a one-line bottom line,
+then the market map, key players, the anchor, scoring-rubric highlights, and a clearly
+labelled list of your lowest-confidence inferences to check. It's a digest of the
+draft, never a replacement for reviewing it.

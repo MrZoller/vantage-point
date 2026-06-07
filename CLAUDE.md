@@ -11,14 +11,17 @@ stays consistent instead of re-deriving them.
 ## Architecture (one config, two agents)
 
 - **bootstrap** (`bin/bootstrap.sh` + `bootstrap-prompt.md`): one-time deep research →
-  writes `profile.draft.yaml`; a human promotes it to `profile.yaml` (the review gate).
+  writes `profile.draft.yaml` (+ a `profile.draft.summary.md`); a human promotes it to
+  `profile.yaml` (the review gate). Optionally editor-polishes + emails the summary as a
+  "draft ready for review" — a review aid, not the approval (that stays the local `cp`).
 - **monitor** (`bin/monitor.sh` + `monitor-prompt.md`): scheduled daily/weekly run —
   sweep → dedup → score → trends → optional deep-dive → optional edit → report → deliver.
 - **deep-dive** (`deepdive-prompt.md`): optional 2nd pass (`models.deepdive`) that
   corroborates the top items on a stronger model.
 - **editor** (`editor-prompt.md`): optional final pass (`models.editor`) that curates +
   polishes the report before delivery — non-destructive, no new facts, citations kept.
-- Both are `claude -p` calls wrapped in shell. Helpers: `dashboard.sh` (→ `kb/index.html`),
+- Both are `claude -p` calls wrapped in shell, sharing `config-lib.sh` (cfg readers) and
+  `email-lib.sh` (rendering + `send_email`). Helpers: `dashboard.sh` (→ `kb/index.html`),
   `review.sh`/`feedback-server.py` (grading UI → `state/feedback.jsonl`), `usage.sh`,
   `install-launchd.sh`, `dedupe-feedback.py`.
 - **State** (gitignored): `state/seen.jsonl` (dedup), `state/observations.jsonl`

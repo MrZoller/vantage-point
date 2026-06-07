@@ -70,6 +70,9 @@ flowchart LR
 1. **Profile (once).** The agent does deep research to build a profile of the market,
    the stakeholder's interests, and a scoring rubric — then **a human reviews and
    approves it.** Nothing is trusted until a person signs off (the quality gate).
+   It can email you a readable summary of that draft (what it inferred, plus its
+   lowest-confidence guesses) so you can review from your inbox; approving stays a
+   deliberate step you take, not something the email does for you.
 2. **Monitor (daily/weekly).** It sweeps sources, scores each item against the profile,
    and notices what's *changed* since last time. With the optional **deep-dive** pass
    enabled, the few highest-value items get a deeper look that **corroborates across

@@ -23,6 +23,8 @@ vantage-point/
 ├── bin/
 │   ├── bootstrap.sh
 │   ├── monitor.sh                # monitor.sh {daily|weekly}
+│   ├── config-lib.sh            # shared cfg_get/cfg_get_text (sourced by both agents)
+│   ├── email-lib.sh             # shared email rendering + sender (sourced by both agents)
 │   ├── install-launchd.sh        # install/remove the launchd agents (no repo edits)
 │   ├── usage.sh                  # roll up state/runs.log: cost/turns/tokens
 │   ├── dashboard.sh              # regenerate kb/index.html (entities + sparklines)
@@ -181,6 +183,14 @@ styled HTML version renders in clients that support it (bare URLs become clickab
 renderer? It falls back to a plain-text send. Either way `kb/` stays pure markdown — only
 the email is converted. The startup-adjacent log line notes which form was sent
 (`HTML via cmark-gfm` vs `plain text`).
+
+**Bootstrap also emails.** The same `output.email_to` switch makes `bootstrap.sh` send
+a **"profile draft ready for review"** email: a human-readable summary of what it
+inferred (market, key players, anchor, rubric highlights, and its lowest-confidence
+guesses to check), so you can triage the draft from your inbox. With `models.editor`
+set it's polished by the editor first. This is a review *aid* — approval stays the
+deliberate local step (`cp profile.draft.yaml profile.yaml`); the email even spells
+that out. Same fail-safe rules: a send failure never loses the on-disk draft.
 
 (The `output.distribution` list in the config is documentation only — it sketches the
 intended multi-channel shape. Only `email_to` is wired today.)

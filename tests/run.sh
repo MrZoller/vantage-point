@@ -50,6 +50,9 @@ make_min_bin() {
   write_capture_msmtp "$dir/msmtp"
 }
 
+# Copy the shared libs that monitor.sh / bootstrap.sh source into a test repo's bin/.
+cp_libs() { cp "$ROOT/bin/config-lib.sh" "$ROOT/bin/email-lib.sh" "$1"; }
+
 # assert_plist_ok <desc> <plist path> <expected ProgramArguments[0]>
 # Asserts the generated plist exists, has no leftover token, is valid XML, and its
 # program path decodes back to the expected value.
@@ -136,7 +139,7 @@ test_monitor_gates() {
   # checkout - otherwise this test could fall through and spend a real claude run.
   local rc out repo="$TMP/gaterepo"
   mkdir -p "$repo/bin"
-  cp "$ROOT/bin/monitor.sh" "$repo/bin/"
+  cp "$ROOT/bin/monitor.sh" "$repo/bin/"; cp_libs "$repo/bin"
   # Bogus mode exits 2 before touching the filesystem.
   ( bash "$repo/bin/monitor.sh" bogus >/dev/null 2>&1 ); rc=$?
   assert_eq "rejects an invalid mode with exit 2" "2" "$rc"
@@ -149,15 +152,15 @@ test_monitor_gates
 
 echo "== email helpers: plain-text fallback and HTML multipart =="
 test_email_helpers() {
-  # Extract just the email helper functions from monitor.sh (between the markers
-  # added for exactly this purpose) so we can unit-test them without claude.
+  # email_report lives in monitor.sh and delegates to the shared sender in
+  # bin/email-lib.sh; extract the wrapper and source the lib alongside it.
   local funcs="$TMP/emailfuncs.sh"
-  awk '/^# ---- email helpers ----/{f=1} /^# Promote this run.s output/{f=0} f' \
+  awk '/^# ---- email delivery ----/{f=1} /^# Promote this run.s output/{f=0} f' \
     "$ROOT/bin/monitor.sh" > "$funcs"
   if grep -q 'email_report()' "$funcs"; then
-    pass "extracted email helpers from monitor.sh"
+    pass "extracted email_report from monitor.sh"
   else
-    fail "extracted email helpers from monitor.sh"; return
+    fail "extracted email_report from monitor.sh"; return
   fi
 
   local report="$TMP/report.md"
@@ -165,15 +168,17 @@ test_email_helpers() {
 
   # ---- plain-text fallback: PATH has NO renderer (deterministic, host-independent) ----
   local pbin="$TMP/pbin"; make_min_bin "$pbin"
-  local plain="$TMP/plain.eml"
+  local plain_eml="$TMP/plain.eml"
   ( set -e
     # shellcheck disable=SC2030  # subshell-local env is intentional (isolation)
-    export MODE=daily TODAY=2026-01-01 MSG_OUT="$plain" PATH="$pbin"
+    export MODE=daily TODAY=2026-01-01 MSG_OUT="$plain_eml" PATH="$pbin"
+    # shellcheck source=bin/email-lib.sh
+    source "$ROOT/bin/email-lib.sh"
     # shellcheck disable=SC1090
     source "$funcs"
     email_report to@example.com "$report" )
   local ptype
-  ptype="$(python3 - "$plain" <<'PY'
+  ptype="$(python3 - "$plain_eml" <<'PY'
 import sys, email
 print(email.message_from_file(open(sys.argv[1])).get_content_type())
 PY
@@ -184,16 +189,18 @@ PY
   local hbin="$TMP/hbin"; make_min_bin "$hbin"
   printf '#!/usr/bin/env bash\necho "<p>rendered</p>"\nexit 0\n' > "$hbin/cmark-gfm"
   chmod +x "$hbin/cmark-gfm"
-  local html="$TMP/html.eml"
+  local html_eml="$TMP/html.eml"
   ( set -e
     # shellcheck disable=SC2030,SC2031  # subshell-local env is intentional (isolation)
-    export MODE=daily TODAY=2026-01-01 MSG_OUT="$html" PATH="$hbin"
+    export MODE=daily TODAY=2026-01-01 MSG_OUT="$html_eml" PATH="$hbin"
+    # shellcheck source=bin/email-lib.sh
+    source "$ROOT/bin/email-lib.sh"
     # shellcheck disable=SC1090
     source "$funcs"
     email_report to@example.com "$report" )
   # Validate it parses as a real multipart/alternative with text + html parts.
   local kinds
-  kinds="$(python3 - "$html" <<'PY'
+  kinds="$(python3 - "$html_eml" <<'PY'
 import sys, email
 m = email.message_from_file(open(sys.argv[1]))
 parts = [p.get_content_type() for p in m.walk() if p.get_content_maintype() != "multipart"]
@@ -204,7 +211,7 @@ PY
     "multipart/alternative text/html,text/plain" "$kinds"
   # The template chrome (header title, briefing subtitle, hidden preheader, footer)
   # is built in pure bash, so it must land even on this minimal PATH.
-  local doc; doc="$(cat "$html")"
+  local doc; doc="$(cat "$html_eml")"
   assert_contains "HTML header carries a title (subject fallback)" "$doc" 'class="title">Market intelligence'
   assert_contains "HTML header carries the briefing subtitle" "$doc" 'Daily briefing - 2026-01-01'
   assert_contains "HTML includes a hidden inbox preheader" "$doc" 'class="preheader"'
@@ -214,11 +221,9 @@ test_email_helpers
 
 echo "== cfg_get_text: parses human-readable subject.name (quotes, escapes, #) =="
 test_cfg_get_text() {
-  local fns="$TMP/cfgfns.sh" cfg="$TMP/c.yaml"
-  awk '/^# ---- config readers ----/{f=1} /^# ---- end config readers ----/{f=0} f' \
-    "$ROOT/bin/monitor.sh" > "$fns"
-  # shellcheck disable=SC1090
-  source "$fns"
+  local cfg="$TMP/c.yaml"
+  # shellcheck source=bin/config-lib.sh
+  source "$ROOT/bin/config-lib.sh"
   printf 'subject:\n  name: "Mechanical & microbrand wristwatches"\n' > "$cfg"
   assert_eq "double-quoted: spaces + &" "Mechanical & microbrand wristwatches" "$(cfg_get_text subject name "$cfg")"
   printf 'subject:\n  name: Plain Name   # c\n' > "$cfg"
@@ -240,11 +245,8 @@ test_cfg_get_text
 
 echo "== _esc: escapes &, <, > correctly (even under bash 5.2 patsub_replacement) =="
 test_esc() {
-  local fns="$TMP/escfns.sh"
-  awk '/^# ---- email helpers ----/{f=1} /^# Promote this run.s output/{f=0} f' \
-    "$ROOT/bin/monitor.sh" > "$fns"
-  # shellcheck disable=SC1090
-  source "$fns"
+  # shellcheck source=bin/email-lib.sh
+  source "$ROOT/bin/email-lib.sh"
   # Without disabling patsub_replacement this would mangle < / > to <lt; / >gt;.
   assert_eq "escapes angle brackets and ampersand" "&lt;b&gt; &amp; &lt;/b&gt;" "$(_esc '<b> & </b>')"
 }
@@ -252,11 +254,8 @@ test_esc
 
 echo "== encode_header: RFC 2047-encodes non-ASCII, passes ASCII through =="
 test_encode_header() {
-  local fns="$TMP/ehfns.sh"
-  awk '/^# ---- email helpers ----/{f=1} /^# Promote this run.s output/{f=0} f' \
-    "$ROOT/bin/monitor.sh" > "$fns"
-  # shellcheck disable=SC1090
-  source "$fns"
+  # shellcheck source=bin/email-lib.sh
+  source "$ROOT/bin/email-lib.sh"
   # Build the non-ASCII needle from bytes at runtime (keeps this file pure ASCII): "Cafe" + U+00E9.
   local cafe; cafe="Caf$(printf '\303\251')"
   assert_eq "ASCII passes through unchanged" "[Vantage Point: Plain] daily" "$(encode_header "[Vantage Point: Plain] daily")"
@@ -269,8 +268,8 @@ test_encode_header() {
   local nbin="$TMP/nogrep"; mkdir -p "$nbin"
   local t; for t in bash cat base64 tr; do ln -s "$(command -v "$t")" "$nbin/$t"; done
   local enc asc
-  enc="$( PATH="$nbin" bash -c 'set -e; . "$1"; encode_header "$2"' _ "$fns" "$cafe" )"
-  asc="$( PATH="$nbin" bash -c 'set -e; . "$1"; encode_header "$2"' _ "$fns" "plain ascii" )"
+  enc="$( PATH="$nbin" bash -c 'set -e; . "$1"; encode_header "$2"' _ "$ROOT/bin/email-lib.sh" "$cafe" )"
+  asc="$( PATH="$nbin" bash -c 'set -e; . "$1"; encode_header "$2"' _ "$ROOT/bin/email-lib.sh" "plain ascii" )"
   assert_contains "non-ASCII is encoded even with no grep on PATH" "$enc" "=?UTF-8?B?"
   assert_eq "ASCII passes through even with no grep on PATH" "plain ascii" "$asc"
 }
@@ -282,7 +281,7 @@ test_encode_header
 make_fake_repo() {
   local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
-  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/dashboard.sh" "$repo/bin/"
+  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/dashboard.sh" "$repo/bin/"; cp_libs "$repo/bin"
   cat > "$repo/monitor-config.yaml" <<YAML
 version: 1
 models:
@@ -874,27 +873,39 @@ test_usage_empty
 make_fake_bootstrap_repo() {  # <repo> <home> [nomodel]
   local repo="$1" home="$2"
   mkdir -p "$repo/bin" "$repo/state" "$home/.npm-global/bin"
-  cp "$ROOT/bin/bootstrap.sh" "$ROOT/bin/dedupe-feedback.py" "$repo/bin/"
+  cp "$ROOT/bin/bootstrap.sh" "$ROOT/bin/dedupe-feedback.py" "$repo/bin/"; cp_libs "$repo/bin"
   if [ "${3:-}" = nomodel ]; then
     printf 'version: 1\nmodels:\n  monitor: sonnet\n' > "$repo/monitor-config.yaml"
   else
     printf 'version: 1\nmodels:\n  bootstrap: opus\n' > "$repo/monitor-config.yaml"
   fi
   printf 'bootstrap prompt (test fixture)\n' > "$repo/bootstrap-prompt.md"
+  # Stub claude: the research call writes the draft + a summary and records its args;
+  # the editorial call (prompt names a PROFILE-DRAFT SUMMARY) edits the summary per env.
   cat > "$home/.npm-global/bin/claude" <<'SH'
 #!/usr/bin/env bash
-[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
-printf 'derived: {}\n' > profile.draft.yaml
-exit 0
+case "$*" in
+  *"PROFILE-DRAFT SUMMARY"*)
+    [ -n "${ED_MARKER:-}" ] && echo ran >> "$ED_MARKER"
+    [ -n "${ED_EMPTY:-}" ]   && : > profile.draft.summary.md
+    [ -n "${ED_REWRITE:-}" ] && printf '# edited summary\nbottom line\n' > profile.draft.summary.md
+    exit "${ED_EXIT:-0}" ;;
+  *)
+    [ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+    printf 'derived: {}\n' > profile.draft.yaml
+    printf '# Profile draft summary\nbottom line: test market\n' > profile.draft.summary.md
+    exit 0 ;;
+esac
 SH
   chmod +x "$home/.npm-global/bin/claude"
+  write_capture_msmtp "$home/.npm-global/bin/msmtp"
 }
 
 echo "== bootstrap.sh: refuses to run without its config/prompt =="
 test_bootstrap_gates() {
   local repo="$TMP/bootgate" out rc
   mkdir -p "$repo/bin"
-  cp "$ROOT/bin/bootstrap.sh" "$repo/bin/"
+  cp "$ROOT/bin/bootstrap.sh" "$repo/bin/"; cp_libs "$repo/bin"
   out="$( cd "$repo" && bash bin/bootstrap.sh 2>&1 )"; rc=$?
   assert_eq "missing config exits 1" "1" "$rc"
   assert_contains "names the missing config" "$out" "monitor-config.yaml"
@@ -936,6 +947,69 @@ test_bootstrap_feedback() {
   assert_contains "passes the calibration block to claude" "$(cat "$args" 2>/dev/null)" "calibration grades"
 }
 test_bootstrap_feedback
+
+echo "== bootstrap.sh: emails the draft summary when output.email_to is set =="
+test_bootstrap_email() {
+  local repo="$TMP/bootemail" home="$TMP/boothome4" out msg="$TMP/boot_msg.eml" args="$TMP/boot_email_args"
+  make_fake_bootstrap_repo "$repo" "$home"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+subject:
+  name: "Test Market & Co"
+output:
+  email_to: "me@example.com"
+YAML
+  out="$( cd "$repo" && CLAUDE_ARGS="$args" MSG_OUT="$msg" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "the research prompt asks for a review summary" "$(cat "$args" 2>/dev/null)" "review summary"
+  assert_contains "reports it emailed the summary" "$out" "emailed the draft summary"
+  if [ -f "$msg" ]; then
+    assert_contains "subject says the draft is ready for review" "$(grep -i '^Subject:' "$msg")" "profile draft ready for review"
+    assert_contains "subject names the monitored subject" "$(grep -i '^Subject:' "$msg")" "Test Market & Co"
+    assert_contains "body carries the local cp approval step" "$(cat "$msg")" "cp profile.draft.yaml profile.yaml"
+  else
+    fail "an email was sent"
+  fi
+}
+test_bootstrap_email
+
+echo "== bootstrap.sh: editorial pass polishes the summary when models.editor is set =="
+test_bootstrap_editor() {
+  local repo="$TMP/booted" home="$TMP/boothome5" out ed="$TMP/boot_ed" msg="$TMP/boot_msg2.eml"
+  make_fake_bootstrap_repo "$repo" "$home"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+  editor: opus
+output:
+  email_to: "me@example.com"
+YAML
+  out="$( cd "$repo" && ED_MARKER="$ed" ED_REWRITE=1 MSG_OUT="$msg" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  if [ -f "$ed" ]; then pass "editorial pass invoked on the summary"; else fail "editorial pass invoked on the summary"; fi
+  assert_contains "announces the editorial pass" "$out" "editorial pass on the summary"
+  assert_contains "the edited summary is what gets emailed" "$(cat "$msg" 2>/dev/null)" "edited summary"
+}
+test_bootstrap_editor
+
+echo "== bootstrap.sh: a failed summary edit keeps + emails the unedited summary =="
+test_bootstrap_editor_failure() {
+  local repo="$TMP/bootedfail" home="$TMP/boothome6" out msg="$TMP/boot_msg3.eml"
+  make_fake_bootstrap_repo "$repo" "$home"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+  editor: opus
+output:
+  email_to: "me@example.com"
+YAML
+  out="$( cd "$repo" && ED_EXIT=1 MSG_OUT="$msg" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "warns the editorial pass failed" "$out" "editorial pass failed"
+  assert_contains "still emails the unedited summary" "$(cat "$msg" 2>/dev/null)" "Profile draft summary"
+}
+test_bootstrap_editor_failure
 
 echo
 echo "tests: $PASS passed, $FAIL failed"
