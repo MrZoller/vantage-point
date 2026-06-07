@@ -496,6 +496,7 @@ test_feedback_server() {
   {
     printf '{"id":"abc123","title":"Tudor GMT leak","signal":"opportunity","score":0.9,"so_what":"matters","url":"https://x"}\n'
     printf 'MALFORMED LINE {oops\n'                          # must not break the listing
+    printf 'null\n'                                          # valid JSON, non-object -> must be skipped
     printf '{"id":"def456","title":"Pelagos restock","signal":"shift","score":0.7,"url":"https://y"}\n'
   } > "$repo/state/seen.jsonl"
   ( exec python3 "$repo/bin/feedback-server.py" "$port" >/dev/null 2>&1 ) &
@@ -508,6 +509,23 @@ test_feedback_server() {
   assert_contains "the grade captures the item id" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"id": "abc123"'
 }
 test_feedback_server
+
+echo "== bootstrap feedback dedupe: latest verdict per id wins =="
+test_feedback_dedupe() {
+  # Mirror the collapse bootstrap.sh applies to feedback.jsonl before calibrating.
+  local fb="$TMP/fb.jsonl" out
+  printf '%s\n' \
+    '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' \
+    'MALFORMED {oops' \
+    '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
+    '{"timestamp":"2026-06-01T00:00:00Z","id":"xyz","verdict":"up"}' > "$fb"
+  out="$(jq -rRn '
+    [ inputs | fromjson? | select(type == "object" and .id) ]
+    | group_by(.id) | map(max_by(.timestamp)) | .[] | @json' "$fb")"
+  assert_eq "regraded + valid ids collapse to one row each" "2" "$(printf '%s\n' "$out" | grep -c .)"
+  assert_contains "the regraded id keeps its latest verdict" "$out" '"id":"abc","verdict":"down"'
+}
+test_feedback_dedupe
 
 echo "== monitor.sh: email Subject names the monitored subject =="
 test_email_subject() {

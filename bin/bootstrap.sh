@@ -51,7 +51,17 @@ fi
 FEEDBACK="state/feedback.jsonl"
 FEEDBACK_NOTE=""
 if [ -s "$FEEDBACK" ]; then
-  echo "[bootstrap] including $(wc -l < "$FEEDBACK" | tr -d ' ') calibration grade(s) from $FEEDBACK" >&2
+  # The log is append-only, so a regrade leaves an older contradictory row. Collapse
+  # to the latest verdict per id (skipping malformed lines) so bootstrap sees one
+  # label per item. Needs jq; without it, fall back to the raw log.
+  if command -v jq >/dev/null 2>&1; then
+    FEEDBACK_DATA="$(jq -rRn '
+      [ inputs | fromjson? | select(type == "object" and .id) ]
+      | group_by(.id) | map(max_by(.timestamp)) | .[] | @json' "$FEEDBACK")"
+  else
+    FEEDBACK_DATA="$(cat "$FEEDBACK")"
+  fi
+  echo "[bootstrap] including $(printf '%s\n' "$FEEDBACK_DATA" | grep -c .) calibration grade(s) from $FEEDBACK" >&2
   FEEDBACK_NOTE="
 
 Human calibration grades — the user's thumbs up/down on past surfaced items
@@ -59,7 +69,7 @@ Human calibration grades — the user's thumbs up/down on past surfaced items
 ground truth: tune \`relevance.rubric\` so it would score these correctly, and fold
 the clearest cases into \`relevance.calibration\` (relevant / not_relevant) in your draft.
 \`\`\`jsonl
-$(cat "$FEEDBACK")
+$FEEDBACK_DATA
 \`\`\`"
 fi
 

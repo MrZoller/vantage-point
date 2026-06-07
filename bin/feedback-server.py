@@ -34,9 +34,11 @@ def read_jsonl(path):
                 if not line:
                     continue
                 try:
-                    out.append(json.loads(line))
+                    obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if isinstance(obj, dict):   # skip valid-JSON-but-non-object lines (null, [], "x")
+                    out.append(obj)
     except FileNotFoundError:
         pass
     return out
