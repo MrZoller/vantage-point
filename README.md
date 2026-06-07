@@ -4,6 +4,10 @@ Two agents over one config. **bootstrap** does the expensive research once and
 writes a profile you review; **monitor** runs cheaply every day/week against that
 approved profile. Both are just `claude -p` invocations wrapped in shell.
 
+> **New here?** Read **[docs/overview.md](docs/overview.md)** — a plain-language
+> explainer of what Vantage Point is, what it does, and how it can be used. This README
+> is the operator's runbook.
+
 ## Layout
 
 Committed to git (the reusable engine):
