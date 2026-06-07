@@ -129,8 +129,19 @@ Lock it down — msmtp refuses a world-readable file that holds a password:
 ```
 chmod 600 ~/.msmtprc
 ```
-Verify standalone (`echo "test" | msmtp you@zoller.ai`), then uncomment the msmtp
-block in `bin/monitor.sh` and set the recipient.
+Verify standalone (`echo "test" | msmtp you@zoller.ai`), then set the recipient in
+`monitor-config.yaml`:
+```yaml
+output:
+  email_to: "you@example.com"   # blank or absent = no email
+```
+That's the only switch — `monitor.sh` reads `output.email_to` and emails each report
+via msmtp when it's set. Leave it blank to skip email and just read reports from `kb/`.
+If `email_to` is set but msmtp isn't installed, the run still succeeds and logs a notice;
+a send failure never loses the report (it's already written to `kb/`).
+
+(The `output.distribution` list in the config is documentation only — it sketches the
+intended multi-channel shape. Only `email_to` is wired today.)
 
 ## Running on Linux (cron) instead
 

@@ -111,10 +111,14 @@ monitoring:
   borderline_band: 0.2      # how far below threshold counts as a near-miss
 
 output:
-  # NOTE: this block is documentation, not wiring. The report path and delivery
-  # channel are controlled by bin/monitor.sh (REPORT=... and the commented msmtp
-  # block), not by these keys. Editing them here has no effect — change the script.
+  # Reports always land in kb/. Set email_to to ALSO email each report via msmtp
+  # (install msmtp + configure ~/.msmtprc — see the README). Leave it blank or
+  # remove it to skip email and just read reports from kb/.
+  email_to: ""                # e.g. "you@example.com"; blank = no email
   knowledge_base: ./kb/       # accumulate over time; don't just email into the void
+  # NOTE: the distribution list below is documentation only — it sketches the
+  # intended multi-channel shape (file/slack/telegram/discord). Only email_to
+  # above is wired today; editing these entries has no effect.
   distribution:
     - { type: email, to: "me@example.com" }   # or: file, slack, telegram, discord
     - { type: file,  path: "./kb/{{date}}.md" }
