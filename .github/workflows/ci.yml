@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # shellcheck and python3 are preinstalled on ubuntu-latest runners.
+      - name: shellcheck
+        run: shellcheck bin/*.sh tests/run.sh
+
+      - name: syntax check (bash -n)
+        run: |
+          for f in bin/*.sh tests/run.sh; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+
+      - name: unit tests
+        run: bash tests/run.sh
