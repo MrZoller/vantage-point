@@ -12,7 +12,10 @@ esac
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-export PATH="$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Append (not prepend) common install dirs so launchd's minimal PATH can still
+# find claude/msmtp/etc., without overriding a PATH the caller set up first (e.g.
+# the test stubs, or a user's own claude earlier in PATH).
+export PATH="$PATH:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin"
 
 CONFIG="monitor-config.yaml"
 PROFILE="profile.yaml"
