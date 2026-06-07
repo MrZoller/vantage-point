@@ -107,7 +107,8 @@ It generates the real plists from the `launchd/*.plist` templates into
 wherever you cloned), then loads both agents. The committed templates are never
 touched, so `git status` stays clean and a fresh clone needs no re-editing. Re-run it
 any time to reinstall (it reloads idempotently); `./bin/install-launchd.sh uninstall`
-unloads and removes both.
+unloads and removes both. (It also retires any pre-rename `ai.zoller.marketmonitor.*`
+agents on every run, so upgrading from the old name won't double up your scheduled runs.)
 
 To change *when* runs fire, edit the `StartCalendarInterval` in the
 `launchd/*.plist` templates and re-run the installer.

@@ -106,6 +106,29 @@ test_uninstall() {
 }
 test_uninstall
 
+echo "== install-launchd: retires pre-rename (market-monitor) agents =="
+test_install_retires_legacy() {
+  local co="$TMP/legacy/checkout"
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  local home="$TMP/legacyhome" la
+  la="$home/Library/LaunchAgents"
+  mkdir -p "$la"
+  printf 'old daily plist\n'  > "$la/ai.zoller.marketmonitor.daily.plist"   # pre-rename agent
+  printf 'old weekly plist\n' > "$la/ai.zoller.marketmonitor.weekly.plist"
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.marketmonitor.daily.plist" ] || [ -f "$la/ai.zoller.marketmonitor.weekly.plist" ]; then
+    fail "legacy market-monitor agents removed"
+  else
+    pass "legacy market-monitor agents removed"
+  fi
+  if [ -f "$la/ai.zoller.vantagepoint.daily.plist" ]; then pass "new agent installed"; else fail "new agent installed"; fi
+}
+test_install_retires_legacy
+
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {
   # Run from an ISOLATED copy with no profile.yaml, so the review gate always

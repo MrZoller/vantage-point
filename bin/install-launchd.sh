@@ -22,16 +22,32 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LA_DIR="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
 LABELS=(ai.zoller.vantagepoint.daily ai.zoller.vantagepoint.weekly)
+# Pre-rebrand labels (market-monitor). Always retired so a reinstall after the
+# rename doesn't leave the old agents loaded and double up the daily/weekly runs.
+LEGACY_LABELS=(ai.zoller.marketmonitor.daily ai.zoller.marketmonitor.weekly)
 
 command -v launchctl >/dev/null 2>&1 || {
   echo "launchctl not found — launchd is macOS-only. On Linux use cron (see README)." >&2
   exit 1
 }
 
+remove_label() {  # bootout (ignore "not loaded") + delete the plist
+  launchctl bootout "$DOMAIN/$1" 2>/dev/null || true
+  rm -f "$LA_DIR/$1.plist"
+}
+
+# Retire any legacy (pre-rename) agents on every run, so they can't fire alongside
+# the renamed ones.
+for label in "${LEGACY_LABELS[@]}"; do
+  if [ -f "$LA_DIR/$label.plist" ]; then
+    remove_label "$label"
+    echo "[install-launchd] retired legacy agent $label"
+  fi
+done
+
 uninstall() {
   for label in "${LABELS[@]}"; do
-    launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
-    rm -f "$LA_DIR/$label.plist"
+    remove_label "$label"
     echo "[install-launchd] removed $label"
   done
 }
