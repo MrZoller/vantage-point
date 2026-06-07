@@ -358,6 +358,20 @@ PY
 }
 test_dashboard
 
+echo "== dashboard.sh: --serve argument handling =="
+test_dashboard_args() {
+  local repo="$TMP/dashargs" rc
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/dashboard.sh" "$repo/bin/"
+  ( cd "$repo" && bash bin/dashboard.sh --help >/dev/null 2>&1 ); rc=$?
+  assert_eq "--help exits 0" "0" "$rc"
+  ( cd "$repo" && bash bin/dashboard.sh --serve abc >/dev/null 2>&1 ); rc=$?
+  assert_eq "--serve with a non-numeric port exits 2" "2" "$rc"
+  ( cd "$repo" && bash bin/dashboard.sh --bogus >/dev/null 2>&1 ); rc=$?
+  assert_eq "an unknown argument exits 2" "2" "$rc"
+}
+test_dashboard_args
+
 echo "== monitor.sh: email Subject names the monitored subject =="
 test_email_subject() {
   local repo="$TMP/subjrepo" out rc msg="$TMP/subj.eml"
