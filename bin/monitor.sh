@@ -17,11 +17,15 @@ export PATH="$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 CONFIG="monitor-config.yaml"
 PROFILE="profile.yaml"
 PROMPT="monitor-prompt.md"
+DEEPDIVE_PROMPT="deepdive-prompt.md"
 TODAY="$(date +%F)"
 REPORT="kb/${TODAY}.${MODE}.md"
 # This run writes here; we promote it to $REPORT only after claude exits 0, so a
 # transient failure on a same-day rerun can't destroy an earlier good report.
 RUN_REPORT="kb/.${TODAY}.${MODE}.partial.md"
+# Triage writes its highest-scoring survivors here; the optional deep-dive pass
+# (stronger model) reads this queue and enriches those items in the report.
+QUEUE="state/.deepdive.${MODE}.queue.jsonl"
 
 # The review gate, enforced in code: refuse to run on an unapproved profile.
 [ -f "$PROFILE" ] || {
@@ -85,16 +89,21 @@ cfg_get_text() {  # <block> <key> [file=$CONFIG]
 
 # ---- config knobs (all optional; sane fallbacks) ----
 MODEL="$(cfg_get models monitor)"
+DEEPDIVE_MODEL="$(cfg_get models deepdive)"   # unset -> no deep-dive pass (triage only)
 EMAIL_TO="$(cfg_get output email_to)"
 DASHBOARD="$(cfg_get output dashboard)"
 SUBJECT_NAME="$(cfg_get_text subject name)"
 RUN_TIMEOUT="$(cfg_get monitoring run_timeout_seconds)"
 STATE_MAX_LINES="$(cfg_get monitoring state_max_lines)"
 OBS_MAX_LINES="$(cfg_get tracking observations_max_lines)"
+DEEPDIVE_THRESHOLD="$(cfg_get monitoring deepdive_threshold)"
+DEEPDIVE_MAX="$(cfg_get monitoring deepdive_max_items)"
 REFRESH_DAYS="$(cfg_get governance profile_refresh_days)"
 case "$RUN_TIMEOUT"     in ''|*[!0-9]*) RUN_TIMEOUT=1800 ;; esac
 case "$STATE_MAX_LINES" in ''|*[!0-9]*) STATE_MAX_LINES=5000 ;; esac
 case "$OBS_MAX_LINES"   in ''|*[!0-9]*) OBS_MAX_LINES=20000 ;; esac
+case "$DEEPDIVE_MAX"    in ''|*[!0-9]*) DEEPDIVE_MAX=5 ;; esac
+[ -n "$DEEPDIVE_THRESHOLD" ] || DEEPDIVE_THRESHOLD=0.85   # may be a decimal; agent applies it
 case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-numeric -> skip check
 
 # ---- single-run lock (shared across modes) ----
@@ -170,6 +179,8 @@ if [ -n "$MODEL" ]; then
 else
   echo "[monitor:$MODE] models.monitor not set in $CONFIG — using CLI default model" >&2
 fi
+DEEPDIVE_MODEL_ARGS=()
+[ -n "$DEEPDIVE_MODEL" ] && DEEPDIVE_MODEL_ARGS=(--model "$DEEPDIVE_MODEL")
 
 # Wall-clock bound on the claude run so a network stall can't hang the job forever.
 # 0 disables it; needs timeout/gtimeout (coreutils) — skipped with a note if absent.
@@ -214,11 +225,11 @@ if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
   fi
 fi
 
-echo "[monitor:$MODE] model=${MODEL:-(CLI default)} $TODAY -> $REPORT"
+echo "[monitor:$MODE] model=${MODEL:-(CLI default)}${DEEPDIVE_MODEL:+ deepdive=$DEEPDIVE_MODEL} $TODAY -> $REPORT"
 
-# Clear only this run's scratch file (a leftover from an aborted earlier run).
+# Clear this run's scratch files (leftovers from an aborted earlier run).
 # $REPORT itself is left untouched until claude succeeds.
-rm -f "$RUN_REPORT"
+rm -f "$RUN_REPORT" "$QUEUE"
 
 # --output-format json so we can log per-run usage below. The agent still writes
 # the report to $RUN_REPORT via the Write tool, so empty detection stays file-based
@@ -248,7 +259,14 @@ the tracked entities, append this run's observations, and follow the 'Trend dete
 Write the $MODE report to ./$RUN_REPORT, following the report rules in the prompt
 above — including the show_borderline / 'Considered (below threshold)' handling.
 For a daily run, if those rules produce no report at all (no items AND no changes),
-write NOTHING to the report file and print exactly NO_MATERIAL_ITEMS." \
+write NOTHING to the report file and print exactly NO_MATERIAL_ITEMS.
+
+DEEP-DIVE QUEUE: ${DEEPDIVE_MODEL:+enabled}${DEEPDIVE_MODEL:-disabled}. When enabled,
+also append your highest-scoring surfaced items — those with score >= $DEEPDIVE_THRESHOLD,
+at most $DEEPDIVE_MAX of them, highest first — to ./$QUEUE, one JSON object per line:
+{\"url\":...,\"title\":...,\"signal\":...,\"score\":...,\"so_what\":...}. A separate
+stronger agent will investigate these and enrich them in the report; you just queue
+them. Do not write the queue when it's disabled." \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
@@ -258,23 +276,95 @@ write NOTHING to the report file and print exactly NO_MATERIAL_ITEMS." \
   2> "kb/${TODAY}.${MODE}.err")"
 
 # claude exited 0 (set -e would have aborted otherwise).
-# ---- log per-run usage to state/runs.log ----
+# ---- log per-pass usage to state/runs.log ----
 # NOTE: total_cost_usd from the CLI is an API-EQUIVALENT estimate. These runs
 # authenticate against the Max subscription, so this is NOT your actual billing —
 # it's a relative cost/usage signal for tuning run frequency and --max-turns.
-if command -v jq >/dev/null 2>&1; then
-  printf '%s' "$RUN_JSON" | jq -c \
-    --arg ts "$(date -u +%FT%TZ)" --arg mode "$MODE" --arg date "$TODAY" \
-    '{timestamp:$ts, mode:$mode, date:$date,
+log_usage() {  # <pass-label> <run-json>
+  command -v jq >/dev/null 2>&1 || {
+    echo "[monitor:$MODE] ERROR: jq not found — usage not logged ($1). Install jq." >&2; return 0; }
+  printf '%s' "$2" | jq -c \
+    --arg ts "$(date -u +%FT%TZ)" --arg mode "$MODE" --arg date "$TODAY" --arg pass "$1" \
+    '{timestamp:$ts, mode:$mode, date:$date, pass:$pass,
       num_turns:.num_turns, duration_ms:.duration_ms, cost_usd:.total_cost_usd,
       input_tokens:.usage.input_tokens, output_tokens:.usage.output_tokens,
       cache_read_input_tokens:.usage.cache_read_input_tokens,
       cache_creation_input_tokens:.usage.cache_creation_input_tokens,
       session_id:.session_id}' >> state/runs.log \
-    || echo "[monitor:$MODE] WARNING: could not parse run JSON; usage not logged" >&2
-else
-  echo "[monitor:$MODE] ERROR: jq not found — usage not logged. Install jq (brew install jq / apt install jq)." >&2
+    || echo "[monitor:$MODE] WARNING: could not parse run JSON ($1); usage not logged" >&2
+}
+log_usage triage "$RUN_JSON"
+
+# ---- deep-dive pass (optional; stronger model on triage's top survivors) ----
+# Runs only when models.deepdive is set AND triage produced a report with queued
+# candidates — so most days there's no second call and cost is unchanged.
+if [ -n "$DEEPDIVE_MODEL" ] && [ -s "$RUN_REPORT" ] && [ -s "$QUEUE" ]; then
+  # Enforce the cost guard in code: never investigate more than deepdive_max_items,
+  # no matter what triage queued.
+  head -n "$DEEPDIVE_MAX" "$QUEUE" > "$QUEUE.tmp" && mv "$QUEUE.tmp" "$QUEUE"
+  n_dd="$(wc -l < "$QUEUE" | tr -d ' ')"
+  echo "[monitor:$MODE] deep-dive: investigating $n_dd item(s) (cap $DEEPDIVE_MAX) on $DEEPDIVE_MODEL" >&2
+  if [ -f "$DEEPDIVE_PROMPT" ]; then
+    # The deep-dive enriches $RUN_REPORT in place and may append corroborating
+    # observations. Back BOTH up first: a failed, timed-out, or report-emptying pass
+    # must leave the valid triage report AND the trusted observations intact —
+    # enrichment is optional and must be non-destructive.
+    cp "$RUN_REPORT" "$RUN_REPORT.pre-dd"
+    cp state/observations.jsonl state/observations.jsonl.pre-dd
+    dd_rc=0
+    DD_JSON="$(${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}"} claude -p "$(cat "$DEEPDIVE_PROMPT")
+
+---
+RUN MODE: $MODE
+TODAY: $TODAY
+
+Config (subject, anchor, scope, rubric context):
+\`\`\`yaml
+$(cat "$CONFIG")
+\`\`\`
+
+Approved profile — YOUR GROUND TRUTH:
+\`\`\`yaml
+$(cat "$PROFILE")
+\`\`\`
+
+Deep-dive queue (triage's top survivors) is ./$QUEUE, one JSON object per line.
+The current report is ./$RUN_REPORT and your longitudinal memory is
+./state/observations.jsonl. For each queued item, investigate per the prompt above
+(fetch the primary source, corroborate across independent sources, deepen the
+so-what with history/context), then EDIT ./$RUN_REPORT in place to enrich exactly
+those items — add corroboration status and adjusted confidence, and DOWNGRADE or
+flag anything you can't corroborate. Do not remove non-queued items or change the
+report's structure." \
+      ${DEEPDIVE_MODEL_ARGS[@]+"${DEEPDIVE_MODEL_ARGS[@]}"} \
+      --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
+      --disallowedTools "Bash" \
+      --permission-mode acceptEdits \
+      --max-turns 40 \
+      --output-format json \
+      2>> "kb/${TODAY}.${MODE}.err")" || dd_rc=$?
+    if [ "$dd_rc" -eq 0 ] && [ -s "$RUN_REPORT" ]; then
+      # Succeeded and left a non-empty report: keep the enrichment + its observations.
+      log_usage deepdive "$DD_JSON"
+      rm -f "$RUN_REPORT.pre-dd" state/observations.jsonl.pre-dd
+      echo "[monitor:$MODE] deep-dive complete" >&2
+    else
+      # Failed, timed out, or emptied the report: restore the pristine triage report
+      # AND observations, and carry on. The report still ships; it just isn't enriched.
+      if [ "$dd_rc" -eq 0 ]; then log_usage deepdive "$DD_JSON"; fi   # it ran; account for spend
+      mv -f "$RUN_REPORT.pre-dd" "$RUN_REPORT"
+      mv -f state/observations.jsonl.pre-dd state/observations.jsonl
+      if [ "$dd_rc" -eq 0 ]; then
+        echo "[monitor:$MODE] WARNING: deep-dive left an empty report — restored the triage report" >&2
+      else
+        echo "[monitor:$MODE] WARNING: deep-dive failed (exit $dd_rc) — restored the triage report" >&2
+      fi
+    fi
+  else
+    echo "[monitor:$MODE] WARNING: $DEEPDIVE_PROMPT missing — skipping deep-dive (triage report stands)" >&2
+  fi
 fi
+rm -f "$QUEUE"
 
 # ---- email helpers ----
 # RFC 2047-encode a header value if it contains non-ASCII bytes (raw UTF-8 in mail

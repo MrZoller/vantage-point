@@ -28,6 +28,9 @@ version: 1
 models:
   bootstrap: opus     # infrequent; depth matters — spend here
   monitor:   sonnet   # daily, shallow scoring — keep it cheap
+  # deepdive: opus    # OPTIONAL second pass, OFF by default. Uncomment to enable:
+                      # investigate + corroborate the few highest-scoring items on a
+                      # stronger model (see monitoring.deepdive_* and the README).
 
 subject:
   name: "Mechanical & microbrand wristwatches"
@@ -107,6 +110,10 @@ monitoring:
                               # can't hang the job (0 = no limit; needs timeout/gtimeout)
   state_max_lines: 5000       # cap on state/seen.jsonl length; pruned each run so
                               # dedup stays fast and it can't grow forever (0 = off)
+  # Deep-dive pass (only when models.deepdive is set): which triage survivors get
+  # the expensive second-pass investigation + corroboration.
+  deepdive_threshold: 0.85    # only items scoring >= this are investigated (keep high)
+  deepdive_max_items: 5       # cap how many per run (cost guard)
   dedup:
     by: [url, title_fuzzy]    # don't re-surface the same story reworded
     fuzzy_threshold: 0.85

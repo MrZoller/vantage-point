@@ -42,13 +42,16 @@ Findings land as decisions, not a list:
   entities + latest metric + sparkline, recent events, report links); `output.dashboard`
   toggles it.
 
-## Phase 3 — two-pass deep dive
+## Phase 3 — two-pass deep dive ✅ (shipped)
 
-Cheap triage on the monitor model (Sonnet) → for items above a high bar, a deep
-investigation on a stronger model: fetch the primary source, **corroborate across
-2–3 sources** (kills rumor amplification), pull history/context. New knobs:
-`models.deepdive` and a deep-dive score bar. Daily cost stays close to today's
-because the deep pass runs only on the few survivors.
+Triage on the `monitor` model queues its top survivors (`monitoring.deepdive_threshold`,
+capped at `deepdive_max_items`); when `models.deepdive` is set, a second pass on the
+stronger model investigates each — fetches the primary source, **corroborates across
+independent sources** (downgrades/flags rumors), and deepens the so-what with
+`observations.jsonl` history — then enriches those entries in the report in place
+(`deepdive-prompt.md`). Opt-in (remove `models.deepdive` to stay single-pass) and
+cost-bounded (fires only on high-scorers, capped per run); both passes are logged to
+`runs.log` with a `pass` field.
 
 ## Phase 4 — one-click calibration
 
