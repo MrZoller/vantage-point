@@ -1,0 +1,20 @@
+# --- live instance config (copy from monitor-config.example.yaml, then fill in) ---
+monitor-config.yaml
+
+# --- derived + operational artifacts: never commit ---
+# profile.yaml is the important one: re-pointed at a real org it's a
+# competitive-intelligence artifact built from public sources. Keep it local.
+profile.yaml
+profile.draft.yaml
+state/
+kb/
+*.err
+*.log
+
+# --- secrets / local mailer config ---
+.msmtprc
+.env
+*.local
+
+# --- OS / editor noise ---
+.DS_Store

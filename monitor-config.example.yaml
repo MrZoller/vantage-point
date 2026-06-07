@@ -1,0 +1,111 @@
+# ============================================================
+# market-monitor config
+# Two-input model: SUBJECT (the market) x ANCHOR (whose interests define relevance)
+#
+# Core idea: relevance is the RELATIONSHIP between a news item and the anchor's
+# profile, not a property of the item itself. "Is this important?" has no answer
+# in the abstract; "is this important to THIS anchor, in THIS market?" does.
+#
+# Lifecycle:
+#   1. bootstrap -> reads seeds, deep-researches subject + anchor, writes the
+#                   `derived` blocks below. Runs ONCE; refreshes occasionally.
+#   2. review    -> a human edits/approves the derived blocks before monitoring
+#                   trusts them. (This step is the biggest quality lever.)
+#   3. monitor   -> cheap, frequent. Diffs new public signal against the profile
+#                   + state, surfaces only what is NEW and RELEVANT.
+#
+# Re-pointing at a new market or stakeholder = swap `subject`/`anchor` and
+# re-run bootstrap. That swap is the proof the thing is a platform, not a one-off.
+# ============================================================
+
+version: 1
+
+subject:
+  name: "Mechanical & microbrand wristwatches"
+  description: >
+    The enthusiast watch market: new releases, microbrand drops, limited
+    editions, and secondary-market / auction movement. Excludes smartwatches.
+  # Trusted seeds. The agent EXPANDS outward from these; it does not treat them
+  # as the whole map. A few good seeds sharply reduce drift and hallucination.
+  seeds:
+    - https://www.hodinkee.com
+    - https://www.fratellowatches.com
+    - https://www.wornandwound.com    # strong microbrand coverage
+    - https://www.chrono24.com        # secondary-market pricing signal
+  scope:
+    in:  ["new releases", "microbrand drops", "limited editions",
+          "notable auction results", "discontinuations", "price movement"]
+    out: ["smartwatches", "fashion-brand quartz", "general lifestyle content"]
+  # ---- populated by bootstrap, then human-edited. Tells `monitor` how the
+  #      market is shaped and WHERE news tends to break first. ----
+  derived:
+    structure: null           # segments, price tiers, how the market is organized
+    key_players: []           # brands/houses that matter, each with a one-line why
+    news_sources: []          # RANKED list of where news actually breaks first
+    event_taxonomy: []        # kinds of events worth noticing (release, reissue, ...)
+    last_bootstrapped: null
+    confidence_notes: null    # what the agent is sure of vs. guessing
+
+anchor:
+  # WHOSE interests define relevance. Org, individual, or persona.
+  name: "Me — collector"
+  type: persona               # organization | individual | persona
+  description: >
+    A collector with specific taste. Relevance is judged against what I'd
+    actually want to know about, buy, or track — not the market at large.
+  relationship_to_subject: collector   # competitor | buyer | builder | collector | investor | ...
+  # Seeds that DESCRIBE the anchor. For a persona this is taste; for an org it's
+  # the division page, representative papers, recent awards, capability blurbs.
+  seeds:
+    taste:
+      likes: ["integrated-bracelet sport watches", "in-house movements",
+              "independent watchmakers", "sub-$2k microbrands with real finishing"]
+      dislikes: ["homage/clone designs", "oversized fashion pieces"]
+      owns: ["<optional: list a few to sharpen the model>"]
+      watchlist: ["<brands/refs I'm actively tracking>"]
+  # ---- populated by bootstrap, then human-edited. THIS is the relevance
+  #      lattice: what this anchor cares about + what counts as a signal. ----
+  derived:
+    interests: []             # inferred from seeds + research
+    peer_or_competitive_set: []   # collector: comparable brands/segments
+                                  # org: actual competitors
+    counterparties: []        # who they buy from / sell to / watch
+    signal_definitions:       # what makes something matter to THIS anchor
+      opportunity: null       # collector: a tracked ref dropping in price; new indie release
+      threat: null            # org: a competitor award in your exact wheelhouse
+      shift: null             # structural change worth flagging
+    last_bootstrapped: null
+    confidence_notes: null
+
+relevance:
+  # The scoring rubric `monitor` applies to each candidate item. Derived from the
+  # anchor profile by bootstrap, then calibrated against examples YOU grade.
+  threshold: 0.6              # 0..1; items below this are dropped silently
+  rubric: null                # populated by bootstrap; human-editable
+  calibration:                # your graded examples — single biggest quality lever
+    relevant: []              # things you'd want surfaced (+ one line: why)
+    not_relevant: []          # near-misses you'd want filtered (+ why)
+
+monitoring:
+  cadence:
+    # The pattern that gets read instead of muted:
+    daily:  { mode: terse,  send_if_empty: false }   # silent on "nothing material"
+    weekly: { mode: digest, day: Mon, time: "07:00" }
+  lookback_hours: 30          # small overlap so runs don't leave gaps
+  state_file: ./state/seen.jsonl    # longitudinal memory -> dedup + "is this NEW?"
+  dedup:
+    by: [url, title_fuzzy]    # don't re-surface the same story reworded
+    fuzzy_threshold: 0.85
+
+output:
+  report_template: ./templates/digest.md
+  knowledge_base: ./kb/       # accumulate over time; don't just email into the void
+  distribution:
+    - { type: email, to: "me@example.com" }   # or: file, slack, telegram, discord
+    - { type: file,  path: "./kb/{{date}}.md" }
+
+governance:
+  # Human-in-the-loop. Also your clean story when you take this to the gov group.
+  require_profile_review: true     # monitor won't run until derived blocks are approved
+  profile_refresh_days: 30         # anchors drift; re-bootstrap on a slow cadence
+  flag_low_confidence: true        # surface the agent's own uncertainty for review
