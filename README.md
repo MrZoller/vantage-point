@@ -239,6 +239,14 @@ model (with a one-line notice on stderr) — nothing is hardcoded.
   Calibrate from these real examples, then set `show_borderline: false` to return
   to silent empty days.
 
+## Tests
+
+`bash tests/run.sh` runs fast, dependency-light checks for the logic that doesn't
+need the `claude` CLI — the launchd plist generation (including paths with shell/XML
+special characters), `monitor.sh`'s argument and review-gate behavior, and the email
+plain-text/HTML rendering. CI (`.github/workflows/ci.yml`) runs `shellcheck`, a
+`bash -n` syntax pass, and this suite on every push and pull request.
+
 ## Troubleshooting
 
 - **`claude: command not found` in the scheduled run (but fine in your shell).** The
