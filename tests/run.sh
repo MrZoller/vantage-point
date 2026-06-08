@@ -1103,10 +1103,13 @@ test_portal_fallback_links_and_freshness
 
 echo "== portal.py: activity calendar + signal-mix render inline SVG from seen.jsonl =="
 test_portal_activity_visuals() {
-  local repo="$TMP/pav" out
+  local repo="$TMP/pav" out py="$TMP/pav.py"
   mkdir -p "$repo/bin" "$repo/state"
   cp "$ROOT/bin/portal.py" "$repo/bin/"
-  out="$(python3 - "$repo/bin/portal.py" <<'PY'
+  # Write the probe to a file (statement-level heredoc) rather than piping it through a
+  # heredoc inside $( ): bash 3.2's $() parser miscounts the parens in this script and
+  # closes the substitution early. Running a plain `python3 file` inside $() is safe.
+  cat > "$py" <<'PY'
 import importlib.util, json, os, sys
 from datetime import datetime, timezone, timedelta
 root = os.path.dirname(os.path.dirname(sys.argv[1]))
@@ -1139,7 +1142,7 @@ open(os.path.join(root, "state", "seen.jsonl"), "w").close()     # empty -> visu
 print("EMPTY_CAL", repr(m.activity_calendar()))
 print("EMPTY_MIX", repr(m.signal_mix()))
 PY
-)"
+  out="$(python3 "$py" "$repo/bin/portal.py")"
   assert_contains "calendar renders one inline SVG (and a non-scalar signal didn't crash it)" "$out" "CAL_SVG 1"
   assert_contains "calendar counts surfaced items per day (drops the 'dropped' item)" "$out" "CAL_TODAY True"
   assert_contains "signal mix renders one inline SVG" "$out" "MIX_SVG 1"
