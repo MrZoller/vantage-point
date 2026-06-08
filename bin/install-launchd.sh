@@ -56,6 +56,15 @@ else
 fi
 LABELS=("$PREFIX.daily" "$PREFIX.weekly")
 
+# A configured-but-unusable name must NOT silently become the default deployment.
+# Checked up front (before any LaunchAgents mutation) so a bad name can't leave the
+# checkout unscheduled - but only when installing; uninstall is path/marker-based and
+# must still work with a since-broken name.
+if [ "${1:-}" != "uninstall" ] && [ -n "$INSTANCE_RAW" ] && [ -z "$INSTANCE" ]; then
+  echo "deployment.instance ('$INSTANCE_RAW') has no usable [a-z0-9-] characters - pick an ASCII slug" >&2
+  exit 1
+fi
+
 remove_label() {  # bootout (ignore "not loaded") + delete the plist
   launchctl bootout "$DOMAIN/$1" 2>/dev/null || true
   rm -f "$LA_DIR/$1.plist"
@@ -83,6 +92,9 @@ label_is_ours() {
   [ -f "$plist" ] || return 1
   grep -qF "$PROG_LINE" "$plist" && return 0
   prog="$(sed -n 's#^[[:space:]]*<string>\(.*/bin/monitor.sh\)</string>[[:space:]]*$#\1#p' "$plist" | head -1)"
+  # The path is XML-escaped in the plist; decode it (amp last) before the -e test, or a
+  # sibling whose path has &/</> would look "gone" and defeat the hijack guard.
+  prog="${prog//&lt;/<}"; prog="${prog//&gt;/>}"; prog="${prog//&amp;/&}"
   [ -n "$prog" ] && [ ! -e "$prog" ]   # our old location is gone -> we moved here
 }
 
@@ -128,13 +140,6 @@ uninstall() {
 if [ "${1:-}" = "uninstall" ]; then
   uninstall
   exit 0
-fi
-
-# Install path only: a configured-but-unusable name must NOT silently become the
-# default deployment. (Uninstall above is path-based, so it doesn't need a valid name.)
-if [ -n "$INSTANCE_RAW" ] && [ -z "$INSTANCE" ]; then
-  echo "deployment.instance ('$INSTANCE_RAW') has no usable [a-z0-9-] characters - pick an ASCII slug" >&2
-  exit 1
 fi
 
 mkdir -p "$LA_DIR" "$ROOT/state"

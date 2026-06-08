@@ -293,6 +293,45 @@ test_install_copied_marker() {
 }
 test_install_copied_marker
 
+echo "== install-launchd: rejects a broken instance name before mutating LaunchAgents =="
+test_install_broken_keeps_legacy() {
+  local co="$TMP/inst-brk2/checkout" home="$TMP/brk2home" la rc
+  la="$home/Library/LaunchAgents"
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$la"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  printf 'old daily\n' > "$la/ai.zoller.marketmonitor.daily.plist"   # a legacy agent present
+  printf 'version: 1\ndeployment:\n  instance: "!!!"\n' > "$co/monitor-config.yaml"   # slugifies to ""
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 ); rc=$?
+  assert_eq "install rejects the broken name" "1" "$rc"
+  if [ -f "$la/ai.zoller.marketmonitor.daily.plist" ]; then pass "legacy agent NOT deleted when the install is rejected"; else fail "legacy agent NOT deleted when the install is rejected"; fi
+}
+test_install_broken_keeps_legacy
+
+echo "== install-launchd: collision guard decodes a sibling path with XML-special chars =="
+test_install_collision_escaped_path() {
+  local home="$TMP/eschome" la co a b rc out
+  la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  a="$TMP/esc-a&x/checkout"; b="$TMP/esc-b/checkout"
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    printf '#!/usr/bin/env bash\n' > "$co/bin/monitor.sh"   # so the sibling reads as "live"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: shared\n' > "$a/monitor-config.yaml"
+  printf 'version: 1\ndeployment:\n  instance: shared\n' > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  out="$( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" 2>&1 )"; rc=$?
+  assert_eq "second checkout is rejected (sibling path has &)" "1" "$rc"
+  assert_contains "the original (& path) agent is left intact" "$(cat "$la/ai.zoller.vantagepoint.shared.daily.plist")" "esc-a&amp;x/checkout/bin/monitor.sh"
+}
+test_install_collision_escaped_path
+
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {
   # Run from an ISOLATED copy with no profile.yaml, so the review gate always
