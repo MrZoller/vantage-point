@@ -21,6 +21,7 @@ pandoc/cmark-gfm/cmark chain the email uses, with a light built-in fallback.
 """
 import html
 import json
+import math
 import os
 import re
 import shutil
@@ -38,6 +39,10 @@ RUNS = os.path.join(ROOT, "state", "runs.log")
 KB = os.path.join(ROOT, "kb")
 PROFILE = os.path.join(ROOT, "profile.yaml")
 PROFILE_DRAFT = os.path.join(ROOT, "profile.draft.yaml")
+# Human-readable digests the bootstrap writes alongside the YAML. Rendered like the
+# bootstrap review email when present; the YAML stays the source of truth.
+PROFILE_SUMMARY = os.path.join(ROOT, "profile.summary.md")
+PROFILE_DRAFT_SUMMARY = os.path.join(ROOT, "profile.draft.summary.md")
 MAX_ITEMS = 60
 MAX_EVENTS = 12
 MAX_REPORTS = 30
@@ -154,6 +159,38 @@ def cfg_get(block, key, path=CONFIG):
     return value
 
 
+def cfg_get_text(block, key, path=CONFIG):
+    """Like cfg_get but preserves internal spaces (for human-readable values such as
+    subject.name) -- mirrors bin/config-lib.sh's cfg_get_text: trims the ends, unwraps a
+    surrounding quote pair, or for an unquoted value drops only a real trailing comment."""
+    value = ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            in_block = False
+            for line in f:
+                line = line.rstrip("\n")
+                if not in_block:
+                    if re.match(r"^%s:[ \t]*(#.*)?$" % re.escape(block), line):
+                        in_block = True
+                    continue
+                if line and line[0] not in " \t#":
+                    break
+                parts = line.split()
+                if parts and parts[0] == key + ":":
+                    v = line.split(key + ":", 1)[1].strip()
+                    if v[:1] == '"':
+                        v = re.sub(r'"\s*(#.*)?$', "", v[1:]).replace('\\"', '"')
+                    elif v[:1] == "'":
+                        v = re.sub(r"'\s*(#.*)?$", "", v[1:]).replace("''", "'")
+                    else:
+                        v = re.sub(r"\s+#.*$", "", v).rstrip()
+                    value = v
+                    break
+    except FileNotFoundError:
+        pass
+    return value
+
+
 def resolve_state_file():
     """monitoring.state_file (default state/seen.jsonl), normalized like monitor.sh."""
     value = cfg_get("monitoring", "state_file") or "state/seen.jsonl"
@@ -202,16 +239,24 @@ def safe_url(u):
     return u if u.lower().startswith(("http://", "https://")) else ""
 
 
+def _is_number(v):
+    """A finite real number. Excludes bools (a JSON bool is an int in Python) and the
+    NaN/Infinity tokens json.loads accepts but which can't be plotted."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
 def spark(values):
     """Unicode sparkline (U+2581..U+2588) for a numeric series, built from code points
-    at runtime so this file stays ASCII. Non-numeric values are ignored."""
-    nums = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    at runtime so this file stays ASCII. Non-finite/non-numeric values are dropped, and
+    we scale over the last-30 window we actually render so a stale outlier outside the
+    visible window can't flatten the current sparkline."""
+    nums = [v for v in values if _is_number(v)][-30:]
     if not nums:
         return ""
     lo, hi = min(nums), max(nums)
     rng = hi - lo
     out = []
-    for v in nums[-30:]:
+    for v in nums:
         level = 0 if rng == 0 else int((v - lo) / rng * 7 + 0.5)
         out.append(chr(0x2581 + level))
     return "".join(out)
@@ -225,7 +270,7 @@ def tracked_entities():
     for rec in read_jsonl(OBS):
         metric = rec.get("metric")
         value = rec.get("value")
-        if metric == "event" or not isinstance(value, (int, float)) or isinstance(value, bool):
+        if metric == "event" or not _is_number(value):
             continue
         entity = rec.get("entity")
         if not entity or not metric:
@@ -233,12 +278,14 @@ def tracked_entities():
         groups.setdefault((entity, metric), []).append(rec)
     rows = []
     for (entity, metric), recs in groups.items():
-        recs.sort(key=lambda r: str(r.get("timestamp", "")))
+        # Sort by a coerced timestamp so a missing/null ts sorts earliest (empty string)
+        # rather than as "None" -- a malformed row must not become the displayed latest.
+        recs.sort(key=_ts)
         last = recs[-1]
         rows.append({
             "entity": entity, "metric": metric,
             "latest": last.get("value"), "unit": last.get("unit") or "",
-            "as_of": str(last.get("timestamp", ""))[:10],
+            "as_of": _ts(last)[:10],
             "series": [r.get("value") for r in recs],
         })
     rows.sort(key=lambda r: (str(r["entity"]), str(r["metric"])))
@@ -247,7 +294,7 @@ def tracked_entities():
 
 def recent_events():
     events = [r for r in read_jsonl(OBS) if r.get("metric") == "event"]
-    events.sort(key=lambda r: str(r.get("timestamp", "")), reverse=True)
+    events.sort(key=_ts, reverse=True)
     return events[:MAX_EVENTS]
 
 
@@ -261,21 +308,24 @@ def list_reports():
 
 
 def run_stats():
-    """(total runs in last 30d, summed cost, last-run ISO timestamp) from runs.log."""
+    """(monitor runs in last 30d, summed cost, last-run ISO timestamp) from runs.log.
+
+    A single monitor invocation can log several rows (triage + optional deepdive/editor),
+    each stamped independently, so -- like bin/usage.sh -- we count only the triage row
+    (pass missing or "triage") as a run, while still summing cost across every pass."""
     runs = read_jsonl(RUNS)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     seen_runs, cost, last = set(), 0.0, ""
     for rec in runs:
-        ts = rec.get("timestamp")
-        ts = ts if isinstance(ts, str) else ""
+        ts = _ts(rec)
         if ts > last:
             last = ts
         if ts and ts >= cutoff:
-            # one invocation can log multiple passes (triage/deepdive/editor); count once
-            seen_runs.add((ts, rec.get("mode")))
             c = rec.get("cost_usd")
-            if isinstance(c, (int, float)) and not isinstance(c, bool):
+            if _is_number(c):
                 cost += c
+            if rec.get("pass") in (None, "", "triage"):
+                seen_runs.add((ts, rec.get("mode")))
     return len(seen_runs), cost, last
 
 
@@ -496,7 +546,7 @@ def overview_inner(static=False):
                 v = e.get("value")
                 note = v if isinstance(v, str) else ""
             parts.append('<li class="muted">%s | %s | %s: %s</li>'
-                         % (esc(str(e.get("timestamp", ""))[:10]), esc(e.get("entity", "")),
+                         % (esc(_ts(e)[:10]), esc(e.get("entity", "")),
                             esc(e.get("event_type", "event")), esc(note)))
         parts.append('</ul></div>')
 
@@ -617,23 +667,56 @@ def file_view_inner(title, path, intro, missing, banner=""):
     return "".join(parts)
 
 
+def summary_card(summary_path, subtitle):
+    """Render a profile summary markdown the same way the bootstrap review email does:
+    the Vantage Point header chrome (subject name + subtitle) over the rendered body."""
+    with open(summary_path, encoding="utf-8") as f:
+        body = render_markdown(f.read())
+    title = cfg_get_text("subject", "name") or "Market intelligence"
+    return ('<div class="card"><div class="brand" style="margin-bottom:4px">'
+            '<span class="eyebrow">Vantage Point</span>%s</div>'
+            '<p class="meta">%s</p>'
+            '<hr style="border:0;border-top:1px solid var(--line);margin:14px 0">'
+            '<div class="body">%s</div></div>' % (esc(title), esc(subtitle), body))
+
+
 def profile_inner(query):
     draft = (query.get("draft") or [""])[0] == "1"
+    raw = (query.get("raw") or [""])[0] == "1"
     banner = ""
     if os.path.exists(PROFILE_DRAFT) and not draft:
         banner = ('<div class="banner">A <strong>profile.draft.yaml</strong> is awaiting '
                   'review. <a href="/profile?draft=1">View the draft</a> &mdash; promote it '
                   'with <code>cp profile.draft.yaml profile.yaml</code>.</div>')
     if draft:
-        return file_view_inner(
-            "Profile draft", PROFILE_DRAFT,
-            "The bootstrap's proposed profile, not yet approved. <a href=\"/profile\">"
-            "View the approved profile</a>.",
-            "No profile.draft.yaml present.")
-    return file_view_inner(
-        "Profile", PROFILE,
-        "The approved profile the monitor scores against (read-only).",
-        "No profile.yaml yet &mdash; run bootstrap, then promote the draft.", banner)
+        yaml_path, summary_path = PROFILE_DRAFT, PROFILE_DRAFT_SUMMARY
+        title, subtitle = "Profile draft", "Profile draft - for review"
+        intro = ('The bootstrap\'s proposed profile, not yet approved. '
+                 '<a href="/profile">View the approved profile</a>.')
+        missing = "No profile.draft.yaml present."
+    else:
+        yaml_path, summary_path = PROFILE, PROFILE_SUMMARY
+        title, subtitle = "Profile", "Approved profile"
+        intro = "The approved profile the monitor scores against (read-only)."
+        missing = "No profile.yaml yet &mdash; run bootstrap, then promote the draft."
+
+    # Prefer the human-readable summary (rendered like the bootstrap email); keep the
+    # YAML one click away as the source of truth (?raw=1).
+    if os.path.exists(summary_path) and not raw:
+        raw_link = "/profile?raw=1" + ("&draft=1" if draft else "")
+        parts = ["<h1>%s</h1>" % esc(title), '<p class="meta">%s</p>' % intro]
+        if banner:
+            parts.append(banner)
+        parts.append(summary_card(summary_path, subtitle))
+        parts.append('<p class="note">Human-readable digest. '
+                     '<a href="%s">View the raw %s</a>.</p>'
+                     % (raw_link, esc(os.path.basename(yaml_path))))
+        return "".join(parts)
+
+    if os.path.exists(summary_path):   # offer the way back to the formatted view
+        intro += (' <a href="/profile%s">View the formatted summary</a>.'
+                  % ("?draft=1" if draft else ""))
+    return file_view_inner(title, yaml_path, intro, missing, banner)
 
 
 def config_inner():

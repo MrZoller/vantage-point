@@ -156,3 +156,6 @@ fi
 
 echo "[bootstrap] Review it, edit as needed, then APPROVE with:"
 echo "             cp $DRAFT profile.yaml"
+# Optional: copy the digest too so the portal's Profile tab shows it for the approved
+# profile (it renders profile.summary.md like the bootstrap email; YAML stays the source).
+[ -f "$SUMMARY" ] && echo "             cp $SUMMARY profile.summary.md   # optional: nicer Profile tab"

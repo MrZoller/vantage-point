@@ -949,6 +949,10 @@ test_portal_server() {
     > "$repo/monitor-config.yaml"
   printf 'subject:\n  name: "Watches"\n  derived:\n    last_bootstrapped: 2026-06-01\n' \
     > "$repo/profile.yaml"
+  # A human-readable summary alongside the YAML -> the profile view renders it like the
+  # bootstrap email (the YAML stays reachable at ?raw=1).
+  printf '# Profile summary\n\n> **Bottom line:** a collector of mechanical watches.\n\n## Interests\n- in-house movements\n' \
+    > "$repo/profile.summary.md"
   # The report body carries a raw <script> to prove it can't become live markup when
   # served (escaped by the fallback; raw_html disabled in pandoc; omitted by cmark).
   printf '# Daily\n\n> **Bottom line:** corroborated\n\n## Opportunities\n- **Item** matters [src](https://x) <script>alert(1)</script>\n' \
@@ -983,8 +987,11 @@ test_portal_server() {
     "$(curl -s "http://127.0.0.1:$port/reports?f=../monitor-config.yaml" || true)" "Report not found"
   assert_contains "config view is read-only and renders the config" \
     "$(curl -s "http://127.0.0.1:$port/config" || true)" "Test Market &amp; Co"
-  assert_contains "profile view renders the approved profile" \
-    "$(curl -s "http://127.0.0.1:$port/profile" || true)" "last_bootstrapped"
+  local profile_html; profile_html="$(curl -s "http://127.0.0.1:$port/profile" || true)"
+  assert_contains "profile view renders the formatted summary like the email" "$profile_html" "Bottom line"
+  assert_contains "the summary view links to the raw YAML" "$profile_html" "/profile?raw=1"
+  assert_contains "the profile YAML is reachable at ?raw=1" \
+    "$(curl -s "http://127.0.0.1:$port/profile?raw=1" || true)" "last_bootstrapped"
   curl -s -o /dev/null "http://127.0.0.1:$port/grade?id=abc123&v=up" || true
   kill "$srv" 2>/dev/null || true
   assert_contains "a grade is recorded to feedback.jsonl" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"verdict": "up"'
@@ -1014,6 +1021,45 @@ PY
   esac
 }
 test_portal_light_table
+
+echo "== portal.py: data layer is robust to NaN / null-ts / multi-pass runs.log =="
+test_portal_data_robustness() {
+  local repo="$TMP/pdr" out day
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  {
+    printf '{"timestamp":"2026-06-01T00:00:00Z","entity":"E","metric":"m","value":10,"unit":"x"}\n'
+    printf '{"timestamp":"2026-06-02T00:00:00Z","entity":"E","metric":"m","value":20,"unit":"x"}\n'
+    printf '{"timestamp":null,"entity":"E","metric":"m","value":99999,"unit":"x"}\n'                  # null ts must not win
+    printf '{"timestamp":"2026-06-03T00:00:00Z","entity":"E","metric":"m","value":NaN,"unit":"x"}\n'  # non-finite skipped
+  } > "$repo/state/observations.jsonl"
+  # Two passes of ONE monitor invocation, stamped independently (distinct timestamps),
+  # both inside the 30-day window (stamped "today" so the window check is deterministic).
+  day="$(date -u +%Y-%m-%dT%H:%M)"
+  {
+    printf '{"timestamp":"%s:01Z","mode":"daily","pass":"triage","cost_usd":0.02}\n' "$day"
+    printf '{"timestamp":"%s:02Z","mode":"daily","pass":"deepdive","cost_usd":0.30}\n' "$day"
+  } > "$repo/state/runs.log"
+  out="$(python3 - "$repo/bin/portal.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+rows = m.tracked_entities()
+print("LATEST", rows[0]["latest"])
+print("ASOF", rows[0]["as_of"])
+print("SPARK_OK", bool(m.spark(rows[0]["series"])))
+runs, cost, _ = m.run_stats()
+print("RUNS", runs)
+print("COST", round(cost, 2))
+PY
+)"
+  assert_contains "a null-timestamp row does not become the latest value" "$out" "LATEST 20"
+  assert_contains "as_of comes from a real timestamp, not None" "$out" "ASOF 2026-06-02"
+  assert_contains "a non-finite (NaN) value can't crash the sparkline" "$out" "SPARK_OK True"
+  assert_contains "multi-pass invocation counts as one run" "$out" "RUNS 1"
+  assert_contains "cost still sums across every pass" "$out" "COST 0.32"
+}
+test_portal_data_robustness
 
 echo "== monitor.sh: an absolute state_file is named to Claude verbatim (no .// prefix) =="
 test_state_file_absolute() {

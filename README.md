@@ -363,9 +363,12 @@ Reports are built to be *read and acted on*, not skimmed:
   clean page: an **Overview** (tracked entities + sparklines, recent events, recent
   runs), **Reports** (every daily/weekly briefing rendered with the same styling as its
   email), **Review** (the grading UI, below), and read-only **Profile** and **Config**
-  views. `bin/portal.py --export` also writes a static **`kb/index.html`** snapshot of
-  the Overview after every run (disable with `output.dashboard: false`) so there's a
-  no-server artifact alongside the reports.
+  views. The **Profile** tab renders the human-readable digest (`profile.summary.md`, or
+  `profile.draft.summary.md` for a pending draft) with the same styling as the bootstrap
+  email when one is present — the raw `profile.yaml` stays one click away — and falls
+  back to the YAML otherwise. `bin/portal.py --export` also writes a static
+  **`kb/index.html`** snapshot of the Overview after every run (disable with
+  `output.dashboard: false`) so there's a no-server artifact alongside the reports.
 
 ### Viewing the portal remotely
 
