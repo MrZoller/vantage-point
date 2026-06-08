@@ -223,6 +223,29 @@ test_install_uninstall_broken() {
 }
 test_install_uninstall_broken
 
+echo "== install-launchd: uninstall still finds agents after the checkout moves =="
+test_install_cleanup_after_move() {
+  local co="$TMP/inst-move/checkout" home="$TMP/movehome" la rc p
+  la="$home/Library/LaunchAgents"
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$home"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  printf 'version: 1\ndeployment:\n  instance: mover\n' > "$co/monitor-config.yaml"
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
+  # Simulate a checkout move: rewrite the baked-in path so the path signal no longer
+  # matches; only the recorded marker (state/.launchd-labels) can now find the labels.
+  for p in "$la"/ai.zoller.vantagepoint.mover.*.plist; do
+    [ -e "$p" ] || continue
+    sed 's#'"$co"'/bin/monitor.sh#/moved/elsewhere/bin/monitor.sh#' "$p" > "$p.tmp" && mv "$p.tmp" "$p"
+  done
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" uninstall >/dev/null 2>&1 ); rc=$?
+  assert_eq "uninstall exits 0 after a move" "0" "$rc"
+  if [ -f "$la/ai.zoller.vantagepoint.mover.daily.plist" ]; then fail "the marker-recorded labels are removed after a move"; else pass "the marker-recorded labels are removed after a move"; fi
+}
+test_install_cleanup_after_move
+
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {
   # Run from an ISOLATED copy with no profile.yaml, so the review gate always

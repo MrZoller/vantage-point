@@ -74,6 +74,17 @@ our_installed_labels() {
   done
 }
 
+# The plist's baked-in path stops matching if the checkout is MOVED, and the label
+# changes if deployment.instance is RENAMED - so also record what we installed in a
+# per-checkout marker (it travels with the checkout and survives a rename). Cleanup
+# uses the union of both signals, so neither a move nor a rename can orphan an agent.
+MARKER="$ROOT/state/.launchd-labels"
+installed_labels() {  # union: path-matched plists + the labels we recorded at last install
+  # Trailing `true` keeps the group's exit 0 (marker may be absent) so set -e/pipefail
+  # don't abort on a first install.
+  { our_installed_labels; [ -f "$MARKER" ] && cat "$MARKER"; true; } | sort -u
+}
+
 # Retire pre-rename (market-monitor) agents on EVERY run so they can't fire alongside
 # the renamed ones. Matched by label: these predate instances entirely, so only one
 # such set ever exists on a machine - retiring it isn't instance-specific.
@@ -84,13 +95,15 @@ for label in ai.zoller.marketmonitor.daily ai.zoller.marketmonitor.weekly; do
   fi
 done
 
-# Uninstall removes ALL of this checkout's agents (found by the baked-in path), so it
-# works even if deployment.instance was since changed - including to an invalid value.
+# Uninstall removes ALL of this checkout's agents (by baked-in path AND the recorded
+# marker), so it works after a move or rename, and even if the name is now invalid.
 uninstall() {
-  our_installed_labels | while IFS= read -r label; do
+  installed_labels | while IFS= read -r label; do
+    [ -n "$label" ] || continue
     remove_label "$label"
     echo "[install-launchd] removed $label"
   done
+  rm -f "$MARKER"
 }
 
 if [ "${1:-}" = "uninstall" ]; then
@@ -108,12 +121,13 @@ fi
 mkdir -p "$LA_DIR" "$ROOT/state"
 
 # Retire any of OUR previously-installed agents whose label we're NOT about to
-# (re)install - i.e. after renaming deployment.instance, or converting a default
-# deployment to a named one. Scoped by checkout path, so siblings are untouched.
-our_installed_labels | while IFS= read -r label; do
+# (re)install - i.e. after renaming deployment.instance (or moving the checkout, via
+# the marker). Scoped to this checkout, so sibling instances are untouched.
+installed_labels | while IFS= read -r label; do
+  [ -n "$label" ] || continue
   case " ${LABELS[*]} " in *" $label "*) continue ;; esac
   remove_label "$label"
-  echo "[install-launchd] retired stale agent $label (relabelled this checkout)"
+  echo "[install-launchd] retired stale agent $label (relabelled/moved this checkout)"
 done
 
 # Iterate modes (template filenames are fixed); the label is namespaced per instance.
@@ -138,6 +152,10 @@ for mode in daily weekly; do
   launchctl bootstrap "$DOMAIN" "$dst"
   echo "[install-launchd] installed $label -> $dst"
 done
+
+# Record what we installed so a later uninstall/rename/move can find these labels
+# even if the path or instance name no longer matches.
+printf '%s\n' "${LABELS[@]}" > "$MARKER"
 
 echo "[install-launchd] done. Kick a run now to confirm wiring:"
 echo "  launchctl kickstart -k $DOMAIN/$PREFIX.daily"
