@@ -326,10 +326,27 @@ def record_grade(item, verdict):
 
 # ----------------------------------------------------------------------------- markdown
 
+def _split_row(line):
+    """Split a markdown table row into trimmed cells, dropping the empty edges that a
+    leading/trailing pipe produces."""
+    cells = line.strip().split("|")
+    if cells and cells[0].strip() == "":
+        cells = cells[1:]
+    if cells and cells[-1].strip() == "":
+        cells = cells[:-1]
+    return [c.strip() for c in cells]
+
+
+def _is_table_divider(line):
+    """True for a GFM header divider like `|---|:--:|` (only -, :, |, space)."""
+    s = line.strip()
+    return "-" in s and bool(re.match(r"^\|?[\s:|-]+\|?$", s)) and "|" in s
+
+
 def _light_md(md):
     """A tiny, safe markdown subset for when no pandoc/cmark is installed: headings,
-    bold, links, bullet lists, blockquotes, rules. Everything is escaped first, so no
-    raw HTML from the report can leak through. Tables/other blocks pass as plain text."""
+    bold, links, bullet lists, blockquotes, rules, and GFM tables (the weekly watchlist).
+    Everything is escaped first, so no raw HTML from the report can leak through."""
     def inline(s):
         s = esc(s)
         s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
@@ -351,10 +368,27 @@ def _light_md(md):
             out.append("</blockquote>")
             in_bq = False
 
-    for raw in md.split("\n"):
-        line = raw.rstrip()
-        if not line.strip():
+    lines = md.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip()
+        stripped = line.strip()
+        if not stripped:
             close()
+            i += 1
+            continue
+        # GFM table: a header row followed by a `---|---` divider, then body rows.
+        if "|" in line and i + 1 < len(lines) and _is_table_divider(lines[i + 1]):
+            close()
+            header = _split_row(line)
+            out.append("<table><thead><tr>%s</tr></thead><tbody>"
+                       % "".join("<th>%s</th>" % inline(c) for c in header))
+            i += 2
+            while i < len(lines) and "|" in lines[i] and lines[i].strip():
+                out.append("<tr>%s</tr>"
+                           % "".join("<td>%s</td>" % inline(c) for c in _split_row(lines[i])))
+                i += 1
+            out.append("</tbody></table>")
             continue
         m = re.match(r"^(#{1,3})\s+(.*)$", line)
         if m:
@@ -373,20 +407,28 @@ def _light_md(md):
                 out.append("<blockquote>")
                 in_bq = True
             out.append("<p>%s</p>" % inline(line.lstrip("> ").rstrip()))
-        elif re.match(r"^(-{3,}|\*{3,})$", line.strip()):
+        elif re.match(r"^(-{3,}|\*{3,})$", stripped):
             close()
             out.append("<hr>")
         else:
             close()
             out.append("<p>%s</p>" % inline(line))
+        i += 1
     close()
     return "\n".join(out)
 
 
 def render_markdown(md):
     """Render report markdown to an HTML fragment using the same renderer chain as the
-    email (pandoc/cmark-gfm/cmark); fall back to the light renderer if none is present."""
-    for cmd, args in (("pandoc", ["-f", "gfm", "-t", "html"]),
+    email (pandoc/cmark-gfm/cmark); fall back to the light renderer if none is present.
+
+    Reports are agent-written from web sweeps, so the markdown is semi-trusted and the
+    portal serves the result to a browser -- raw HTML in the source must not become live
+    markup. cmark/cmark-gfm already omit raw HTML in their default (no --unsafe) safe
+    mode; pandoc preserves it, so we disable its raw_html extension (`gfm-raw_html`) so
+    stray `<script>`/`<img onerror=...>` is escaped, not executed. A strict CSP on every
+    response (see Handler._send) is the defense-in-depth backstop."""
+    for cmd, args in (("pandoc", ["-f", "gfm-raw_html", "-t", "html"]),
                       ("cmark-gfm", ["-e", "autolink", "-e", "table", "-e",
                                      "strikethrough", "-e", "tagfilter"]),
                       ("cmark", [])):
@@ -603,11 +645,25 @@ def config_inner():
 
 # ----------------------------------------------------------------------------- server
 
+# Defense-in-depth for the report views: reports are agent-written from web sweeps, so
+# even with raw HTML disabled in the renderers, this CSP blocks script execution, inline
+# event handlers, and javascript: navigation if anything slips through. We use an inline
+# <style> block and inline style attributes, so style-src must allow 'unsafe-inline';
+# everything else (scripts, objects, frames) defaults to 'none'.
+CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'"
+
+
 class Handler(BaseHTTPRequestHandler):
+    def _security_headers(self):
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+
     def _send(self, code, body, ctype="text/html; charset=utf-8"):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self._security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -615,6 +671,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(303)
         self.send_header("Location", location)
         self.send_header("Content-Length", "0")
+        self._security_headers()
         self.end_headers()
 
     def do_GET(self):  # noqa: N802

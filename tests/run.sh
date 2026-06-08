@@ -949,7 +949,9 @@ test_portal_server() {
     > "$repo/monitor-config.yaml"
   printf 'subject:\n  name: "Watches"\n  derived:\n    last_bootstrapped: 2026-06-01\n' \
     > "$repo/profile.yaml"
-  printf '# Daily\n\n> **Bottom line:** corroborated\n\n## Opportunities\n- **Item** matters [src](https://x)\n' \
+  # The report body carries a raw <script> to prove it can't become live markup when
+  # served (escaped by the fallback; raw_html disabled in pandoc; omitted by cmark).
+  printf '# Daily\n\n> **Bottom line:** corroborated\n\n## Opportunities\n- **Item** matters [src](https://x) <script>alert(1)</script>\n' \
     > "$repo/kb/2026-06-06.daily.md"
   {
     printf '{"id":"abc123","title":"Tudor GMT leak","signal":"opportunity","score":0.9,"so_what":"matters","url":"https://x"}\n'
@@ -968,8 +970,15 @@ test_portal_server() {
   esac
   assert_contains "reports section lists the report" \
     "$(curl -s "http://127.0.0.1:$port/reports" || true)" "2026-06-06.daily.md"
-  assert_contains "a report renders its body" \
-    "$(curl -s "http://127.0.0.1:$port/reports?f=2026-06-06.daily.md" || true)" "Bottom line"
+  local report_html; report_html="$(curl -s "http://127.0.0.1:$port/reports?f=2026-06-06.daily.md" || true)"
+  assert_contains "a report renders its body" "$report_html" "Bottom line"
+  case "$report_html" in
+    *"<script>alert(1)</script>"*) fail "raw <script> in a report is not served as live markup" ;;
+    *) pass "raw <script> in a report is not served as live markup" ;;
+  esac
+  assert_contains "responses carry a script-blocking CSP header" \
+    "$(curl -s -D - -o /dev/null "http://127.0.0.1:$port/reports?f=2026-06-06.daily.md" || true)" \
+    "Content-Security-Policy: default-src 'none'"
   assert_contains "a bogus report name is rejected (no path traversal)" \
     "$(curl -s "http://127.0.0.1:$port/reports?f=../monitor-config.yaml" || true)" "Report not found"
   assert_contains "config view is read-only and renders the config" \
@@ -982,6 +991,29 @@ test_portal_server() {
   assert_contains "the grade captures the item id" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"id": "abc123"'
 }
 test_portal_server
+
+echo "== portal.py: the light-markdown fallback renders a GFM table (watchlist) =="
+test_portal_light_table() {
+  # Exercise the no-renderer path directly so it's deterministic regardless of whether
+  # the host has pandoc/cmark installed.
+  local out
+  out="$(python3 - "$ROOT/bin/portal.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+md = "| Entity | Latest |\n|--------|--------|\n| Tudor BB58 | $3,200 |\n"
+print(m._light_md(md))
+PY
+)"
+  assert_contains "renders a table element" "$out" "<table>"
+  assert_contains "renders a header cell" "$out" "<th>Entity</th>"
+  assert_contains "renders a body cell" "$out" "<td>Tudor BB58</td>"
+  case "$out" in
+    *"|"*) fail "no raw table pipes leak through" ;;
+    *) pass "no raw table pipes leak through" ;;
+  esac
+}
+test_portal_light_table
 
 echo "== monitor.sh: an absolute state_file is named to Claude verbatim (no .// prefix) =="
 test_state_file_absolute() {
