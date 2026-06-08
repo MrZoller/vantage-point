@@ -29,7 +29,10 @@ stays consistent instead of re-deriving them.
   `kb/` (reports + dashboard).
 - Deployed on a macOS mini via **launchd**, running from a local checkout — changes
   reach it by `git pull`, not by merging to GitHub. `install-launchd.sh` regenerates the
-  plists and retires old agents.
+  plists (substituting `__VP_ROOT__` + `__VP_LABEL__`) and retires old agents. Multiple
+  instances on one machine = one clone each with a distinct `deployment.instance`, which
+  namespaces the agent labels (`ai.zoller.vantagepoint.<instance>.{daily,weekly}`);
+  unset = un-suffixed labels (single-deployment default).
 
 ## Conventions (please keep)
 

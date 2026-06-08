@@ -12,6 +12,11 @@
 # ============================================================
 version: 1
 
+# Running several instances on one machine? Uncomment + name this so this clone's
+# launchd agents don't collide with your others (see the README).
+# deployment:
+#   instance: ai-policy
+
 models:
   bootstrap: opus
   monitor:   sonnet

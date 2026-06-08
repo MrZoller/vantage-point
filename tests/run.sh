@@ -60,6 +60,7 @@ assert_plist_ok() {
   if [ ! -f "$2" ]; then fail "$1: plist exists"; return; fi
   pass "$1: plist exists"
   if grep -q '__VP_ROOT__' "$2"; then fail "$1: no __VP_ROOT__ token remains"; else pass "$1: no __VP_ROOT__ token remains"; fi
+  if grep -q '__VP_LABEL__' "$2"; then fail "$1: no __VP_LABEL__ token remains"; else pass "$1: no __VP_LABEL__ token remains"; fi
   local got
   got="$(python3 - "$2" <<'PY'
 import sys, plistlib
@@ -76,7 +77,7 @@ test_install_launchd() {
   # broke sed templating + produced invalid XML).
   local co="$TMP/a&b<c>d/checkout"
   mkdir -p "$co/bin" "$co/launchd" "$co/stub"
-  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
   cp "$ROOT"/launchd/*.plist "$co/launchd/"
   chmod +x "$co/bin/install-launchd.sh"
   make_install_stubs "$co/stub"
@@ -93,7 +94,7 @@ echo "== install-launchd uninstall: removes both agents =="
 test_uninstall() {
   local co="$TMP/uninst/checkout"
   mkdir -p "$co/bin" "$co/launchd" "$co/stub"
-  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
   cp "$ROOT"/launchd/*.plist "$co/launchd/"
   chmod +x "$co/bin/install-launchd.sh"
   make_install_stubs "$co/stub"
@@ -113,7 +114,7 @@ echo "== install-launchd: retires pre-rename (market-monitor) agents =="
 test_install_retires_legacy() {
   local co="$TMP/legacy/checkout"
   mkdir -p "$co/bin" "$co/launchd" "$co/stub"
-  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
   cp "$ROOT"/launchd/*.plist "$co/launchd/"
   chmod +x "$co/bin/install-launchd.sh"
   make_install_stubs "$co/stub"
@@ -131,6 +132,45 @@ test_install_retires_legacy() {
   if [ -f "$la/ai.zoller.vantagepoint.daily.plist" ]; then pass "new agent installed"; else fail "new agent installed"; fi
 }
 test_install_retires_legacy
+
+echo "== install-launchd: namespaces agents by deployment.instance (multi-instance) =="
+test_install_instance() {
+  local home="$TMP/multihome" la; la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  # Instance A: an uppercase/spaced name to exercise slugification -> "ai-models".
+  local a="$TMP/inst-a/checkout"
+  mkdir -p "$a/bin" "$a/launchd" "$a/stub"
+  cp "$ROOT/bin/install-launchd.sh" "$a/bin/"; cp_libs "$a/bin"
+  cp "$ROOT"/launchd/*.plist "$a/launchd/"
+  chmod +x "$a/bin/install-launchd.sh"
+  make_install_stubs "$a/stub"
+  printf 'version: 1\ndeployment:\n  instance: "AI Models"\n' > "$a/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  assert_plist_ok "instance daily"  "$la/ai.zoller.vantagepoint.ai-models.daily.plist"  "$a/bin/monitor.sh"
+  assert_plist_ok "instance weekly" "$la/ai.zoller.vantagepoint.ai-models.weekly.plist" "$a/bin/monitor.sh"
+  assert_contains "label is namespaced by the slugified instance" \
+    "$(cat "$la/ai.zoller.vantagepoint.ai-models.daily.plist")" "<string>ai.zoller.vantagepoint.ai-models.daily</string>"
+  if [ -f "$la/ai.zoller.vantagepoint.daily.plist" ]; then fail "a named instance does not install the un-suffixed agent"; else pass "a named instance does not install the un-suffixed agent"; fi
+
+  # Instance B coexists in the same LaunchAgents dir.
+  local b="$TMP/inst-b/checkout"
+  mkdir -p "$b/bin" "$b/launchd" "$b/stub"
+  cp "$ROOT/bin/install-launchd.sh" "$b/bin/"; cp_libs "$b/bin"
+  cp "$ROOT"/launchd/*.plist "$b/launchd/"
+  chmod +x "$b/bin/install-launchd.sh"
+  make_install_stubs "$b/stub"
+  printf 'version: 1\ndeployment:\n  instance: watches\n' > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.vantagepoint.ai-models.daily.plist" ] && [ -f "$la/ai.zoller.vantagepoint.watches.daily.plist" ]; then
+    pass "two instances coexist in LaunchAgents"
+  else
+    fail "two instances coexist in LaunchAgents"
+  fi
+  # Uninstalling B touches only its own labels.
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" uninstall >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.vantagepoint.watches.daily.plist" ]; then fail "uninstall removes only its own instance"; else pass "uninstall removes only its own instance"; fi
+  if [ -f "$la/ai.zoller.vantagepoint.ai-models.daily.plist" ]; then pass "the other instance survives a sibling uninstall"; else fail "the other instance survives a sibling uninstall"; fi
+}
+test_install_instance
 
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {
