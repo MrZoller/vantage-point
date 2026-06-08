@@ -12,7 +12,8 @@ For setup and operations, see the [README](../README.md).
 ## TL;DR
 
 - **What:** a self-hosted AI agent that monitors a market/space *for a specific
-  stakeholder* and produces a daily/weekly intelligence brief.
+  stakeholder* and delivers a daily/weekly intelligence brief — as a designed HTML
+  email and a live dashboard, not a wall of links.
 - **Why it's different from alerts:** relevance is judged against a defined set of
   priorities, not in the abstract. It explains *why something matters and what to do*,
   detects **trends** (not just events), **corroborates** before surfacing (no rumor
@@ -22,6 +23,10 @@ For setup and operations, see the [README](../README.md).
   no extra vendor to onboard. (The analysis runs *through* Claude, so the profile and the
   content it reads are sent to Anthropic like any Claude Code use — see the data note
   under [Why it's trustworthy](#why-its-trustworthy).)
+- **One engine, any market.** The same tool re-points at a new domain by swapping the
+  config and re-running the research step — competitor intel, a partner/target pipeline,
+  AI-model releases, OSS/dependency security, policy. Ready-made starter configs ship in
+  [`samples/`](../samples/).
 
 ---
 
@@ -77,42 +82,144 @@ flowchart LR
    and notices what's *changed* since last time. With the optional **deep-dive** pass
    enabled, the few highest-value items get a deeper look that **corroborates across
    multiple sources** before surfacing.
-3. **Brief + learn.** It delivers a tight report (email and/or a dashboard) — with an
-   optional **editorial** pass that first curates and polishes it into a designed brief
-   (lead, order, cut, tighten) without adding facts or dropping citations. Items get
-   graded up/down, and those grades feed the **next profile refresh** — a re-run of the
-   research step that you review and approve. Grading sharpens relevance at the next
-   refresh; it doesn't change scoring automatically mid-stream.
+3. **Brief + learn.** It delivers a tight report — as a designed **HTML email** and a
+   browsable **dashboard** — with an optional **editorial** pass that first curates and
+   polishes it into a designed brief (lead, order, cut, tighten) without adding facts or
+   dropping citations. Items are graded up/down from a **one-click web UI**, and those
+   grades feed the **next profile refresh** — a re-run of the research step that you
+   review and approve. Grading sharpens relevance at the next refresh; it doesn't change
+   scoring automatically mid-stream.
+
+## What you set up
+
+Configuration is a single YAML file built on one idea: relevance is the *relationship*
+between a news item and a defined stakeholder — the **subject** (what to watch) crossed
+with the **anchor** (whose interests decide what matters). You write a short config; the
+research pass turns it into a full profile you then approve. An abbreviated config (a
+watch collector, here — the full template is `monitor-config.example.yaml`):
+
+```yaml
+subject:                       # WHAT to watch — the market
+  name: "Mechanical & microbrand wristwatches"
+  seeds: [hodinkee.com, wornandwound.com, chrono24.com]   # expand outward from these
+  scope:
+    in:  ["new releases", "microbrand drops", "limited editions", "price movement"]
+    out: ["smartwatches", "fashion-brand quartz"]
+
+anchor:                        # WHOSE interests define relevance
+  name: "Me — collector"
+  type: persona
+  relationship_to_subject: collector
+  seeds:
+    taste:
+      likes:    ["integrated-bracelet sport watches", "in-house movements",
+                 "sub-$2k microbrands with real finishing"]
+      dislikes: ["homage/clone designs", "oversized fashion pieces"]
+
+relevance:
+  threshold: 0.6               # items scoring below this are dropped silently
+
+# ...plus monitoring cadence, trend tracking, output, and governance — all with
+# sane defaults. The `derived:` blocks start empty; the research pass fills them.
+```
+
+Run the research pass and it deep-researches the market and the anchor, then writes a
+**profile** — the durable artifact the daily monitor scores against. You review and
+approve it (a literal file promotion: `cp profile.draft.yaml profile.yaml`) before the
+monitor will trust it. An abbreviated look at what it produces:
+
+```yaml
+# profile.yaml — written by research, then reviewed and approved by a human
+subject:
+  derived:
+    structure: >
+      Three tiers — luxury houses (Rolex/Patek/AP), accessible mechanical
+      ($500–$5k), and independent microbrands. Releases break on enthusiast
+      blogs first; secondary-price signals live on Chrono24.
+    key_players:
+      - { name: "Tudor",            why: "integrated-bracelet sport watches squarely in the anchor's band" }
+      - { name: "Christopher Ward", why: "microbrand now shipping in-house movements with real finishing" }
+      - { name: "Grand Seiko",      why: "in-house movements, high finishing — adjacent to the taste" }
+    news_sources:                                  # RANKED: where news breaks first
+      - { name: "Hodinkee",     why: "breaks major releases first" }
+      - { name: "Worn & Wound", why: "deepest microbrand coverage" }
+      - { name: "Chrono24",     why: "secondary-market price signal" }
+    event_taxonomy: ["new release", "reissue", "limited edition", "price move", "auction result"]
+    last_bootstrapped: 2026-05-10
+    confidence_notes: >
+      Confident on the majors; less sure which microbrands the anchor rates — flagged
+      the borderline ones for review.
+
+anchor:
+  derived:
+    interests: ["integrated-bracelet sport watches under $2k", "independent watchmaking",
+                "in-house movement finishing"]
+    peer_or_competitive_set: ["Tudor", "Christopher Ward", "Baltic", "Lorier"]
+    signal_definitions:                            # what counts as a signal, in the anchor's terms
+      opportunity: "a tracked reference dropping into buy range, or a new indie release matching the taste"
+      shift:       "a structural move — a microbrand going in-house, a price-tier realignment"
+
+relevance:
+  threshold: 0.6
+  rubric: >
+    +++ integrated-bracelet sport watch, in-house movement, independent maker, sub-$2k with real finishing
+    +   reissue/limited edition from a key player; a tracked ref moving on price
+    --- homage/clone designs, oversized fashion quartz, general lifestyle content
+  calibration:                                     # graded examples — the biggest quality lever
+    relevant:     [{ item: "Christopher Ward goes in-house on The Twelve", why: "indie + in-house, exactly the taste" }]
+    not_relevant: [{ item: "Brand X drops a 44mm fashion chronograph",     why: "oversized fashion quartz — out of scope" }]
+```
+
+Because the profile is a plain, diffable file, the review gate is concrete: you read
+exactly what the agent inferred (and the low-confidence guesses it flagged), correct it,
+and approve it — nothing is trusted until you do.
 
 ## What you actually receive
 
-A terse daily brief and a synthesized weekly digest. An illustrative daily report:
+A terse daily brief and a synthesized weekly digest. The agent authors each report as
+**Markdown** — which stays readable as plain text *and* renders into a designed HTML
+email. The raw report looks like this:
 
-```
-[Vantage Point: Example Market] daily 2026-06-07
-★ Bottom line: Acme acquired DataForge — a direct push into the core segment.
+```markdown
+> **Bottom line:** Christopher Ward put an in-house movement in The Twelve — an indie hitting your taste at sub-$2k.
 
-What changed
-• [↑ over 3 wks] Acme solutions-engineering job posts: 4 → 11
-  Staffing up presales in this space; expect more competitive deals. (medium)
+## What changed
+- **[↓ 12%] Tudor Black Bay 58** secondary_price_usd: $3,650 → $3,200 over 3 weeks — sliding into your tracked-buy zone _(medium)_
 
-[threat]
-• Acme acquires DataForge (TechCrunch)
-  why: brings in-house an integration capability others compete on; erodes a differentiator.
-  do:  refresh the sales battlecard; flag roadmap gaps to product.
-  corroboration: confirmed — also Reuters + company PR.
-  → https://…  (high)
+## Opportunities
+- **Christopher Ward unveils in-house cal. for The Twelve** `[a1b2c3d4]` — independent maker going in-house at sub-$2k, squarely your profile.
+  [Worn & Wound](https://…) _(high)_ — *Do:* read the hands-on; compare the finishing to the SH21.
 
-[opportunity]
-• Partner X raised a Series C (PitchBook)
-  why: fresh budget + expansion mandate — a co-sell/partnership window is open now.
-  do:  warm intro via a mutual contact; revisit the co-sell deck.
-  → https://…  (high)
+## Shifts
+- **Microbrands moving in-house is accelerating** `[e5f6a7b8]` — the finishing/value bar is rising across the segment you buy in.
+  [Hodinkee](https://…) _(medium)_
 ```
 
-Each report leads with the one thing to read, groups items by **opportunity / threat /
-shift**, and every item carries its source so it can be verified in one click. A live
-dashboard tracks watched entities over time with trend sparklines.
+Delivered, that's not raw text — it's a **polished HTML brief**: a header card (a
+"Vantage Point" eyebrow, the market name as the title, a `Daily briefing — <date>`
+subtitle), a hidden inbox preheader, a highlighted **bottom-line callout**, clean
+uppercase section dividers, and every source as a one-click link. Each report leads with the one thing to read, groups items by
+**opportunity / threat / shift**, and carries *why it matters → suggested action →
+confidence* on each. The weekly digest adds a styled **Watchlist status** table with
+unicode **sparklines** so each tracked entity's trend reads at a glance:
+
+```
+Watchlist status
+| Entity              | Latest        | Recent  | Note                      |
+|---------------------|---------------|---------|---------------------------|
+| Tudor Black Bay 58  | $3,200 (↓12%) | ▇▆▅▃▂▁  | dipping; tracked-buy zone |
+| Pelagos 39          | 4 listings    | ▁▂▂▃    | quiet                     |
+```
+
+The optional **editorial pass** polishes the brief one more step before it ships (leads
+with the strongest finding, cuts the marginal, tightens the prose) without adding facts
+or dropping citations. The same data also feeds an always-on **dashboard**
+(`kb/index.html`): watched entities with their latest metric and a sparkline, recent
+events, and links to recent reports — no email required.
+
+(Email is optional — reports always land in `kb/` regardless; the HTML rendering uses a
+lightweight Markdown renderer if one is installed and falls back to clean plain text
+otherwise. See the [README](../README.md) for delivery setup.)
 
 ## What you can point it at
 
@@ -183,7 +290,9 @@ different market by swapping the config and re-running the research step.
 
 Two Claude agents over one config file: a one-time **research** pass that builds the
 reviewed profile, and a lightweight **monitor** that runs on a schedule (with optional
-deep-dive and editorial passes layered on top). It's a small,
-auditable codebase (shell + a little Python) with a CI test suite, scheduled via the
-OS's own task runner. Full technical detail is in the [README](../README.md) and the
-[roadmap](roadmap.md).
+deep-dive and editorial passes layered on top). It's a small, auditable codebase (shell +
+a little Python, no heavy dependencies) with a CI test suite, scheduled via the OS's own
+task runner. It's built to run unattended: per-run locking, wall-clock timeouts, bounded
+state, and fail-safe optional steps (a failed email or deep-dive never loses a good
+report). One machine can watch several markets at once — one isolated clone per market.
+Full technical detail is in the [README](../README.md) and the [roadmap](roadmap.md).
