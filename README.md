@@ -372,6 +372,10 @@ Reports are built to be *read and acted on*, not skimmed:
   **`kb/index.html`** snapshot of the Overview after every run (disable with
   `output.dashboard: false`) so there's a no-server artifact alongside the reports.
 
+![The portal Overview — activity heatmap, weekly signal mix, tracked entities](docs/img/portal-overview.png)
+
+Other views: [Reports](docs/img/portal-reports.png) · [Review](docs/img/portal-review.png) · [Profile](docs/img/portal-profile.png) · [Config](docs/img/portal-config.png).
+
 ### Viewing the portal remotely
 
 The portal binds to `127.0.0.1` only — pair it with SSH port-forwarding rather than
