@@ -169,8 +169,35 @@ test_install_instance() {
   ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" uninstall >/dev/null 2>&1 )
   if [ -f "$la/ai.zoller.vantagepoint.watches.daily.plist" ]; then fail "uninstall removes only its own instance"; else pass "uninstall removes only its own instance"; fi
   if [ -f "$la/ai.zoller.vantagepoint.ai-models.daily.plist" ]; then pass "the other instance survives a sibling uninstall"; else fail "the other instance survives a sibling uninstall"; fi
+
+  # Renaming A's instance (same checkout) retires the old labels instead of leaving
+  # them to double-fire alongside the new ones.
+  printf 'version: 1\ndeployment:\n  instance: frontier\n' > "$a/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.vantagepoint.frontier.daily.plist" ]; then pass "rename installs the new labels"; else fail "rename installs the new labels"; fi
+  if [ -f "$la/ai.zoller.vantagepoint.ai-models.daily.plist" ]; then fail "rename retires this checkout's old labels"; else pass "rename retires this checkout's old labels"; fi
 }
 test_install_instance
+
+echo "== install-launchd: rejects an instance name that slugifies to empty =="
+test_install_instance_invalid() {
+  local co="$TMP/inst-bad/checkout" home="$TMP/badhome" rc out
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$home"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  printf 'version: 1\ndeployment:\n  instance: "!!!"\n' > "$co/monitor-config.yaml"   # slugifies to ""
+  out="$( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" 2>&1 )"; rc=$?
+  assert_eq "exits non-zero on an unusable instance name" "1" "$rc"
+  assert_contains "explains the name is unusable" "$out" "no usable"
+  if [ -f "$home/Library/LaunchAgents/ai.zoller.vantagepoint.daily.plist" ]; then
+    fail "does not silently fall back to the default agent"
+  else
+    pass "does not silently fall back to the default agent"
+  fi
+}
+test_install_instance_invalid
 
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {

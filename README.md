@@ -159,11 +159,13 @@ git clone <repo> ~/vp-devtools    &&  cd ~/vp-devtools    && ./bin/install-launc
 ```
 
 Each gets its own agents — `ai.zoller.vantagepoint.<instance>.{daily,weekly}` — so
-they coexist and `uninstall` only removes that instance's agents. Leave
+they coexist and `uninstall` only removes that checkout's agents. Leave
 `deployment.instance` unset for a single deployment (labels stay un-suffixed, exactly
-as before — no migration needed). If you're converting an existing single deployment
-to named instances, run `./bin/install-launchd.sh uninstall` *before* adding the
-instance name so the old un-suffixed agents don't linger.
+as before — no migration needed). Renaming an instance, or converting a single
+deployment to a named one, is safe: a reinstall retires this checkout's previously
+installed agents (matched by the path baked into the plist) before installing the new
+labels, so no stale agents linger. An instance name that has no usable `[a-z0-9-]`
+characters is rejected rather than silently treated as the default.
 
 Notes:
 - The locks are per-clone, so instances run independently (and can overlap). If you'd

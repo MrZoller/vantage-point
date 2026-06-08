@@ -10,10 +10,12 @@
 # Multiple instances on one machine: give each checkout a distinct
 # `deployment.instance` in its monitor-config.yaml and the agent labels/filenames are
 # namespaced (ai.zoller.vantagepoint.<instance>.{daily,weekly}) so clones don't
-# collide. Leave it unset for a single deployment (labels stay un-suffixed).
+# collide. Leave it unset for a single deployment (labels stay un-suffixed). Renaming
+# an instance (or converting a default deployment to a named one) is safe: a reinstall
+# retires this checkout's previously-installed agents before installing the new labels.
 #
 #   ./bin/install-launchd.sh            # install / reinstall this instance's agents
-#   ./bin/install-launchd.sh uninstall  # unload + remove this instance's agents
+#   ./bin/install-launchd.sh uninstall  # unload + remove this checkout's agents
 set -euo pipefail
 
 # Make ${var//pat/repl} a strictly literal replace on every bash. Bash 5.2
@@ -29,6 +31,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LA_DIR="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
 
+# XML-escape the checkout path once (used both to write plists and to recognize the
+# agents that belong to THIS checkout). Escape & first so it isn't double-escaped.
+ROOT_XML="$ROOT"
+ROOT_XML="${ROOT_XML//&/&amp;}"
+ROOT_XML="${ROOT_XML//</&lt;}"
+ROOT_XML="${ROOT_XML//>/&gt;}"
+PROG_LINE="<string>$ROOT_XML/bin/monitor.sh</string>"   # ProgramArguments[0] in our plists
+
 command -v launchctl >/dev/null 2>&1 || {
   echo "launchctl not found - launchd is macOS-only. On Linux use cron (see README)." >&2
   exit 1
@@ -36,10 +46,13 @@ command -v launchctl >/dev/null 2>&1 || {
 
 # Optional per-instance namespace from the config (so multiple clones coexist).
 # Slugify to a safe label segment: lowercase, non-[a-z0-9-] -> '-', trim dashes.
-INSTANCE=""
-if [ -f "$ROOT/monitor-config.yaml" ]; then
-  INSTANCE="$(cfg_get_text deployment instance "$ROOT/monitor-config.yaml")"
-  INSTANCE="$(printf '%s' "$INSTANCE" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed 's/^-*//; s/-*$//')"
+INSTANCE_RAW=""
+[ -f "$ROOT/monitor-config.yaml" ] && INSTANCE_RAW="$(cfg_get_text deployment instance "$ROOT/monitor-config.yaml")"
+INSTANCE="$(printf '%s' "$INSTANCE_RAW" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed 's/^-*//; s/-*$//')"
+# A configured-but-unusable name must NOT silently become the default deployment.
+if [ -n "$INSTANCE_RAW" ] && [ -z "$INSTANCE" ]; then
+  echo "deployment.instance ('$INSTANCE_RAW') has no usable [a-z0-9-] characters - pick an ASCII slug" >&2
+  exit 1
 fi
 if [ -n "$INSTANCE" ]; then
   PREFIX="ai.zoller.vantagepoint.$INSTANCE"
@@ -51,6 +64,19 @@ LABELS=("$PREFIX.daily" "$PREFIX.weekly")
 remove_label() {  # bootout (ignore "not loaded") + delete the plist
   launchctl bootout "$DOMAIN/$1" 2>/dev/null || true
   rm -f "$LA_DIR/$1.plist"
+}
+
+# Labels of every installed agent whose plist runs THIS checkout's monitor.sh
+# (identified by the baked-in path), one per line. Lets us retire our own stale
+# agents after a rename without ever touching a sibling instance (different checkout).
+our_installed_labels() {
+  local f base
+  for f in "$LA_DIR"/ai.zoller.vantagepoint.*.plist; do
+    [ -e "$f" ] || continue
+    grep -qF "$PROG_LINE" "$f" || continue
+    base="$(basename "$f")"
+    printf '%s\n' "${base%.plist}"
+  done
 }
 
 # Retire pre-rename (market-monitor) agents so they can't fire alongside the renamed
@@ -66,9 +92,14 @@ if [ -z "$INSTANCE" ]; then
 fi
 
 uninstall() {
-  for label in "${LABELS[@]}"; do
+  # Remove every agent that runs this checkout (covers a since-renamed instance too).
+  our_installed_labels | while IFS= read -r label; do
     remove_label "$label"
     echo "[install-launchd] removed $label"
+  done
+  # Safety net (e.g. a hand-edited plist path-match missed): the current labels.
+  for label in "${LABELS[@]}"; do
+    if [ -f "$LA_DIR/$label.plist" ]; then remove_label "$label"; echo "[install-launchd] removed $label"; fi
   done
 }
 
@@ -78,6 +109,16 @@ if [ "${1:-}" = "uninstall" ]; then
 fi
 
 mkdir -p "$LA_DIR" "$ROOT/state"
+
+# Retire any of OUR previously-installed agents whose label we're NOT about to
+# (re)install - i.e. after renaming deployment.instance, or converting a default
+# deployment to a named one. Scoped by checkout path, so siblings are untouched.
+our_installed_labels | while IFS= read -r label; do
+  case " ${LABELS[*]} " in *" $label "*) continue ;; esac
+  remove_label "$label"
+  echo "[install-launchd] retired stale agent $label (relabelled this checkout)"
+done
+
 # Iterate modes (template filenames are fixed); the label is namespaced per instance.
 for mode in daily weekly; do
   label="$PREFIX.$mode"
@@ -85,15 +126,8 @@ for mode in daily weekly; do
   dst="$LA_DIR/$label.plist"
   [ -f "$src" ] || { echo "missing template $src" >&2; exit 1; }
 
-  # XML-escape the path before injecting it, so a checkout path containing &, <
-  # or > still produces a valid plist (otherwise launchd installs a broken agent).
-  # Escape & first, or it would re-escape the & in the entities added afterwards.
-  root_xml="$ROOT"
-  root_xml="${root_xml//&/&amp;}"
-  root_xml="${root_xml//</&lt;}"
-  root_xml="${root_xml//>/&gt;}"
   template="$(cat "$src")"
-  template="${template//__VP_ROOT__/$root_xml}"
+  template="${template//__VP_ROOT__/$ROOT_XML}"
   template="${template//__VP_LABEL__/$label}"   # label is slug-safe; no XML escaping needed
   printf '%s\n' "$template" > "$dst"
 
