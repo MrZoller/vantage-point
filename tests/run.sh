@@ -135,7 +135,10 @@ test_install_retires_legacy
 
 echo "== install-launchd: namespaces agents by deployment.instance (multi-instance) =="
 test_install_instance() {
-  local home="$TMP/multihome" la; la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  local home="$TMP/multihome" la; la="$home/Library/LaunchAgents"; mkdir -p "$home" "$la"
+  # A pre-rename legacy agent present on this machine - must be retired even though
+  # we're installing a NAMED instance (not just the default).
+  printf 'old daily\n' > "$la/ai.zoller.marketmonitor.daily.plist"
   # Instance A: an uppercase/spaced name to exercise slugification -> "ai-models".
   local a="$TMP/inst-a/checkout"
   mkdir -p "$a/bin" "$a/launchd" "$a/stub"
@@ -147,6 +150,7 @@ test_install_instance() {
   ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
   assert_plist_ok "instance daily"  "$la/ai.zoller.vantagepoint.ai-models.daily.plist"  "$a/bin/monitor.sh"
   assert_plist_ok "instance weekly" "$la/ai.zoller.vantagepoint.ai-models.weekly.plist" "$a/bin/monitor.sh"
+  if [ -f "$la/ai.zoller.marketmonitor.daily.plist" ]; then fail "legacy agent retired even under a named instance"; else pass "legacy agent retired even under a named instance"; fi
   assert_contains "label is namespaced by the slugified instance" \
     "$(cat "$la/ai.zoller.vantagepoint.ai-models.daily.plist")" "<string>ai.zoller.vantagepoint.ai-models.daily</string>"
   if [ -f "$la/ai.zoller.vantagepoint.daily.plist" ]; then fail "a named instance does not install the un-suffixed agent"; else pass "a named instance does not install the un-suffixed agent"; fi
@@ -198,6 +202,26 @@ test_install_instance_invalid() {
   fi
 }
 test_install_instance_invalid
+
+echo "== install-launchd: uninstall works even if the instance name is later broken =="
+test_install_uninstall_broken() {
+  local co="$TMP/inst-brk/checkout" home="$TMP/brkhome" la rc
+  la="$home/Library/LaunchAgents"
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$home"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  printf 'version: 1\ndeployment:\n  instance: brand-x\n' > "$co/monitor-config.yaml"
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.vantagepoint.brand-x.daily.plist" ]; then pass "instance installed"; else fail "instance installed"; fi
+  # Operator breaks the instance name, then tries to uninstall - it must still work.
+  printf 'version: 1\ndeployment:\n  instance: "!!!"\n' > "$co/monitor-config.yaml"
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" uninstall >/dev/null 2>&1 ); rc=$?
+  assert_eq "uninstall exits 0 despite a now-invalid instance name" "0" "$rc"
+  if [ -f "$la/ai.zoller.vantagepoint.brand-x.daily.plist" ]; then fail "uninstall removed this checkout's agents anyway"; else pass "uninstall removed this checkout's agents anyway"; fi
+}
+test_install_uninstall_broken
 
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {

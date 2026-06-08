@@ -49,11 +49,6 @@ command -v launchctl >/dev/null 2>&1 || {
 INSTANCE_RAW=""
 [ -f "$ROOT/monitor-config.yaml" ] && INSTANCE_RAW="$(cfg_get_text deployment instance "$ROOT/monitor-config.yaml")"
 INSTANCE="$(printf '%s' "$INSTANCE_RAW" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed 's/^-*//; s/-*$//')"
-# A configured-but-unusable name must NOT silently become the default deployment.
-if [ -n "$INSTANCE_RAW" ] && [ -z "$INSTANCE" ]; then
-  echo "deployment.instance ('$INSTANCE_RAW') has no usable [a-z0-9-] characters - pick an ASCII slug" >&2
-  exit 1
-fi
 if [ -n "$INSTANCE" ]; then
   PREFIX="ai.zoller.vantagepoint.$INSTANCE"
 else
@@ -79,33 +74,35 @@ our_installed_labels() {
   done
 }
 
-# Retire pre-rename (market-monitor) agents so they can't fire alongside the renamed
-# ones. Only for the DEFAULT (un-suffixed) instance - those legacy agents belong to
-# the original single deployment, not to a named instance.
-if [ -z "$INSTANCE" ]; then
-  for label in ai.zoller.marketmonitor.daily ai.zoller.marketmonitor.weekly; do
-    if [ -f "$LA_DIR/$label.plist" ]; then
-      remove_label "$label"
-      echo "[install-launchd] retired legacy agent $label"
-    fi
-  done
-fi
+# Retire pre-rename (market-monitor) agents on EVERY run so they can't fire alongside
+# the renamed ones. Matched by label: these predate instances entirely, so only one
+# such set ever exists on a machine - retiring it isn't instance-specific.
+for label in ai.zoller.marketmonitor.daily ai.zoller.marketmonitor.weekly; do
+  if [ -f "$LA_DIR/$label.plist" ]; then
+    remove_label "$label"
+    echo "[install-launchd] retired legacy agent $label"
+  fi
+done
 
+# Uninstall removes ALL of this checkout's agents (found by the baked-in path), so it
+# works even if deployment.instance was since changed - including to an invalid value.
 uninstall() {
-  # Remove every agent that runs this checkout (covers a since-renamed instance too).
   our_installed_labels | while IFS= read -r label; do
     remove_label "$label"
     echo "[install-launchd] removed $label"
-  done
-  # Safety net (e.g. a hand-edited plist path-match missed): the current labels.
-  for label in "${LABELS[@]}"; do
-    if [ -f "$LA_DIR/$label.plist" ]; then remove_label "$label"; echo "[install-launchd] removed $label"; fi
   done
 }
 
 if [ "${1:-}" = "uninstall" ]; then
   uninstall
   exit 0
+fi
+
+# Install path only: a configured-but-unusable name must NOT silently become the
+# default deployment. (Uninstall above is path-based, so it doesn't need a valid name.)
+if [ -n "$INSTANCE_RAW" ] && [ -z "$INSTANCE" ]; then
+  echo "deployment.instance ('$INSTANCE_RAW') has no usable [a-z0-9-] characters - pick an ASCII slug" >&2
+  exit 1
 fi
 
 mkdir -p "$LA_DIR" "$ROOT/state"
