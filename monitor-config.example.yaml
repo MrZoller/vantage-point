@@ -45,21 +45,25 @@ models:
                       # dropping citations. Runs only on days a report is delivered.
 
 subject:
-  name: "Mechanical & microbrand wristwatches"
+  name: "Enterprise AI platforms & LLM products"
   description: >
-    The enthusiast watch market: new releases, microbrand drops, limited
-    editions, and secondary-market / auction movement. Excludes smartwatches.
+    The market for foundation-model providers, AI application/agent platforms, and
+    enterprise AI tooling: product & model launches, pricing and packaging, funding,
+    M&A and partnerships, integrations and platform moves, benchmarks, and the
+    standards/regulatory shifts that change the landscape.
   # Trusted seeds. The agent EXPANDS outward from these; it does not treat them
   # as the whole map. A few good seeds sharply reduce drift and hallucination.
   seeds:
-    - https://www.hodinkee.com
-    - https://www.fratellowatches.com
-    - https://www.wornandwound.com    # strong microbrand coverage
-    - https://www.chrono24.com        # secondary-market pricing signal
+    - https://news.ycombinator.com    # launches + candid practitioner sentiment
+    - https://techcrunch.com          # funding, M&A, launches
+    - https://venturebeat.com         # enterprise-AI coverage
+    # add each competitor's blog / changelog / pricing page as a seed too
   scope:
-    in:  ["new releases", "microbrand drops", "limited editions",
-          "notable auction results", "discontinuations", "price movement"]
-    out: ["smartwatches", "fashion-brand quartz", "general lifestyle content"]
+    in:  ["product & model launches", "pricing & packaging changes",
+          "funding, M&A & partnerships", "integrations & platform moves",
+          "benchmarks & evaluations", "standards & regulatory shifts"]
+    out: ["minor point releases", "vendor marketing & thought-leadership fluff",
+          "job postings", "general consumer-gadget news"]
   # ---- populated by bootstrap, then human-edited. Tells `monitor` how the
   #      market is shaped and WHERE news tends to break first. ----
   derived:
@@ -72,32 +76,33 @@ subject:
 
 anchor:
   # WHOSE interests define relevance. Org, individual, or persona.
-  name: "Me — collector"
-  type: persona               # organization | individual | persona
+  name: "Acme AI — product & strategy team"
+  type: organization          # organization | individual | persona
   description: >
-    A collector with specific taste. Relevance is judged against what I'd
-    actually want to know about, buy, or track — not the market at large.
-  relationship_to_subject: collector   # competitor | buyer | builder | collector | investor | ...
-  # Seeds that DESCRIBE the anchor. For a persona this is taste; for an org it's
-  # the division page, representative papers, recent awards, capability blurbs.
+    A company building and selling in this market. Relevance is judged against moves
+    that open an opportunity for us, threaten our roadmap, or signal a market shift we
+    should react to — not the market at large.
+  relationship_to_subject: competitor   # competitor | builder | buyer | investor | regulator | ...
+  # Seeds that DESCRIBE the anchor. For an org this is what you build, who you
+  # compete with, and what you'd react to. (For a persona anchor it'd be taste —
+  # likes/dislikes — instead of this profile block.)
   seeds:
-    taste:
-      likes: ["integrated-bracelet sport watches", "in-house movements",
-              "independent watchmakers", "sub-$2k microbrands with real finishing"]
-      dislikes: ["homage/clone designs", "oversized fashion pieces"]
-      owns: ["<optional: list a few to sharpen the model>"]
-      watchlist: ["<brands/refs I'm actively tracking>"]
+    profile:
+      product: ["<one line: what your product does>"]
+      competitors: ["<competitor A>", "<competitor B>", "<competitor C>"]
+      our_edges: ["<your differentiators>"]
+      roadmap_themes: ["<themes you'd feel threatened on if a rival shipped them>"]
+      icp: ["<who you sell to: e.g. individual devs, platform teams, enterprises>"]
   # ---- populated by bootstrap, then human-edited. THIS is the relevance
   #      lattice: what this anchor cares about + what counts as a signal. ----
   derived:
     interests: []             # inferred from seeds + research
-    peer_or_competitive_set: []   # collector: comparable brands/segments
-                                  # org: actual competitors
-    counterparties: []        # who they buy from / sell to / watch
+    peer_or_competitive_set: []   # the actual competitors you measure against
+    counterparties: []        # who you sell to / partner with / depend on
     signal_definitions:       # what makes something matter to THIS anchor
-      opportunity: null       # collector: a tracked ref dropping in price; new indie release
-      threat: null            # org: a competitor award in your exact wheelhouse
-      shift: null             # structural change worth flagging
+      opportunity: null       # e.g. a gap a competitor leaves; an integration/partner opening
+      threat: null            # e.g. a rival ships a headline capability on your roadmap
+      shift: null             # e.g. a pricing model or standard the market moves toward
     last_bootstrapped: null
     confidence_notes: null
 
@@ -143,12 +148,12 @@ tracking:
   # entity into state/observations.jsonl, then surfaces what CHANGED (deltas,
   # streaks, spikes) in a "What changed" section — not just brand-new items.
   enabled: true
-  # The agent auto-tracks entities from the approved profile (anchor watchlist +
+  # The agent auto-tracks entities from the approved profile (anchor competitors +
   # subject key players) and anything else it judges material. Pin must-track
   # entities + metrics here so coverage is guaranteed (optional; read by the agent):
   watch:
-    - { entity: "Tudor Black Bay 58", metrics: ["secondary_price_usd", "new_listings"] }
-    # - { entity: "<brand or ref>",   metrics: ["mention_count", "price_usd"] }
+    - { entity: "<competitor A>", metrics: ["pricing_usd_per_seat", "mention_count"] }
+    # - { entity: "<competitor B>", metrics: ["mention_count"] }
   # Sensitivity. Like show_borderline, start sensitive while calibrating, then
   # tighten. A change is flagged when it crosses ANY of these:
   min_pct_change: 8         # a tracked metric moved >= this % vs its last observation

@@ -96,25 +96,26 @@ Configuration is a single YAML file built on one idea: relevance is the *relatio
 between a news item and a defined stakeholder — the **subject** (what to watch) crossed
 with the **anchor** (whose interests decide what matters). You write a short config; the
 research pass turns it into a full profile you then approve. An abbreviated config (a
-watch collector, here — the full template is `monitor-config.example.yaml`):
+competitive-intelligence team, here — the full template is `monitor-config.example.yaml`):
 
 ```yaml
 subject:                       # WHAT to watch — the market
-  name: "Mechanical & microbrand wristwatches"
-  seeds: [hodinkee.com, wornandwound.com, chrono24.com]   # expand outward from these
+  name: "Enterprise AI platforms & LLM products"
+  seeds: [news.ycombinator.com, techcrunch.com, venturebeat.com]   # expand outward from these
   scope:
-    in:  ["new releases", "microbrand drops", "limited editions", "price movement"]
-    out: ["smartwatches", "fashion-brand quartz"]
+    in:  ["product & model launches", "pricing & packaging changes",
+          "funding, M&A & partnerships", "integrations & platform moves"]
+    out: ["minor point releases", "vendor marketing fluff", "job postings"]
 
 anchor:                        # WHOSE interests define relevance
-  name: "Me — collector"
-  type: persona
-  relationship_to_subject: collector
+  name: "Acme AI — product & strategy team"
+  type: organization
+  relationship_to_subject: competitor
   seeds:
-    taste:
-      likes:    ["integrated-bracelet sport watches", "in-house movements",
-                 "sub-$2k microbrands with real finishing"]
-      dislikes: ["homage/clone designs", "oversized fashion pieces"]
+    profile:
+      product:        ["an AI agent platform for support teams"]
+      competitors:    ["<competitor A>", "<competitor B>", "<competitor C>"]
+      roadmap_themes: ["multi-agent orchestration", "eval tooling", "usage-based pricing"]
 
 relevance:
   threshold: 0.6               # items scoring below this are dropped silently
@@ -133,41 +134,42 @@ monitor will trust it. An abbreviated look at what it produces:
 subject:
   derived:
     structure: >
-      Three tiers — luxury houses (Rolex/Patek/AP), accessible mechanical
-      ($500–$5k), and independent microbrands. Releases break on enthusiast
-      blogs first; secondary-price signals live on Chrono24.
+      Three layers — frontier-model providers (OpenAI/Anthropic/Google), AI app &
+      agent platforms, and infra/tooling. Launches break on vendor blogs + HN first;
+      pricing and packaging live on vendors' own pricing pages.
     key_players:
-      - { name: "Tudor",            why: "integrated-bracelet sport watches squarely in the anchor's band" }
-      - { name: "Christopher Ward", why: "microbrand now shipping in-house movements with real finishing" }
-      - { name: "Grand Seiko",      why: "in-house movements, high finishing — adjacent to the taste" }
+      - { name: "OpenAI",    why: "sets the pace on model + API capability and pricing" }
+      - { name: "Anthropic", why: "direct competitor on enterprise agent platforms" }
+      - { name: "LangChain", why: "ecosystem tooling that shapes how buyers integrate" }
     news_sources:                                  # RANKED: where news breaks first
-      - { name: "Hodinkee",     why: "breaks major releases first" }
-      - { name: "Worn & Wound", why: "deepest microbrand coverage" }
-      - { name: "Chrono24",     why: "secondary-market price signal" }
-    event_taxonomy: ["new release", "reissue", "limited edition", "price move", "auction result"]
+      - { name: "Hacker News", why: "launches + candid practitioner sentiment first" }
+      - { name: "TechCrunch",  why: "funding, M&A, partnerships" }
+      - { name: "Vendor blogs/changelogs", why: "authoritative on features + pricing" }
+    event_taxonomy: ["model/product launch", "pricing change", "funding/M&A", "partnership", "benchmark"]
     last_bootstrapped: 2026-05-10
     confidence_notes: >
-      Confident on the majors; less sure which microbrands the anchor rates — flagged
-      the borderline ones for review.
+      Confident on the major providers; less sure which mid-market tools you treat as
+      direct competitors — flagged the borderline ones for review.
 
 anchor:
   derived:
-    interests: ["integrated-bracelet sport watches under $2k", "independent watchmaking",
-                "in-house movement finishing"]
-    peer_or_competitive_set: ["Tudor", "Christopher Ward", "Baltic", "Lorier"]
+    interests: ["agent-platform launches & capabilities", "usage-based pricing moves",
+                "eval/observability tooling", "enterprise integrations & partnerships"]
+    peer_or_competitive_set: ["<competitor A>", "<competitor B>", "Anthropic", "LangChain"]
     signal_definitions:                            # what counts as a signal, in the anchor's terms
-      opportunity: "a tracked reference dropping into buy range, or a new indie release matching the taste"
-      shift:       "a structural move — a microbrand going in-house, a price-tier realignment"
+      opportunity: "a gap a competitor leaves, or a partner/integration opening you could take"
+      threat:      "a rival ships a headline capability on your roadmap, or undercuts your pricing"
+      shift:       "a structural move — a pricing model or standard the market is converging on"
 
 relevance:
   threshold: 0.6
   rubric: >
-    +++ integrated-bracelet sport watch, in-house movement, independent maker, sub-$2k with real finishing
-    +   reissue/limited edition from a key player; a tracked ref moving on price
-    --- homage/clone designs, oversized fashion quartz, general lifestyle content
+    +++ a direct competitor's launch/pricing/funding; a capability on your roadmap; an integration opening
+    +   an adjacent platform move or benchmark that changes how buyers choose
+    --- minor point releases, vendor marketing fluff, generic AI explainers, job postings
   calibration:                                     # graded examples — the biggest quality lever
-    relevant:     [{ item: "Christopher Ward goes in-house on The Twelve", why: "indie + in-house, exactly the taste" }]
-    not_relevant: [{ item: "Brand X drops a 44mm fashion chronograph",     why: "oversized fashion quartz — out of scope" }]
+    relevant:     [{ item: "Competitor B ships multi-agent orchestration (GA)", why: "headline feature on our roadmap" }]
+    not_relevant: [{ item: "Vendor X posts a 'future of AI' thought-leadership blog", why: "marketing fluff — out of scope" }]
 ```
 
 Because the profile is a plain, diffable file, the review gate is concrete: you read
@@ -181,18 +183,18 @@ A terse daily brief and a synthesized weekly digest. The agent authors each repo
 email. The raw report looks like this:
 
 ```markdown
-> **Bottom line:** Christopher Ward put an in-house movement in The Twelve — an indie hitting your taste at sub-$2k.
+> **Bottom line:** Competitor B shipped multi-agent orchestration to GA — a headline capability squarely on your roadmap.
 
 ## What changed
-- **[↓ 12%] Tudor Black Bay 58** secondary_price_usd: $3,650 → $3,200 over 3 weeks — sliding into your tracked-buy zone _(medium)_
+- **[↑ 2.4×] Competitor B** mention_count: spiked vs its trailing baseline over 3 days — launch-driven attention _(medium)_
 
-## Opportunities
-- **Christopher Ward unveils in-house cal. for The Twelve** `[a1b2c3d4]` — independent maker going in-house at sub-$2k, squarely your profile.
-  [Worn & Wound](https://…) _(high)_ — *Do:* read the hands-on; compare the finishing to the SH21.
+## Threats
+- **Competitor B ships multi-agent orchestration (GA)** `[a1b2c3d4]` — a capability you'd planned to lead on, now shipping first.
+  [Hacker News](https://…) _(high)_ — *Do:* pull their docs; gap-check against our beta and tighten the launch timeline.
 
 ## Shifts
-- **Microbrands moving in-house is accelerating** `[e5f6a7b8]` — the finishing/value bar is rising across the segment you buy in.
-  [Hodinkee](https://…) _(medium)_
+- **Usage-based pricing is becoming the default for agent platforms** `[e5f6a7b8]` — buyers increasingly expect per-run pricing across the segment.
+  [TechCrunch](https://…) _(medium)_
 ```
 
 Delivered, that's not raw text — it's a **polished HTML brief**: a header card (a
@@ -205,10 +207,10 @@ unicode **sparklines** so each tracked entity's trend reads at a glance:
 
 ```
 Watchlist status
-| Entity              | Latest        | Recent  | Note                      |
-|---------------------|---------------|---------|---------------------------|
-| Tudor Black Bay 58  | $3,200 (↓12%) | ▇▆▅▃▂▁  | dipping; tracked-buy zone |
-| Pelagos 39          | 4 listings    | ▁▂▂▃    | quiet                     |
+| Entity        | Latest          | Recent  | Note                         |
+|---------------|-----------------|---------|------------------------------|
+| Competitor B  | 2.4× mentions   | ▁▂▃▆▇█  | launch spike; on our roadmap |
+| Competitor A  | $30/seat (↑20%) | ▂▃▃▄    | raised pricing               |
 ```
 
 The optional **editorial pass** polishes the brief one more step before it ships (leads
