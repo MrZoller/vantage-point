@@ -116,19 +116,25 @@ installed_labels() {
   } | sort -u
 }
 
-# Retire pre-rename (market-monitor) agents on EVERY run so they can't fire alongside
-# the renamed ones. Matched by label: these predate instances entirely, so only one
-# such set ever exists on a machine - retiring it isn't instance-specific.
-for label in ai.zoller.marketmonitor.daily ai.zoller.marketmonitor.weekly; do
-  if [ -f "$LA_DIR/$label.plist" ]; then
-    remove_label "$label"
-    echo "[install-launchd] retired legacy agent $label"
-  fi
-done
+# Retire pre-rename (market-monitor) agents so they can't fire alongside the renamed
+# ones. Matched by label: these predate instances entirely, so only one such set ever
+# exists on a machine - retiring it isn't instance-specific. Defined as a function so
+# it runs only AFTER the collision preflight (a rejected install must mutate nothing).
+retire_legacy_agents() {
+  local label
+  for label in ai.zoller.marketmonitor.daily ai.zoller.marketmonitor.weekly; do
+    if [ -f "$LA_DIR/$label.plist" ]; then
+      remove_label "$label"
+      echo "[install-launchd] retired legacy agent $label"
+    fi
+  done
+}
 
 # Uninstall removes ALL of this checkout's agents (by baked-in path AND the recorded
 # marker), so it works after a move or rename, and even if the name is now invalid.
+# It also retires any legacy agents (no collision concern on the uninstall path).
 uninstall() {
+  retire_legacy_agents
   installed_labels | while IFS= read -r label; do
     [ -n "$label" ] || continue
     remove_label "$label"
@@ -146,8 +152,8 @@ mkdir -p "$LA_DIR" "$ROOT/state"
 
 # Refuse to hijack a label that already belongs to a DIFFERENT live checkout (e.g. two
 # clones whose deployment.instance slugify to the same value). Labels must be unique.
-# Run this BEFORE retiring anything, so a rejected rename leaves the existing schedule
-# intact rather than removing the old labels and then bailing out.
+# This is the FIRST thing on the install path: nothing below mutates LaunchAgents until
+# the install is known to be valid, so a rejected install leaves every schedule intact.
 for label in "${LABELS[@]}"; do
   if [ -f "$LA_DIR/$label.plist" ] && ! label_is_ours "$label"; then
     echo "[install-launchd] label $label already belongs to a different checkout - set a unique deployment.instance" >&2
@@ -155,9 +161,11 @@ for label in "${LABELS[@]}"; do
   fi
 done
 
-# Retire any of OUR previously-installed agents whose label we're NOT about to
-# (re)install - i.e. after renaming deployment.instance (or moving the checkout, via
-# the marker). Scoped to this checkout, so sibling instances are untouched.
+# Past the preflight: now it's safe to mutate. Retire legacy agents, then any of OUR
+# previously-installed agents whose label we're NOT about to (re)install - i.e. after
+# renaming deployment.instance (or moving the checkout, via the marker). Scoped to this
+# checkout, so sibling instances are untouched.
+retire_legacy_agents
 installed_labels | while IFS= read -r label; do
   [ -n "$label" ] || continue
   case " ${LABELS[*]} " in *" $label "*) continue ;; esac

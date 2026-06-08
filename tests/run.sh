@@ -357,6 +357,29 @@ test_install_rename_collision_preserves() {
 }
 test_install_rename_collision_preserves
 
+echo "== install-launchd: a rejected colliding install retires nothing (legacy intact) =="
+test_install_collision_keeps_legacy() {
+  local home="$TMP/clhome" la co a b rc
+  la="$home/Library/LaunchAgents"; mkdir -p "$home" "$la"
+  a="$TMP/cl-a/checkout"; b="$TMP/cl-b/checkout"
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    printf '#!/usr/bin/env bash\n' > "$co/bin/monitor.sh"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: beta\n' > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )   # B owns "beta"
+  printf 'old daily\n' > "$la/ai.zoller.marketmonitor.daily.plist"                          # a legacy agent present
+  printf 'version: 1\ndeployment:\n  instance: beta\n' > "$a/monitor-config.yaml"           # A collides with B
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 ); rc=$?
+  assert_eq "the colliding install is rejected" "1" "$rc"
+  if [ -f "$la/ai.zoller.marketmonitor.daily.plist" ]; then pass "legacy agent left intact (collision preflight ran first)"; else fail "legacy agent left intact (collision preflight ran first)"; fi
+}
+test_install_collision_keeps_legacy
+
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {
   # Run from an ISOLATED copy with no profile.yaml, so the review gate always
