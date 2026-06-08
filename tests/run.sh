@@ -1032,6 +1032,8 @@ test_portal_data_robustness() {
     printf '{"timestamp":"2026-06-02T00:00:00Z","entity":"E","metric":"m","value":20,"unit":"x"}\n'
     printf '{"timestamp":null,"entity":"E","metric":"m","value":99999,"unit":"x"}\n'                  # null ts must not win
     printf '{"timestamp":"2026-06-03T00:00:00Z","entity":"E","metric":"m","value":NaN,"unit":"x"}\n'  # non-finite skipped
+    printf '{"timestamp":"2026-06-04T00:00:00Z","entity":["bad"],"metric":"m","value":5}\n'           # non-scalar entity skipped
+    printf '{"timestamp":"2026-06-04T00:00:00Z","entity":"E","metric":{"x":1},"value":5}\n'           # non-scalar metric skipped
   } > "$repo/state/observations.jsonl"
   # Two passes of ONE monitor invocation, stamped independently (distinct timestamps),
   # both inside the 30-day window (stamped "today" so the window check is deterministic).
@@ -1058,8 +1060,39 @@ PY
   assert_contains "a non-finite (NaN) value can't crash the sparkline" "$out" "SPARK_OK True"
   assert_contains "multi-pass invocation counts as one run" "$out" "RUNS 1"
   assert_contains "cost still sums across every pass" "$out" "COST 0.32"
+  assert_contains "a non-scalar entity/metric row can't crash the page" "$out" "LATEST 20"
 }
 test_portal_data_robustness
+
+echo "== portal.py: fallback links preserve query strings; stale summary isn't preferred =="
+test_portal_fallback_links_and_freshness() {
+  local repo="$TMP/pflf" out
+  mkdir -p "$repo/bin"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  printf 'subject:\n  name: x\n' > "$repo/profile.yaml"
+  printf '# summary\n' > "$repo/profile.summary.md"
+  touch -t 202001010000 "$repo/profile.summary.md"   # digest OLDER than the profile
+  touch -t 202601010000 "$repo/profile.yaml"
+  out="$(python3 - "$repo/bin/portal.py" <<'PY'
+import importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+# Fallback markdown must not double-escape a query-string '&' in the href.
+print(m._light_md("see [src](https://example.com/p?a=1&b=2)"))
+print("STALE", m._summary_is_current(m.PROFILE_SUMMARY, m.PROFILE))
+os.utime(m.PROFILE_SUMMARY, (time.time(), time.time()))    # now at least as fresh
+print("FRESH", m._summary_is_current(m.PROFILE_SUMMARY, m.PROFILE))
+PY
+)"
+  assert_contains "a query-string link keeps a single &amp; in the href" "$out" 'href="https://example.com/p?a=1&amp;b=2"'
+  case "$out" in
+    *"&amp;amp;"*) fail "no double-escaped &amp;amp; in a fallback link" ;;
+    *) pass "no double-escaped &amp;amp; in a fallback link" ;;
+  esac
+  assert_contains "a digest older than the profile is treated as stale" "$out" "STALE False"
+  assert_contains "a digest at least as fresh as the profile is used" "$out" "FRESH True"
+}
+test_portal_fallback_links_and_freshness
 
 echo "== monitor.sh: an absolute state_file is named to Claude verbatim (no .// prefix) =="
 test_state_file_absolute() {

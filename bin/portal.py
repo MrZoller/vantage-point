@@ -273,7 +273,9 @@ def tracked_entities():
         if metric == "event" or not _is_number(value):
             continue
         entity = rec.get("entity")
-        if not entity or not metric:
+        # entity/metric must be non-empty strings: a non-scalar (list/dict) would be
+        # unhashable as a dict key and crash the page; skip it like any malformed row.
+        if not isinstance(entity, str) or not entity or not isinstance(metric, str):
             continue
         groups.setdefault((entity, metric), []).append(rec)
     rows = []
@@ -403,7 +405,10 @@ def _light_md(md):
         s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
 
         def link(m):
-            url = safe_url(m.group(2))
+            # The whole line was HTML-escaped first, so the captured URL has e.g. & as
+            # &amp; already; unescape before validating/re-escaping so a query string
+            # isn't double-escaped into a broken `amp;` href.
+            url = safe_url(html.unescape(m.group(2)))
             return ('<a href="%s">%s</a>' % (esc(url), m.group(1))) if url else m.group(1)
         return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, s)
 
@@ -680,6 +685,18 @@ def summary_card(summary_path, subtitle):
             '<div class="body">%s</div></div>' % (esc(title), esc(subtitle), body))
 
 
+def _summary_is_current(summary_path, yaml_path):
+    """Only prefer the digest when it's at least as fresh as the YAML it summarizes:
+    approving a new profile.yaml without refreshing profile.summary.md must not leave the
+    portal showing a stale digest (the monitor scores against the YAML, not the digest)."""
+    try:
+        if not os.path.exists(yaml_path):
+            return True
+        return os.path.getmtime(summary_path) >= os.path.getmtime(yaml_path)
+    except OSError:
+        return False
+
+
 def profile_inner(query):
     draft = (query.get("draft") or [""])[0] == "1"
     raw = (query.get("raw") or [""])[0] == "1"
@@ -700,9 +717,12 @@ def profile_inner(query):
         intro = "The approved profile the monitor scores against (read-only)."
         missing = "No profile.yaml yet &mdash; run bootstrap, then promote the draft."
 
-    # Prefer the human-readable summary (rendered like the bootstrap email); keep the
-    # YAML one click away as the source of truth (?raw=1).
-    if os.path.exists(summary_path) and not raw:
+    has_summary = os.path.exists(summary_path)
+    current = has_summary and _summary_is_current(summary_path, yaml_path)
+
+    # Prefer the human-readable summary (rendered like the bootstrap email) when it's
+    # current; keep the YAML one click away as the source of truth (?raw=1).
+    if current and not raw:
         raw_link = "/profile?raw=1" + ("&draft=1" if draft else "")
         parts = ["<h1>%s</h1>" % esc(title), '<p class="meta">%s</p>' % intro]
         if banner:
@@ -713,7 +733,11 @@ def profile_inner(query):
                      % (raw_link, esc(os.path.basename(yaml_path))))
         return "".join(parts)
 
-    if os.path.exists(summary_path):   # offer the way back to the formatted view
+    if has_summary and not current:    # a stale digest exists: show the YAML, flag it
+        intro += (' <em>A <code>%s</code> exists but predates this profile &mdash; '
+                  'regenerate it to show the formatted summary.</em>'
+                  % esc(os.path.basename(summary_path)))
+    elif current:                      # current digest, but ?raw=1 was requested
         intro += (' <a href="/profile%s">View the formatted summary</a>.'
                   % ("?draft=1" if draft else ""))
     return file_view_inner(title, yaml_path, intro, missing, banner)
