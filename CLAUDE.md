@@ -43,7 +43,8 @@ stays consistent instead of re-deriving them.
 - **Fail-safe & non-destructive.** Optional steps (deep-dive, email, dashboard) must
   never break the run or destroy a good report/state — back up and restore on failure.
 - **Config knobs:** optional with sane fallbacks; absent/blank → default + a stderr note,
-  never a crash. Example values live in `monitor-config.example.yaml`.
+  never a crash. Example values live in `monitor-config.example.yaml`; ready-to-copy
+  use-case configs (with empty `derived:` blocks) live in `samples/`.
 - **Ethos:** *silence beats noise* (no empty-day spam); human review gate before the
   monitor trusts a profile; corroborate before surfacing; cite every item.
 - **Docs honesty:** state default-vs-optional accurately; don't overclaim (privacy,

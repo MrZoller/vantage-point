@@ -16,6 +16,7 @@ vantage-point/
 ├── README.md
 ├── .gitignore
 ├── monitor-config.example.yaml   # template: subject, anchor, seeds, scope, calibration
+├── samples/                      # ready-to-copy configs for common use cases (see samples/README.md)
 ├── bootstrap-prompt.md           # the profile-builder prompt
 ├── monitor-prompt.md             # the recurring-agent (triage) prompt
 ├── deepdive-prompt.md            # the optional second-pass investigator prompt
@@ -73,6 +74,9 @@ makes the review gate a literal, diffable file promotion.
    cp monitor-config.example.yaml monitor-config.yaml
    chmod +x bin/*.sh
    ```
+   Or start from a ready-made use case in [`samples/`](samples/) — e.g.
+   `cp samples/ai-frontier-models.yaml monitor-config.yaml` — and edit from there
+   (AI models, dev-tools competitive intel, OSS/dependency security, AI policy).
 2. Install + authenticate Claude Code **once, interactively**, so headless runs
    reuse the session. Authenticating with your **Max** account means runs draw on
    your Max plan, not per-token API billing:
