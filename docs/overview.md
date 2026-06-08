@@ -216,9 +216,15 @@ Watchlist status
 The optional **editorial pass** polishes the brief one more step before it ships (leads
 with the strongest finding, cuts the marginal, tightens the prose) without adding facts
 or dropping citations. The same data also feeds a **web portal** (`bin/portal.sh`): an
-Overview of watched entities with their latest metric and a sparkline, recent events,
-and recent runs — plus every report rendered in place, the grading UI, and read-only
-profile/config views. A static `kb/index.html` snapshot of the Overview is written each
+Overview with an activity heatmap (items surfaced per day) and a weekly signal-mix chart,
+watched entities with their latest metric and a sparkline, recent events, and recent runs
+— plus every report rendered in place, the grading UI, and read-only profile/config views.
+The charts are server-rendered inline SVG, so there's no JavaScript and nothing to load.
+
+![The portal Overview](img/portal-overview.png)
+
+A [report rendered in the portal](img/portal-reports.png) (same styling as the email) and
+the [Review tab](img/portal-review.png) for thumbing items up/down. A static `kb/index.html` snapshot of the Overview is written each
 run too, so there's something to read with no server and no email required.
 
 (Email is optional — reports always land in `kb/` regardless; the HTML rendering uses a

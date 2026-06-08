@@ -81,7 +81,8 @@ but dedup against what the dailies already surfaced.
 {
   "id": "a1b2c3d4",                // stable short id (8 hex chars of the URL); lets a
                                    // human grade this item later. Same URL -> same id.
-  "date": "2026-06-06",
+  "date": "2026-06-06",            // REQUIRED. The YYYY-MM-DD you evaluated it (this
+                                   // run's date). Powers the dashboard's activity chart.
   "source": "wornandwound.com",
   "url": "https://...",
   "title": "...",
@@ -93,7 +94,9 @@ but dedup against what the dailies already surfaced.
 ```
 Give every surfaced item an `id` and show it in the report (e.g. a `[a1b2c3d4]` tag on
 the item line) so it can be graded later — thumbs up/down in the review UI, recorded to
-`state/feedback.jsonl`, which the next bootstrap uses to calibrate the rubric.
+`state/feedback.jsonl`, which the next bootstrap uses to calibrate the rubric. Always
+include `date` (this run's `YYYY-MM-DD`) on every record — surfaced and dropped alike —
+so dedup and the dashboard's activity chart can place it in time.
 
 ## Observation record (appended to ./state/observations.jsonl)
 One JSON object per line — your longitudinal memory for trend detection. `value` is

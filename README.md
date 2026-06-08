@@ -360,15 +360,21 @@ Reports are built to be *read and acted on*, not skimmed:
 - The **weekly** digest adds a **Watchlist status** table — a one-glance snapshot of
   each tracked entity with a unicode sparkline of recent values.
 - The **web portal** (`bin/portal.sh`) ties the operator surfaces together in one
-  clean page: an **Overview** (tracked entities + sparklines, recent events, recent
-  runs), **Reports** (every daily/weekly briefing rendered with the same styling as its
-  email), **Review** (the grading UI, below), and read-only **Profile** and **Config**
-  views. The **Profile** tab renders the human-readable digest (`profile.summary.md`, or
+  clean page: an **Overview** (an activity heatmap of items surfaced per day and a
+  weekly opportunity/threat/shift signal-mix chart, plus tracked entities + sparklines,
+  recent events, and recent runs), **Reports** (every daily/weekly briefing rendered
+  with the same styling as its email), **Review** (the grading UI, below), and read-only
+  **Profile** and **Config** views. The Overview charts are server-rendered inline SVG —
+  no JavaScript, so they work under the portal's strict CSP and stay dependency-light. The **Profile** tab renders the human-readable digest (`profile.summary.md`, or
   `profile.draft.summary.md` for a pending draft) with the same styling as the bootstrap
   email when one is present — the raw `profile.yaml` stays one click away — and falls
   back to the YAML otherwise. `bin/portal.py --export` also writes a static
   **`kb/index.html`** snapshot of the Overview after every run (disable with
   `output.dashboard: false`) so there's a no-server artifact alongside the reports.
+
+![The portal Overview — activity heatmap, weekly signal mix, tracked entities](docs/img/portal-overview.png)
+
+Other views: [Reports](docs/img/portal-reports.png) · [Review](docs/img/portal-review.png) · [Profile](docs/img/portal-profile.png) · [Config](docs/img/portal-config.png).
 
 ### Viewing the portal remotely
 
