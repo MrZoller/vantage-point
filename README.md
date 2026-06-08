@@ -137,6 +137,47 @@ Make sure the mini doesn't sleep through the schedule (Energy settings → preve
 sleep, or wrap the script in `caffeinate`). A missed `StartCalendarInterval` fires
 on wake, but only once — you don't want a sleeping mini eating your daily run.
 
+## Running multiple instances
+
+Want one machine watching several markets (say, AI models *and* dev-tools rivals)?
+Use **one clone per instance** — at runtime they're already fully isolated (each
+checkout has its own `monitor-config.yaml`, `profile.yaml`, `state/` incl. its run
+lock, and `kb/`; email Subjects are namespaced by `subject.name`). The only thing
+that must be unique is the launchd agent label, so set **`deployment.instance`** in
+each clone's config:
+
+```yaml
+deployment:
+  instance: ai-models      # a short slug; lowercased, non [a-z0-9-] -> '-'
+```
+
+Then install each clone normally:
+
+```sh
+git clone <repo> ~/vp-ai-models   &&  cd ~/vp-ai-models   && ./bin/install-launchd.sh
+git clone <repo> ~/vp-devtools    &&  cd ~/vp-devtools    && ./bin/install-launchd.sh
+```
+
+Each gets its own agents — `ai.zoller.vantagepoint.<instance>.{daily,weekly}` — so
+they coexist and `uninstall` only removes that checkout's agents. Leave
+`deployment.instance` unset for a single deployment (labels stay un-suffixed, exactly
+as before — no migration needed). Renaming an instance, or converting a single
+deployment to a named one, is safe: a reinstall retires this checkout's previously
+installed agents (matched by the path baked into the plist) before installing the new
+labels, so no stale agents linger. An instance name that has no usable `[a-z0-9-]`
+characters is rejected rather than silently treated as the default.
+
+Notes:
+- Each clone needs a *distinct* `deployment.instance` (names are slugified, so
+  `AI Models` and `AI_Models` collide); an install that would hijack a label already
+  owned by a different checkout is rejected rather than silently repointing it.
+- The locks are per-clone, so instances run independently (and can overlap). If you'd
+  rather they not run at the same minute, stagger the times in each clone's
+  `launchd/*.plist`.
+- `~/.msmtprc` and your Claude auth are shared across clones, which is fine. To view
+  two dashboards or grading UIs at once, give each a distinct port
+  (`./bin/dashboard.sh --serve 8081`, `./bin/review.sh --port 8092`).
+
 ## Email delivery (optional)
 
 Reports always land in `kb/`. To also email them, install msmtp and add a config.

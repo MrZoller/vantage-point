@@ -4,7 +4,8 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>ai.zoller.vantagepoint.weekly</string>
+  <!-- Label is filled in by bin/install-launchd.sh (instance-namespaced when set). -->
+  <string>__VP_LABEL__</string>
 
   <key>ProgramArguments</key>
   <array>

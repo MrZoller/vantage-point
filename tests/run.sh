@@ -60,6 +60,7 @@ assert_plist_ok() {
   if [ ! -f "$2" ]; then fail "$1: plist exists"; return; fi
   pass "$1: plist exists"
   if grep -q '__VP_ROOT__' "$2"; then fail "$1: no __VP_ROOT__ token remains"; else pass "$1: no __VP_ROOT__ token remains"; fi
+  if grep -q '__VP_LABEL__' "$2"; then fail "$1: no __VP_LABEL__ token remains"; else pass "$1: no __VP_LABEL__ token remains"; fi
   local got
   got="$(python3 - "$2" <<'PY'
 import sys, plistlib
@@ -76,7 +77,7 @@ test_install_launchd() {
   # broke sed templating + produced invalid XML).
   local co="$TMP/a&b<c>d/checkout"
   mkdir -p "$co/bin" "$co/launchd" "$co/stub"
-  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
   cp "$ROOT"/launchd/*.plist "$co/launchd/"
   chmod +x "$co/bin/install-launchd.sh"
   make_install_stubs "$co/stub"
@@ -93,7 +94,7 @@ echo "== install-launchd uninstall: removes both agents =="
 test_uninstall() {
   local co="$TMP/uninst/checkout"
   mkdir -p "$co/bin" "$co/launchd" "$co/stub"
-  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
   cp "$ROOT"/launchd/*.plist "$co/launchd/"
   chmod +x "$co/bin/install-launchd.sh"
   make_install_stubs "$co/stub"
@@ -113,7 +114,7 @@ echo "== install-launchd: retires pre-rename (market-monitor) agents =="
 test_install_retires_legacy() {
   local co="$TMP/legacy/checkout"
   mkdir -p "$co/bin" "$co/launchd" "$co/stub"
-  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
   cp "$ROOT"/launchd/*.plist "$co/launchd/"
   chmod +x "$co/bin/install-launchd.sh"
   make_install_stubs "$co/stub"
@@ -131,6 +132,253 @@ test_install_retires_legacy() {
   if [ -f "$la/ai.zoller.vantagepoint.daily.plist" ]; then pass "new agent installed"; else fail "new agent installed"; fi
 }
 test_install_retires_legacy
+
+echo "== install-launchd: namespaces agents by deployment.instance (multi-instance) =="
+test_install_instance() {
+  local home="$TMP/multihome" la; la="$home/Library/LaunchAgents"; mkdir -p "$home" "$la"
+  # A pre-rename legacy agent present on this machine - must be retired even though
+  # we're installing a NAMED instance (not just the default).
+  printf 'old daily\n' > "$la/ai.zoller.marketmonitor.daily.plist"
+  # Instance A: an uppercase/spaced name to exercise slugification -> "ai-models".
+  local a="$TMP/inst-a/checkout"
+  mkdir -p "$a/bin" "$a/launchd" "$a/stub"
+  cp "$ROOT/bin/install-launchd.sh" "$a/bin/"; cp_libs "$a/bin"
+  cp "$ROOT"/launchd/*.plist "$a/launchd/"
+  chmod +x "$a/bin/install-launchd.sh"
+  make_install_stubs "$a/stub"
+  printf 'version: 1\ndeployment:\n  instance: "AI Models"\n' > "$a/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  assert_plist_ok "instance daily"  "$la/ai.zoller.vantagepoint.ai-models.daily.plist"  "$a/bin/monitor.sh"
+  assert_plist_ok "instance weekly" "$la/ai.zoller.vantagepoint.ai-models.weekly.plist" "$a/bin/monitor.sh"
+  if [ -f "$la/ai.zoller.marketmonitor.daily.plist" ]; then fail "legacy agent retired even under a named instance"; else pass "legacy agent retired even under a named instance"; fi
+  assert_contains "label is namespaced by the slugified instance" \
+    "$(cat "$la/ai.zoller.vantagepoint.ai-models.daily.plist")" "<string>ai.zoller.vantagepoint.ai-models.daily</string>"
+  if [ -f "$la/ai.zoller.vantagepoint.daily.plist" ]; then fail "a named instance does not install the un-suffixed agent"; else pass "a named instance does not install the un-suffixed agent"; fi
+
+  # Instance B coexists in the same LaunchAgents dir.
+  local b="$TMP/inst-b/checkout"
+  mkdir -p "$b/bin" "$b/launchd" "$b/stub"
+  cp "$ROOT/bin/install-launchd.sh" "$b/bin/"; cp_libs "$b/bin"
+  cp "$ROOT"/launchd/*.plist "$b/launchd/"
+  chmod +x "$b/bin/install-launchd.sh"
+  make_install_stubs "$b/stub"
+  printf 'version: 1\ndeployment:\n  instance: watches\n' > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.vantagepoint.ai-models.daily.plist" ] && [ -f "$la/ai.zoller.vantagepoint.watches.daily.plist" ]; then
+    pass "two instances coexist in LaunchAgents"
+  else
+    fail "two instances coexist in LaunchAgents"
+  fi
+  # Uninstalling B touches only its own labels.
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" uninstall >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.vantagepoint.watches.daily.plist" ]; then fail "uninstall removes only its own instance"; else pass "uninstall removes only its own instance"; fi
+  if [ -f "$la/ai.zoller.vantagepoint.ai-models.daily.plist" ]; then pass "the other instance survives a sibling uninstall"; else fail "the other instance survives a sibling uninstall"; fi
+
+  # Renaming A's instance (same checkout) retires the old labels instead of leaving
+  # them to double-fire alongside the new ones.
+  printf 'version: 1\ndeployment:\n  instance: frontier\n' > "$a/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.vantagepoint.frontier.daily.plist" ]; then pass "rename installs the new labels"; else fail "rename installs the new labels"; fi
+  if [ -f "$la/ai.zoller.vantagepoint.ai-models.daily.plist" ]; then fail "rename retires this checkout's old labels"; else pass "rename retires this checkout's old labels"; fi
+}
+test_install_instance
+
+echo "== install-launchd: rejects an instance name that slugifies to empty =="
+test_install_instance_invalid() {
+  local co="$TMP/inst-bad/checkout" home="$TMP/badhome" rc out
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$home"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  printf 'version: 1\ndeployment:\n  instance: "!!!"\n' > "$co/monitor-config.yaml"   # slugifies to ""
+  out="$( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" 2>&1 )"; rc=$?
+  assert_eq "exits non-zero on an unusable instance name" "1" "$rc"
+  assert_contains "explains the name is unusable" "$out" "no usable"
+  if [ -f "$home/Library/LaunchAgents/ai.zoller.vantagepoint.daily.plist" ]; then
+    fail "does not silently fall back to the default agent"
+  else
+    pass "does not silently fall back to the default agent"
+  fi
+}
+test_install_instance_invalid
+
+echo "== install-launchd: uninstall works even if the instance name is later broken =="
+test_install_uninstall_broken() {
+  local co="$TMP/inst-brk/checkout" home="$TMP/brkhome" la rc
+  la="$home/Library/LaunchAgents"
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$home"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  printf 'version: 1\ndeployment:\n  instance: brand-x\n' > "$co/monitor-config.yaml"
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.vantagepoint.brand-x.daily.plist" ]; then pass "instance installed"; else fail "instance installed"; fi
+  # Operator breaks the instance name, then tries to uninstall - it must still work.
+  printf 'version: 1\ndeployment:\n  instance: "!!!"\n' > "$co/monitor-config.yaml"
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" uninstall >/dev/null 2>&1 ); rc=$?
+  assert_eq "uninstall exits 0 despite a now-invalid instance name" "0" "$rc"
+  if [ -f "$la/ai.zoller.vantagepoint.brand-x.daily.plist" ]; then fail "uninstall removed this checkout's agents anyway"; else pass "uninstall removed this checkout's agents anyway"; fi
+}
+test_install_uninstall_broken
+
+echo "== install-launchd: uninstall still finds agents after the checkout moves =="
+test_install_cleanup_after_move() {
+  local co="$TMP/inst-move/checkout" home="$TMP/movehome" la rc p
+  la="$home/Library/LaunchAgents"
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$home"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  printf 'version: 1\ndeployment:\n  instance: mover\n' > "$co/monitor-config.yaml"
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
+  # Simulate a checkout move: rewrite the baked-in path so the path signal no longer
+  # matches; only the recorded marker (state/.launchd-labels) can now find the labels.
+  for p in "$la"/ai.zoller.vantagepoint.mover.*.plist; do
+    [ -e "$p" ] || continue
+    sed 's#'"$co"'/bin/monitor.sh#/moved/elsewhere/bin/monitor.sh#' "$p" > "$p.tmp" && mv "$p.tmp" "$p"
+  done
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" uninstall >/dev/null 2>&1 ); rc=$?
+  assert_eq "uninstall exits 0 after a move" "0" "$rc"
+  if [ -f "$la/ai.zoller.vantagepoint.mover.daily.plist" ]; then fail "the marker-recorded labels are removed after a move"; else pass "the marker-recorded labels are removed after a move"; fi
+}
+test_install_cleanup_after_move
+
+echo "== install-launchd: refuses to hijack a label owned by another checkout =="
+test_install_rejects_collision() {
+  local home="$TMP/colhome" la co a b rc out
+  la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  a="$TMP/col-a/checkout"; b="$TMP/col-b/checkout"
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    printf '#!/usr/bin/env bash\n' > "$co/bin/monitor.sh"   # so the agent reads as "live"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: "AI Models"\n' > "$a/monitor-config.yaml"   # -> ai-models
+  printf 'version: 1\ndeployment:\n  instance: "AI_Models"\n' > "$b/monitor-config.yaml"   # also -> ai-models
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  out="$( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" 2>&1 )"; rc=$?
+  assert_eq "a colliding-slug second checkout exits non-zero" "1" "$rc"
+  assert_contains "explains the label collision" "$out" "already belongs to a different checkout"
+  assert_contains "the first checkout's agent is left intact" "$(cat "$la/ai.zoller.vantagepoint.ai-models.daily.plist")" "$a/bin/monitor.sh"
+}
+test_install_rejects_collision
+
+echo "== install-launchd: a copied checkout's stale marker doesn't remove a sibling =="
+test_install_copied_marker() {
+  local home="$TMP/cphome" la co a b
+  la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  a="$TMP/cp-a/checkout"; b="$TMP/cp-b/checkout"
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$co/state"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    printf '#!/usr/bin/env bash\n' > "$co/bin/monitor.sh"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: ai-models\n' > "$a/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  # Simulate `cp -r` of an installed checkout: B inherits A's marker, then is renamed.
+  cp "$a/state/.launchd-labels" "$b/state/.launchd-labels"
+  printf 'version: 1\ndeployment:\n  instance: devtools\n' > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.vantagepoint.ai-models.daily.plist" ]; then pass "the original sibling's agent survives the copy's install"; else fail "the original sibling's agent survives the copy's install"; fi
+  if [ -f "$la/ai.zoller.vantagepoint.devtools.daily.plist" ]; then pass "the copied checkout installs its own agent"; else fail "the copied checkout installs its own agent"; fi
+}
+test_install_copied_marker
+
+echo "== install-launchd: rejects a broken instance name before mutating LaunchAgents =="
+test_install_broken_keeps_legacy() {
+  local co="$TMP/inst-brk2/checkout" home="$TMP/brk2home" la rc
+  la="$home/Library/LaunchAgents"
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$la"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  printf 'old daily\n' > "$la/ai.zoller.marketmonitor.daily.plist"   # a legacy agent present
+  printf 'version: 1\ndeployment:\n  instance: "!!!"\n' > "$co/monitor-config.yaml"   # slugifies to ""
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 ); rc=$?
+  assert_eq "install rejects the broken name" "1" "$rc"
+  if [ -f "$la/ai.zoller.marketmonitor.daily.plist" ]; then pass "legacy agent NOT deleted when the install is rejected"; else fail "legacy agent NOT deleted when the install is rejected"; fi
+}
+test_install_broken_keeps_legacy
+
+echo "== install-launchd: collision guard decodes a sibling path with XML-special chars =="
+test_install_collision_escaped_path() {
+  local home="$TMP/eschome" la co a b rc out
+  la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  a="$TMP/esc-a&x/checkout"; b="$TMP/esc-b/checkout"
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    printf '#!/usr/bin/env bash\n' > "$co/bin/monitor.sh"   # so the sibling reads as "live"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: shared\n' > "$a/monitor-config.yaml"
+  printf 'version: 1\ndeployment:\n  instance: shared\n' > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  out="$( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" 2>&1 )"; rc=$?
+  assert_eq "second checkout is rejected (sibling path has &)" "1" "$rc"
+  assert_contains "the original (& path) agent is left intact" "$(cat "$la/ai.zoller.vantagepoint.shared.daily.plist")" "esc-a&amp;x/checkout/bin/monitor.sh"
+}
+test_install_collision_escaped_path
+
+echo "== install-launchd: a colliding rename is rejected without dropping the old schedule =="
+test_install_rename_collision_preserves() {
+  local home="$TMP/rcphome" la co a b rc
+  la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  a="$TMP/rcp-a/checkout"; b="$TMP/rcp-b/checkout"
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    printf '#!/usr/bin/env bash\n' > "$co/bin/monitor.sh"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: alpha\n' > "$a/monitor-config.yaml"
+  printf 'version: 1\ndeployment:\n  instance: beta\n'  > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )
+  # Rename A to beta (collides with the live B) and reinstall A.
+  printf 'version: 1\ndeployment:\n  instance: beta\n' > "$a/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 ); rc=$?
+  assert_eq "the colliding rename is rejected" "1" "$rc"
+  if [ -f "$la/ai.zoller.vantagepoint.alpha.daily.plist" ]; then pass "A's existing schedule is preserved on a rejected rename"; else fail "A's existing schedule is preserved on a rejected rename"; fi
+}
+test_install_rename_collision_preserves
+
+echo "== install-launchd: a rejected colliding install retires nothing (legacy intact) =="
+test_install_collision_keeps_legacy() {
+  local home="$TMP/clhome" la co a b rc
+  la="$home/Library/LaunchAgents"; mkdir -p "$home" "$la"
+  a="$TMP/cl-a/checkout"; b="$TMP/cl-b/checkout"
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    printf '#!/usr/bin/env bash\n' > "$co/bin/monitor.sh"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: beta\n' > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )   # B owns "beta"
+  printf 'old daily\n' > "$la/ai.zoller.marketmonitor.daily.plist"                          # a legacy agent present
+  printf 'version: 1\ndeployment:\n  instance: beta\n' > "$a/monitor-config.yaml"           # A collides with B
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 ); rc=$?
+  assert_eq "the colliding install is rejected" "1" "$rc"
+  if [ -f "$la/ai.zoller.marketmonitor.daily.plist" ]; then pass "legacy agent left intact (collision preflight ran first)"; else fail "legacy agent left intact (collision preflight ran first)"; fi
+}
+test_install_collision_keeps_legacy
 
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {
