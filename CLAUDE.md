@@ -21,8 +21,9 @@ stays consistent instead of re-deriving them.
 - **editor** (`editor-prompt.md`): optional final pass (`models.editor`) that curates +
   polishes the report before delivery — non-destructive, no new facts, citations kept.
 - Both are `claude -p` calls wrapped in shell, sharing `config-lib.sh` (cfg readers) and
-  `email-lib.sh` (rendering + `send_email`). Helpers: `dashboard.sh` (→ `kb/index.html`),
-  `review.sh`/`feedback-server.py` (grading UI → `state/feedback.jsonl`), `usage.sh`,
+  `email-lib.sh` (rendering + `send_email`). Helpers: `portal.sh`/`portal.py` (unified
+  web portal — overview/reports/review/profile/config; grading → `state/feedback.jsonl`;
+  `--export` → static `kb/index.html`), `usage.sh`,
   `install-launchd.sh`, `dedupe-feedback.py`.
 - **State** (gitignored): `state/seen.jsonl` (dedup), `state/observations.jsonl`
   (trends), `state/feedback.jsonl` (grades), `state/runs.log` (per-run usage);

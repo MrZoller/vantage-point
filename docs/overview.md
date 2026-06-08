@@ -82,10 +82,10 @@ flowchart LR
    and notices what's *changed* since last time. With the optional **deep-dive** pass
    enabled, the few highest-value items get a deeper look that **corroborates across
    multiple sources** before surfacing.
-3. **Brief + learn.** It delivers a tight report — as a designed **HTML email** and a
-   browsable **dashboard** — with an optional **editorial** pass that first curates and
+3. **Brief + learn.** It delivers a tight report — as a designed **HTML email** and in a
+   browsable **web portal** — with an optional **editorial** pass that first curates and
    polishes it into a designed brief (lead, order, cut, tighten) without adding facts or
-   dropping citations. Items are graded up/down from a **one-click web UI**, and those
+   dropping citations. Items are graded up/down from the portal's **one-click Review tab**, and those
    grades feed the **next profile refresh** — a re-run of the research step that you
    review and approve. Grading sharpens relevance at the next refresh; it doesn't change
    scoring automatically mid-stream.
@@ -213,9 +213,11 @@ Watchlist status
 
 The optional **editorial pass** polishes the brief one more step before it ships (leads
 with the strongest finding, cuts the marginal, tightens the prose) without adding facts
-or dropping citations. The same data also feeds an always-on **dashboard**
-(`kb/index.html`): watched entities with their latest metric and a sparkline, recent
-events, and links to recent reports — no email required.
+or dropping citations. The same data also feeds a **web portal** (`bin/portal.sh`): an
+Overview of watched entities with their latest metric and a sparkline, recent events,
+and recent runs — plus every report rendered in place, the grading UI, and read-only
+profile/config views. A static `kb/index.html` snapshot of the Overview is written each
+run too, so there's something to read with no server and no email required.
 
 (Email is optional — reports always land in `kb/` regardless; the HTML rendering uses a
 lightweight Markdown renderer if one is installed and falls back to clean plain text
