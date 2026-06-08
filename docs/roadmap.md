@@ -38,9 +38,10 @@ Findings land as decisions, not a list:
   confidence*.
 - The weekly digest adds a **Watchlist status** table with unicode **sparklines**
   (render in both plain text and HTML mail — more portable than SVG).
-- `bin/dashboard.sh` regenerates a browsable **`kb/index.html`** each run (tracked
-  entities + latest metric + sparkline, recent events, report links); `output.dashboard`
-  toggles it.
+- The **web portal** (`bin/portal.sh`/`portal.py`) presents the Overview (tracked
+  entities + latest metric + sparkline, recent events, recent runs), plus Reports,
+  Review, and read-only Profile/Config; `bin/portal.py --export` writes a static
+  **`kb/index.html`** snapshot each run, toggled by `output.dashboard`.
 
 ## Phase 3 — two-pass deep dive ✅ (shipped)
 
@@ -57,9 +58,9 @@ cost-bounded (fires only on high-scorers, capped per run); both passes are logge
 
 Make grading frictionless so the rubric learns your taste and quality compounds:
 - Stable per-item `id` in every report/state record.
-- `bin/review.sh` serves a localhost grading UI (`bin/feedback-server.py`) listing
-  recent surfaced items with 👍 / 👎 buttons; a click records the grade + item context
-  to `state/feedback.jsonl`. Localhost-only — reach it over an SSH/VS Code forward.
+- The portal's **Review** tab (`bin/portal.py`) lists recent surfaced items with
+  👍 / 👎 buttons; a click records the grade + item context to `state/feedback.jsonl`.
+  Localhost-only — reach it over an SSH/VS Code forward.
 - The next `bin/bootstrap.sh` reads `feedback.jsonl` as ground-truth calibration and
   tunes `relevance.rubric` / `relevance.calibration` to match (no fragile in-place
   YAML mutation; you still review/approve the draft).

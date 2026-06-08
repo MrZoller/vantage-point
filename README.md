@@ -28,9 +28,8 @@ vantage-point/
 │   ├── email-lib.sh             # shared email rendering + sender (sourced by both agents)
 │   ├── install-launchd.sh        # install/remove the launchd agents (no repo edits)
 │   ├── usage.sh                  # roll up state/runs.log: cost/turns/tokens
-│   ├── dashboard.sh              # regenerate kb/index.html (entities + sparklines)
-│   ├── review.sh                 # launch the grading UI (thumbs up/down)
-│   ├── feedback-server.py        # the grading web app behind review.sh
+│   ├── portal.sh                 # launch the unified web portal (or --export kb/index.html)
+│   ├── portal.py                 # the portal app: overview, reports, review, profile, config
 │   └── dedupe-feedback.py        # collapse feedback.jsonl to latest-per-id (for bootstrap)
 └── launchd/
     ├── ai.zoller.vantagepoint.daily.plist    # templates; __VP_ROOT__ filled in at install
@@ -175,8 +174,7 @@ Notes:
   rather they not run at the same minute, stagger the times in each clone's
   `launchd/*.plist`.
 - `~/.msmtprc` and your Claude auth are shared across clones, which is fine. To view
-  two dashboards or grading UIs at once, give each a distinct port
-  (`./bin/dashboard.sh --serve 8081`, `./bin/review.sh --port 8092`).
+  two portals at once, give each a distinct port (`./bin/portal.sh --port 8081`).
 
 ## Email delivery (optional)
 
@@ -361,29 +359,29 @@ Reports are built to be *read and acted on*, not skimmed:
   confidence*.
 - The **weekly** digest adds a **Watchlist status** table — a one-glance snapshot of
   each tracked entity with a unicode sparkline of recent values.
-- `bin/dashboard.sh` regenerates **`kb/index.html`** after every run (disable with
-  `output.dashboard: false`): a browsable snapshot of tracked entities (latest metric
-  + sparkline), recent events, and links to recent reports. Run `./bin/dashboard.sh`
-  by hand anytime to refresh it. (Needs `jq`, like the run log.)
+- The **web portal** (`bin/portal.sh`) ties the operator surfaces together in one
+  clean page: an **Overview** (tracked entities + sparklines, recent events, recent
+  runs), **Reports** (every daily/weekly briefing rendered with the same styling as its
+  email), **Review** (the grading UI, below), and read-only **Profile** and **Config**
+  views. `bin/portal.py --export` also writes a static **`kb/index.html`** snapshot of
+  the Overview after every run (disable with `output.dashboard: false`) so there's a
+  no-server artifact alongside the reports.
 
-### Viewing the dashboard remotely
+### Viewing the portal remotely
 
-`kb/index.html` is a local file, so serve it and reach it over your existing SSH/VS
-Code session:
+The portal binds to `127.0.0.1` only — pair it with SSH port-forwarding rather than
+exposing a public listener:
 
 ```
-./bin/dashboard.sh --serve          # regenerate + serve kb/ on http://localhost:8000
-./bin/dashboard.sh --serve 8080     # ...or pick a port
-```
-It binds to `127.0.0.1` only — pair it with SSH port-forwarding rather than exposing
-a public listener:
-```
+./bin/portal.sh                     # serve the portal on http://localhost:8000
+./bin/portal.sh --port 8080         # ...or pick a port
+./bin/portal.sh --export            # just (re)write kb/index.html, no server
 ssh -L 8000:localhost:8000 you@mini   # then open http://localhost:8000/ on your laptop
 ```
-In **VS Code Remote**, running `--serve` in the integrated terminal triggers VS Code's
-automatic port forwarding (click the toast), or use the **Live Preview** extension on
-`kb/index.html`. Report links are markdown, so they open as raw text in a browser —
-read a report rendered via VS Code's markdown preview, or in the emailed HTML.
+In **VS Code Remote**, running `./bin/portal.sh` in the integrated terminal triggers
+VS Code's automatic port forwarding (click the toast). Reports render in the portal
+itself (via the same `pandoc`/`cmark` chain the email uses, with a built-in fallback),
+so you no longer need a separate markdown preview.
 
 ## Deep dive (two-pass investigation)
 
@@ -425,17 +423,16 @@ restored and shipped. Like the deep dive it's opt-in and logged to `state/runs.l
 ## Calibration (teach it your taste)
 
 The single biggest quality lever is grading real output. Each surfaced item carries a
-short stable `id`, and `bin/review.sh` serves a tiny local web UI listing recent items
-with 👍 / 👎 buttons:
+short stable `id`, and the portal's **Review** tab lists recent items with 👍 / 👎
+buttons:
 
 ```
-./bin/review.sh                # grading UI on http://localhost:8000
-./bin/review.sh --port 8090
+./bin/portal.sh                # then open the Review tab at http://localhost:8000/review
 ssh -L 8000:localhost:8000 you@mini   # reach it from your laptop (or VS Code Remote forward)
 ```
 
 A click records the grade — with the item's full context — to `state/feedback.jsonl`
-(localhost-bound, no public listener, like `dashboard.sh --serve`). The next
+(localhost-bound, no public listener). The next
 `bin/bootstrap.sh` reads those grades as ground-truth calibration and tunes
 `relevance.rubric` (and `relevance.calibration`) to match them, then you review/approve
 the draft as usual. So the loop is: **monitor surfaces → you thumb → re-bootstrap →
@@ -448,8 +445,8 @@ need the `claude` CLI — launchd plist generation (including paths with shell/X
 special characters), `monitor.sh`'s argument/review-gate behavior, email
 plain-text/HTML rendering, the single-run lock (skip + stale-lock reclaim, via a stub
 `claude`), state pruning, the profile-staleness warning, the two-pass deep-dive
-orchestration (including failure/empty-report rollback), the `usage.sh` rollup, the
-dashboard, and the feedback grading server. CI (`.github/workflows/ci.yml`) runs
+orchestration (including failure/empty-report rollback), the `usage.sh` rollup, and the
+web portal (static export + the live server's routes and grading). CI (`.github/workflows/ci.yml`) runs
 `shellcheck`, `bash -n`, a `py_compile` check, and this suite on every push and PR.
 
 ## Troubleshooting

@@ -453,9 +453,10 @@ else
   echo "[monitor:$MODE] nothing material - no report written (silence is correct)."
 fi
 
-# ---- refresh the kb/index.html dashboard (best-effort; never fails the run) ----
+# ---- refresh the kb/index.html portal snapshot (best-effort; never fails the run) ----
 # Observations may have updated even on a quiet day, so regenerate every run unless
-# output.dashboard is explicitly false.
-if [ "$DASHBOARD" != "false" ] && [ -f bin/dashboard.sh ]; then
-  bash bin/dashboard.sh || echo "[monitor:$MODE] WARNING: dashboard refresh failed (report is unaffected)" >&2
+# output.dashboard is explicitly false. The live portal (bin/portal.sh) reads state on
+# each request; this static export keeps a no-server artifact alongside the reports.
+if [ "$DASHBOARD" != "false" ] && [ -f bin/portal.py ] && command -v python3 >/dev/null 2>&1; then
+  python3 bin/portal.py --export || echo "[monitor:$MODE] WARNING: portal export failed (report is unaffected)" >&2
 fi

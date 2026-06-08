@@ -550,7 +550,7 @@ test_encode_header
 make_fake_repo() {
   local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
-  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/dashboard.sh" "$repo/bin/"; cp_libs "$repo/bin"
+  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$repo/bin/"; cp_libs "$repo/bin"
   cat > "$repo/monitor-config.yaml" <<YAML
 version: 1
 models:
@@ -658,7 +658,7 @@ test_full_run() {
   assert_contains "prints the silence message on a quiet day" "$out" "nothing material"
   if [ -f "$repo/kb/$(date +%F).daily.md" ]; then fail "no report written on a quiet day"; else pass "no report written on a quiet day"; fi
   if [ -f "$repo/kb/.$(date +%F).daily.partial.md" ]; then fail "empty scratch file cleaned up"; else pass "empty scratch file cleaned up"; fi
-  if [ -f "$repo/kb/index.html" ]; then pass "dashboard refreshed (kb/index.html)"; else fail "dashboard refreshed (kb/index.html)"; fi
+  if [ -f "$repo/kb/index.html" ]; then pass "portal snapshot refreshed (kb/index.html)"; else fail "portal snapshot refreshed (kb/index.html)"; fi
   if [ -d "$repo/state/.lock" ]; then fail "lock released on exit"; else pass "lock released on exit"; fi
 }
 test_full_run
@@ -885,30 +885,30 @@ test_usage_passes() {
 }
 test_usage_passes
 
-echo "== dashboard.sh: renders entities, sparklines, events, report links =="
-test_dashboard() {
-  local repo="$TMP/dashrepo" html
+echo "== portal.py --export: renders entities, sparklines, events, report links =="
+test_portal_export() {
+  local repo="$TMP/portalrepo" html
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
-  cp "$ROOT/bin/dashboard.sh" "$repo/bin/"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
   {
     printf '{"timestamp":"2026-05-01T07:00:00Z","entity":"Tudor BB58","metric":"secondary_price_usd","value":3650,"unit":"USD","source":"u"}\n'
-    printf 'THIS IS A MALFORMED / TRUNCATED LINE {oops\n'   # must not blank the dashboard
+    printf 'THIS IS A MALFORMED / TRUNCATED LINE {oops\n'   # must not blank the snapshot
     printf '{"timestamp":"2026-06-01T07:00:00Z","entity":"Tudor BB58","metric":"secondary_price_usd","value":3200,"unit":"USD","source":"u"}\n'
     printf '{"timestamp":"2026-06-06T07:00:00Z","entity":"Tudor BB58","metric":"event","event_type":"leak","value":"new GMT teased","source":"u"}\n'
     printf '{"timestamp":"2026-06-05T07:00:00Z","entity":"Tudor BB58","metric":"event","event_type":"leak","value":"X <b>raw</b> & co","source":"u"}\n'
   } > "$repo/state/observations.jsonl"
   printf 'r\n' > "$repo/kb/2026-06-06.daily.md"
-  ( cd "$repo" && bash bin/dashboard.sh >/dev/null )
+  ( cd "$repo" && python3 bin/portal.py --export >/dev/null )
   html="$repo/kb/index.html"
-  if [ ! -f "$html" ]; then fail "dashboard wrote kb/index.html"; return; fi
-  pass "dashboard wrote kb/index.html"
+  if [ ! -f "$html" ]; then fail "portal wrote kb/index.html"; return; fi
+  pass "portal wrote kb/index.html"
   assert_contains "lists the tracked entity (despite a malformed line)" "$(cat "$html")" "Tudor BB58"
   assert_contains "renders a sparkline cell" "$(cat "$html")" 'class="spark"'
   assert_contains "event detail falls back to value when note is absent" "$(cat "$html")" "new GMT teased"
   assert_contains "HTML-escapes injected text" "$(cat "$html")" "X &lt;b&gt;raw&lt;/b&gt; &amp; co"
   case "$(cat "$html")" in
-    *"<b>raw</b>"*) fail "no raw unescaped markup leaks into the dashboard" ;;
-    *) pass "no raw unescaped markup leaks into the dashboard" ;;
+    *"<b>raw</b>"*) fail "no raw unescaped markup leaks into the snapshot" ;;
+    *) pass "no raw unescaped markup leaks into the snapshot" ;;
   esac
   assert_contains "links a recent report" "$(cat "$html")" "2026-06-06.daily.md"
   python3 - "$html" <<'PY'
@@ -918,62 +918,70 @@ P().feed(open(sys.argv[1]).read())
 PY
   assert_eq "kb/index.html parses as HTML" "0" "$?"
 }
-test_dashboard
+test_portal_export
 
-echo "== dashboard.sh: --serve argument handling =="
-test_dashboard_args() {
-  local repo="$TMP/dashargs" rc
-  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
-  cp "$ROOT/bin/dashboard.sh" "$repo/bin/"
-  ( cd "$repo" && bash bin/dashboard.sh --help >/dev/null 2>&1 ); rc=$?
-  assert_eq "--help exits 0" "0" "$rc"
-  ( cd "$repo" && bash bin/dashboard.sh --serve abc >/dev/null 2>&1 ); rc=$?
-  assert_eq "--serve with a non-numeric port exits 2" "2" "$rc"
-  ( cd "$repo" && bash bin/dashboard.sh --bogus >/dev/null 2>&1 ); rc=$?
-  assert_eq "an unknown argument exits 2" "2" "$rc"
-}
-test_dashboard_args
-
-echo "== review.sh: argument handling =="
-test_review_args() {
-  local repo="$TMP/revargs" rc
+echo "== portal.sh: argument handling =="
+test_portal_args() {
+  local repo="$TMP/portalargs" rc
   mkdir -p "$repo/bin"
-  cp "$ROOT/bin/review.sh" "$repo/bin/"
-  ( cd "$repo" && bash bin/review.sh --help >/dev/null 2>&1 ); rc=$?
+  cp "$ROOT/bin/portal.sh" "$ROOT/bin/portal.py" "$repo/bin/"
+  ( cd "$repo" && bash bin/portal.sh --help >/dev/null 2>&1 ); rc=$?
   assert_eq "--help exits 0" "0" "$rc"
-  ( cd "$repo" && bash bin/review.sh --port abc >/dev/null 2>&1 ); rc=$?
+  ( cd "$repo" && bash bin/portal.sh --port abc >/dev/null 2>&1 ); rc=$?
   assert_eq "--port with a non-numeric value exits 2" "2" "$rc"
+  ( cd "$repo" && bash bin/portal.sh --bogus >/dev/null 2>&1 ); rc=$?
+  assert_eq "an unknown argument exits 2" "2" "$rc"
+  # --export writes kb/index.html without starting a server.
+  mkdir -p "$repo/kb" "$repo/state"
+  ( cd "$repo" && bash bin/portal.sh --export >/dev/null 2>&1 ); rc=$?
+  assert_eq "--export exits 0" "0" "$rc"
+  if [ -f "$repo/kb/index.html" ]; then pass "--export wrote kb/index.html"; else fail "--export wrote kb/index.html"; fi
 }
-test_review_args
+test_portal_args
 
-echo "== feedback-server.py: serves items and records grades =="
-test_feedback_server() {
-  if ! command -v curl >/dev/null 2>&1; then pass "feedback server (skipped: no curl)"; return; fi
-  local repo="$TMP/fbrepo" port=8791 home_page
-  mkdir -p "$repo/bin" "$repo/state"
-  cp "$ROOT/bin/feedback-server.py" "$repo/bin/"
+echo "== portal.py: serves overview/reports/review/profile/config + records grades =="
+test_portal_server() {
+  if ! command -v curl >/dev/null 2>&1; then pass "portal server (skipped: no curl)"; return; fi
+  local repo="$TMP/psrvrepo" port=8791 page
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  printf 'version: 1\nsubject:\n  name: "Test Market & Co"\noutput:\n  email_to: ""\n' \
+    > "$repo/monitor-config.yaml"
+  printf 'subject:\n  name: "Watches"\n  derived:\n    last_bootstrapped: 2026-06-01\n' \
+    > "$repo/profile.yaml"
+  printf '# Daily\n\n> **Bottom line:** corroborated\n\n## Opportunities\n- **Item** matters [src](https://x)\n' \
+    > "$repo/kb/2026-06-06.daily.md"
   {
     printf '{"id":"abc123","title":"Tudor GMT leak","signal":"opportunity","score":0.9,"so_what":"matters","url":"https://x"}\n'
     printf 'MALFORMED LINE {oops\n'                          # must not break the listing
     printf 'null\n'                                          # valid JSON, non-object -> must be skipped
-    printf '{"id":"def456","title":"Pelagos restock","signal":"shift","score":0.7,"url":"https://y"}\n'
     printf '{"id":"evil","title":"XSS attempt","signal":"opportunity","score":0.5,"url":"javascript:alert(1)"}\n'
   } > "$repo/state/seen.jsonl"
-  ( exec python3 "$repo/bin/feedback-server.py" "$port" >/dev/null 2>&1 ) &
+  ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
   local srv=$!
-  home_page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/" || true)"
-  curl -s "http://127.0.0.1:$port/grade?id=abc123&v=up" >/dev/null || true
-  kill "$srv" 2>/dev/null || true
-  assert_contains "review page lists a surfaced item (skips the malformed line)" "$home_page" "Tudor GMT leak"
-  assert_contains "renders a safe http(s) source link" "$home_page" 'href="https://x"'
-  case "$home_page" in
+  page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
+  assert_contains "review lists a surfaced item (skips the malformed line)" "$page" "Tudor GMT leak"
+  assert_contains "renders a safe http(s) source link" "$page" 'href="https://x"'
+  case "$page" in
     *'href="javascript'*) fail "drops a javascript: url instead of linking it" ;;
     *) pass "drops a javascript: url instead of linking it" ;;
   esac
+  assert_contains "reports section lists the report" \
+    "$(curl -s "http://127.0.0.1:$port/reports" || true)" "2026-06-06.daily.md"
+  assert_contains "a report renders its body" \
+    "$(curl -s "http://127.0.0.1:$port/reports?f=2026-06-06.daily.md" || true)" "Bottom line"
+  assert_contains "a bogus report name is rejected (no path traversal)" \
+    "$(curl -s "http://127.0.0.1:$port/reports?f=../monitor-config.yaml" || true)" "Report not found"
+  assert_contains "config view is read-only and renders the config" \
+    "$(curl -s "http://127.0.0.1:$port/config" || true)" "Test Market &amp; Co"
+  assert_contains "profile view renders the approved profile" \
+    "$(curl -s "http://127.0.0.1:$port/profile" || true)" "last_bootstrapped"
+  curl -s -o /dev/null "http://127.0.0.1:$port/grade?id=abc123&v=up" || true
+  kill "$srv" 2>/dev/null || true
   assert_contains "a grade is recorded to feedback.jsonl" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"verdict": "up"'
   assert_contains "the grade captures the item id" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"id": "abc123"'
 }
-test_feedback_server
+test_portal_server
 
 echo "== monitor.sh: an absolute state_file is named to Claude verbatim (no .// prefix) =="
 test_state_file_absolute() {
@@ -1014,17 +1022,17 @@ SH
 }
 test_state_file_absolute
 
-echo "== feedback-server.py: review UI honors monitoring.state_file =="
+echo "== portal.py: review honors monitoring.state_file =="
 test_feedback_state_file() {
   local repo="$TMP/fbstate" out
   mkdir -p "$repo/bin" "$repo/state"
-  cp "$ROOT/bin/feedback-server.py" "$repo/bin/"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
   printf 'monitoring:\n  state_file: ./state/custom-seen.jsonl   # relocated dedup file\n' \
     > "$repo/monitor-config.yaml"
   printf '{"id":"c1","title":"Custom-path item","signal":"opportunity","score":0.8,"url":"https://z"}\n' \
     > "$repo/state/custom-seen.jsonl"
   # Import the server module (no HTTP needed) so SEEN resolves against the repo's config.
-  out="$(python3 - "$repo/bin/feedback-server.py" <<'PY'
+  out="$(python3 - "$repo/bin/portal.py" <<'PY'
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("fb", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -1057,18 +1065,18 @@ test_feedback_dedupe() {
 }
 test_feedback_dedupe
 
-echo "== feedback-server.py: latest_verdicts picks the newest timestamp, not file order =="
+echo "== portal.py: latest_verdicts picks the newest timestamp, not file order =="
 test_feedback_latest_verdict() {
   local repo="$TMP/fbverdict" out
   mkdir -p "$repo/bin" "$repo/state"
-  cp "$ROOT/bin/feedback-server.py" "$repo/bin/"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
   # Newest grade ('down') appears first; append-order would wrongly return 'up'. The
   # null-timestamp row must not crash the comparison (it sorts earliest).
   printf '%s\n' \
     '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
     '{"timestamp":null,"id":"abc","verdict":"up"}' \
     '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' > "$repo/state/feedback.jsonl"
-  out="$(python3 - "$repo/bin/feedback-server.py" <<'PY'
+  out="$(python3 - "$repo/bin/portal.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("fb", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
