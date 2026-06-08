@@ -1117,26 +1117,34 @@ def r(days_ago, sig, n):
 rows = [r(0, "opportunity", 1), r(0, "threat", 1), r(1, "shift", 1), r(8, "opportunity", 1)]
 rows += [{"id": "d", "date": today.isoformat(), "signal": "dropped", "title": "d"},  # excluded
          {"id": "nd", "signal": "opportunity", "title": "no date"},                  # skipped
-         {"id": "bd", "date": "not-a-date", "signal": "threat", "title": "bad"}]      # skipped
+         {"id": "bd", "date": "not-a-date", "signal": "threat", "title": "bad"},      # skipped
+         {"id": "ns", "date": (today - timedelta(days=2)).isoformat(),               # non-scalar
+          "signal": ["weird"], "title": "malformed signal"}]                         # must not crash
 with open(os.path.join(root, "state", "seen.jsonl"), "w") as f:
     for row in rows:
         f.write(json.dumps(row) + "\n")
 spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 cal, mix = m.activity_calendar(), m.signal_mix()
-print("CAL_SVG", cal.count("<svg"))
+print("CAL_SVG", cal.count("<svg"))                              # also proves the non-scalar row didn't crash
 print("CAL_TODAY", ("%s: 2 items" % today.isoformat()) in cal)   # dropped item excluded -> 2 not 3
 print("MIX_SVG", mix.count("<svg"))
 print("MIX_THREAT", m.SIG_COLORS["threat"] in mix)
-open(os.path.join(root, "state", "seen.jsonl"), "w").close()      # empty -> visuals omitted
+# Only an out-of-window dated item -> nothing visible -> both cards omitted.
+with open(os.path.join(root, "state", "seen.jsonl"), "w") as f:
+    f.write(json.dumps({"id": "old", "date": (today - timedelta(days=300)).isoformat(),
+                        "signal": "opportunity", "title": "x"}) + "\n")
+print("OOW_CAL", repr(m.activity_calendar()))
+open(os.path.join(root, "state", "seen.jsonl"), "w").close()     # empty -> visuals omitted
 print("EMPTY_CAL", repr(m.activity_calendar()))
 print("EMPTY_MIX", repr(m.signal_mix()))
 PY
 )"
-  assert_contains "calendar renders one inline SVG" "$out" "CAL_SVG 1"
+  assert_contains "calendar renders one inline SVG (and a non-scalar signal didn't crash it)" "$out" "CAL_SVG 1"
   assert_contains "calendar counts surfaced items per day (drops the 'dropped' item)" "$out" "CAL_TODAY True"
   assert_contains "signal mix renders one inline SVG" "$out" "MIX_SVG 1"
   assert_contains "signal mix includes the threat color" "$out" "MIX_THREAT True"
+  assert_contains "calendar is omitted when all dated items fall outside the window" "$out" "OOW_CAL ''"
   assert_contains "calendar is omitted when there are no dated items" "$out" "EMPTY_CAL ''"
   assert_contains "signal mix is omitted when there are no dated items" "$out" "EMPTY_MIX ''"
 }

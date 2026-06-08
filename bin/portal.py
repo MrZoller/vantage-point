@@ -328,8 +328,11 @@ def _surfaced_by_date():
         d = rec.get("date")
         if not (isinstance(d, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", d)):
             continue
+        # A non-scalar signal would be an unhashable dict key; coerce it to "" so the
+        # row still counts toward the day's total but is excluded from the signal mix.
+        key = sig if isinstance(sig, str) else ""
         out.setdefault(d, {})
-        out[d][sig] = out[d].get(sig, 0) + 1
+        out[d][key] = out[d].get(key, 0) + 1
     return out
 
 
@@ -361,9 +364,21 @@ def activity_calendar():
     by_date = _surfaced_by_date()
     if not by_date:
         return ""
-    totals = {d: sum(v.values()) for d, v in by_date.items()}
-    mx = max(totals.values())
     start, weeks, today = _week_grid()
+    # Count + scale over only the days we actually render, so an out-of-window (older or
+    # future) high-volume day can't compress the visible color scale; if nothing falls in
+    # the window the card is omitted rather than rendered all-zero.
+    totals = {}
+    for ds, sigs in by_date.items():
+        try:
+            dd = date.fromisoformat(ds)
+        except ValueError:
+            continue
+        if start <= dd <= today:
+            totals[ds] = sum(sigs.values())
+    mx = max(totals.values()) if totals else 0
+    if mx == 0:
+        return ""
     cell, gap, top = 13, 3, 18
     step = cell + gap
     w, h = weeks * step, top + 7 * step
