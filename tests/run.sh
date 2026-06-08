@@ -491,12 +491,14 @@ YAML
 }
 test_cfg_get_text
 
-echo "== samples: each sample config is structurally valid (shell-readable) =="
+echo "== samples: the example + each sample config is structurally valid (shell-readable) =="
 test_sample_configs() {
   # shellcheck source=bin/config-lib.sh
   source "$ROOT/bin/config-lib.sh"
   local s name blk missing
-  for s in "$ROOT"/samples/*.yaml; do
+  # The annotated reference config is validated alongside the samples so its example
+  # values stay shell-readable and complete.
+  for s in "$ROOT"/monitor-config.example.yaml "$ROOT"/samples/*.yaml; do
     [ -e "$s" ] || { fail "no sample configs found"; return; }
     name="$(basename "$s")"
     if [ -n "$(cfg_get models monitor "$s")" ];      then pass "$name: models.monitor set";     else fail "$name: models.monitor set";     fi
