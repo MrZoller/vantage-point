@@ -246,6 +246,53 @@ test_install_cleanup_after_move() {
 }
 test_install_cleanup_after_move
 
+echo "== install-launchd: refuses to hijack a label owned by another checkout =="
+test_install_rejects_collision() {
+  local home="$TMP/colhome" la co a b rc out
+  la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  a="$TMP/col-a/checkout"; b="$TMP/col-b/checkout"
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    printf '#!/usr/bin/env bash\n' > "$co/bin/monitor.sh"   # so the agent reads as "live"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: "AI Models"\n' > "$a/monitor-config.yaml"   # -> ai-models
+  printf 'version: 1\ndeployment:\n  instance: "AI_Models"\n' > "$b/monitor-config.yaml"   # also -> ai-models
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  out="$( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" 2>&1 )"; rc=$?
+  assert_eq "a colliding-slug second checkout exits non-zero" "1" "$rc"
+  assert_contains "explains the label collision" "$out" "already belongs to a different checkout"
+  assert_contains "the first checkout's agent is left intact" "$(cat "$la/ai.zoller.vantagepoint.ai-models.daily.plist")" "$a/bin/monitor.sh"
+}
+test_install_rejects_collision
+
+echo "== install-launchd: a copied checkout's stale marker doesn't remove a sibling =="
+test_install_copied_marker() {
+  local home="$TMP/cphome" la co a b
+  la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  a="$TMP/cp-a/checkout"; b="$TMP/cp-b/checkout"
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$co/state"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    printf '#!/usr/bin/env bash\n' > "$co/bin/monitor.sh"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: ai-models\n' > "$a/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  # Simulate `cp -r` of an installed checkout: B inherits A's marker, then is renamed.
+  cp "$a/state/.launchd-labels" "$b/state/.launchd-labels"
+  printf 'version: 1\ndeployment:\n  instance: devtools\n' > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )
+  if [ -f "$la/ai.zoller.vantagepoint.ai-models.daily.plist" ]; then pass "the original sibling's agent survives the copy's install"; else fail "the original sibling's agent survives the copy's install"; fi
+  if [ -f "$la/ai.zoller.vantagepoint.devtools.daily.plist" ]; then pass "the copied checkout installs its own agent"; else fail "the copied checkout installs its own agent"; fi
+}
+test_install_copied_marker
+
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {
   # Run from an ISOLATED copy with no profile.yaml, so the review gate always

@@ -74,15 +74,34 @@ our_installed_labels() {
   done
 }
 
+# Is label $1 OURS? Yes if its plist runs this checkout, OR runs a checkout path that
+# no longer exists (THIS checkout was moved). No if it points at a different, still
+# present checkout - i.e. a sibling instance (possibly made by copying a checkout, so
+# its recorded marker is not authoritative for us).
+label_is_ours() {
+  local plist="$LA_DIR/$1.plist" prog
+  [ -f "$plist" ] || return 1
+  grep -qF "$PROG_LINE" "$plist" && return 0
+  prog="$(sed -n 's#^[[:space:]]*<string>\(.*/bin/monitor.sh\)</string>[[:space:]]*$#\1#p' "$plist" | head -1)"
+  [ -n "$prog" ] && [ ! -e "$prog" ]   # our old location is gone -> we moved here
+}
+
 # The plist's baked-in path stops matching if the checkout is MOVED, and the label
 # changes if deployment.instance is RENAMED - so also record what we installed in a
-# per-checkout marker (it travels with the checkout and survives a rename). Cleanup
-# uses the union of both signals, so neither a move nor a rename can orphan an agent.
+# per-checkout marker (it travels with the checkout, surviving a rename). Cleanup uses
+# the union of both signals, but each marker label is validated as ours first, so a
+# copied checkout's inherited marker can't make us tear down a live sibling.
 MARKER="$ROOT/state/.launchd-labels"
-installed_labels() {  # union: path-matched plists + the labels we recorded at last install
-  # Trailing `true` keeps the group's exit 0 (marker may be absent) so set -e/pipefail
-  # don't abort on a first install.
-  { our_installed_labels; [ -f "$MARKER" ] && cat "$MARKER"; true; } | sort -u
+installed_labels() {
+  { our_installed_labels
+    if [ -f "$MARKER" ]; then
+      while IFS= read -r l; do
+        [ -n "$l" ] && label_is_ours "$l" && printf '%s\n' "$l"
+        true   # keep the loop body's exit 0 under set -e
+      done < "$MARKER"
+    fi
+    true       # keep the group's exit 0 (marker may be absent) for set -e/pipefail
+  } | sort -u
 }
 
 # Retire pre-rename (market-monitor) agents on EVERY run so they can't fire alongside
@@ -128,6 +147,15 @@ installed_labels | while IFS= read -r label; do
   case " ${LABELS[*]} " in *" $label "*) continue ;; esac
   remove_label "$label"
   echo "[install-launchd] retired stale agent $label (relabelled/moved this checkout)"
+done
+
+# Refuse to hijack a label that already belongs to a DIFFERENT live checkout (e.g. two
+# clones whose deployment.instance slugify to the same value). Labels must be unique.
+for label in "${LABELS[@]}"; do
+  if [ -f "$LA_DIR/$label.plist" ] && ! label_is_ours "$label"; then
+    echo "[install-launchd] label $label already belongs to a different checkout - set a unique deployment.instance" >&2
+    exit 1
+  fi
 done
 
 # Iterate modes (template filenames are fixed); the label is namespaced per instance.

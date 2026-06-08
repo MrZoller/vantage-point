@@ -168,6 +168,9 @@ labels, so no stale agents linger. An instance name that has no usable `[a-z0-9-
 characters is rejected rather than silently treated as the default.
 
 Notes:
+- Each clone needs a *distinct* `deployment.instance` (names are slugified, so
+  `AI Models` and `AI_Models` collide); an install that would hijack a label already
+  owned by a different checkout is rejected rather than silently repointing it.
 - The locks are per-clone, so instances run independently (and can overlap). If you'd
   rather they not run at the same minute, stagger the times in each clone's
   `launchd/*.plist`.
