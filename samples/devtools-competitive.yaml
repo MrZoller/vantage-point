@@ -1,0 +1,116 @@
+# ============================================================
+# SAMPLE: AI coding assistants & developer-tools competitive intel
+# Use case: a developer-tools startup tracking its competitive landscape - rival
+# launches, pricing moves, funding, positioning - to spot opportunities, threats to
+# its roadmap, and market shifts. SUBJECT = the market; ANCHOR = your company (a
+# competitor in it).
+#
+# To use:  cp samples/devtools-competitive.yaml monitor-config.yaml
+#          (fill the <...> bits under anchor.seeds with YOUR product + competitors),
+#          then:  ./bin/bootstrap.sh ; review profile.draft.yaml ; cp it to profile.yaml
+# `derived:` blocks are intentionally empty - bootstrap fills them; you approve them.
+# ============================================================
+version: 1
+
+models:
+  bootstrap: opus
+  monitor:   sonnet
+  # deepdive: opus    # OPTIONAL: corroborate the top items on a stronger model
+  # editor:   opus    # OPTIONAL: curate + polish the report before delivery
+
+subject:
+  name: "AI coding assistants & developer tools"
+  description: >
+    The market for AI coding assistants, agentic dev tools, IDEs, and adjacent
+    developer platforms: product launches and major features, pricing and packaging,
+    funding and acquisitions, integrations and platform moves, and notable
+    head-to-head comparisons or developer-sentiment shifts.
+  seeds:
+    - https://news.ycombinator.com           # launches + candid developer sentiment
+    - https://www.producthunt.com
+    - https://github.blog
+    - https://changelog.com
+    # add each competitor's blog / changelog / pricing page as a seed too
+  scope:
+    in:  ["product launches & major features", "pricing & packaging changes",
+          "funding & acquisitions", "integrations & platform moves",
+          "benchmarks & head-to-head comparisons", "developer-sentiment shifts"]
+    out: ["minor point releases", "generic programming tutorials", "job postings",
+          "unrelated general tech news"]
+  derived:
+    structure: null
+    key_players: []
+    news_sources: []
+    event_taxonomy: []
+    last_bootstrapped: null
+    confidence_notes: null
+
+anchor:
+  name: "<Your dev-tools company>"
+  type: organization
+  description: >
+    A startup selling a developer tool. Relevance is judged against competitor moves
+    that open an opportunity for us, threaten our roadmap, or signal a market shift we
+    should react to.
+  relationship_to_subject: competitor
+  seeds:
+    profile:
+      product: ["<one line: what your tool does>"]
+      competitors: ["<competitor A>", "<competitor B>", "<competitor C>"]
+      our_edges: ["<your differentiators>"]
+      roadmap_themes: ["<themes you'd feel threatened on if a rival shipped them>"]
+      icp: ["<who you sell to: e.g. individual devs, platform teams, enterprises>"]
+  derived:
+    interests: []
+    peer_or_competitive_set: []
+    counterparties: []
+    signal_definitions:
+      opportunity: null     # e.g. a gap a competitor leaves; a partner integration opening
+      threat: null          # e.g. a competitor ships a headline feature on your roadmap
+      shift: null           # e.g. pricing model the market moves toward
+    last_bootstrapped: null
+    confidence_notes: null
+
+relevance:
+  threshold: 0.6
+  rubric: null
+  calibration:
+    relevant: []
+    not_relevant: []
+
+monitoring:
+  cadence:
+    daily:  { mode: terse,  send_if_empty: false }
+    weekly: { mode: digest, day: Mon, time: "07:00" }
+  lookback_hours: 30
+  state_file: ./state/seen.jsonl
+  run_timeout_seconds: 1800
+  state_max_lines: 5000
+  deepdive_threshold: 0.85
+  deepdive_max_items: 5
+  dedup:
+    by: [url, title_fuzzy]
+    fuzzy_threshold: 0.85
+  show_borderline: true
+  borderline_band: 0.2
+
+tracking:
+  enabled: true
+  watch:
+    - { entity: "<competitor A>", metrics: ["pricing_usd_per_seat", "mention_count"] }
+    - { entity: "<competitor B>", metrics: ["pricing_usd_per_seat", "mention_count"] }
+  min_pct_change: 8
+  repeat_streak: 2
+  mention_spike_factor: 2.0
+  label_confidence: true
+  observations_max_lines: 20000
+
+output:
+  email_to: ""
+  knowledge_base: ./kb/
+  dashboard: true
+
+governance:
+  require_profile_review: true
+  profile_refresh_days: 30
+  flag_low_confidence: true

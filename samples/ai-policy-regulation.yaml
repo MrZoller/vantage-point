@@ -1,0 +1,116 @@
+# ============================================================
+# SAMPLE: AI policy & regulation watch
+# Use case: the policy/compliance lead at an AI company tracking the laws,
+# regulations, standards, and enforcement that change how they can build and deploy -
+# obligations, deadlines, and risks, not general AI news. SUBJECT = the policy
+# landscape; ANCHOR = your company (an affected builder/deployer).
+#
+# To use:  cp samples/ai-policy-regulation.yaml monitor-config.yaml
+#          (set your jurisdictions + product context under anchor.seeds), then:
+#          ./bin/bootstrap.sh ; review profile.draft.yaml ; cp it to profile.yaml
+# `derived:` blocks are intentionally empty - bootstrap fills them; you approve them.
+# ============================================================
+version: 1
+
+models:
+  bootstrap: opus
+  monitor:   sonnet
+  # deepdive: opus    # OPTIONAL: corroborate + read the primary text on a stronger model
+  # editor:   opus    # OPTIONAL: curate + polish the report before delivery
+
+subject:
+  name: "AI policy & regulation"
+  description: >
+    Laws, regulations, standards, and enforcement affecting how AI is developed and
+    deployed: new or updated rules (e.g. the EU AI Act, US federal and state actions,
+    UK), agency guidance and enforcement, standards and frameworks, and court rulings
+    with compliance impact.
+  seeds:
+    - https://artificialintelligenceact.eu
+    - https://oecd.ai
+    - https://iapp.org/news/                # privacy & AI-governance reporting
+    - https://www.nist.gov/itl/ai-risk-management-framework
+  scope:
+    in:  ["new & updated laws/regulations", "agency guidance & enforcement actions",
+          "standards & frameworks", "major government/agency announcements",
+          "court rulings with compliance impact", "compliance deadlines"]
+    out: ["general AI product news", "op-eds without policy substance",
+          "speculation about laws that don't exist yet"]
+  derived:
+    structure: null
+    key_players: []
+    news_sources: []
+    event_taxonomy: []
+    last_bootstrapped: null
+    confidence_notes: null
+
+anchor:
+  name: "<Your company> policy & compliance lead"
+  type: organization
+  description: >
+    Responsible for keeping an AI company compliant. Relevance is judged against
+    concrete obligations, deadlines, and risks that affect how we build and deploy -
+    not the general flow of AI-policy commentary.
+  relationship_to_subject: builder
+  seeds:
+    profile:
+      jurisdictions: ["EU", "US (federal + <your states>)", "UK", "<others>"]
+      product_context: ["<what AI you ship>", "<consumer or enterprise?>",
+                        "<any high-risk uses?>"]
+      obligations_watched: ["transparency & disclosure", "data protection / privacy",
+                            "high-risk classification", "copyright / training data",
+                            "safety evaluations"]
+  derived:
+    interests: []
+    peer_or_competitive_set: []
+    counterparties: []
+    signal_definitions:
+      opportunity: null     # e.g. a safe harbor or standard you can adopt early
+      threat: null          # e.g. a new obligation/deadline that applies to your product
+      shift: null           # e.g. a jurisdiction's approach changing materially
+    last_bootstrapped: null
+    confidence_notes: null
+
+relevance:
+  threshold: 0.6
+  rubric: null
+  calibration:
+    relevant: []
+    not_relevant: []
+
+monitoring:
+  cadence:
+    daily:  { mode: terse,  send_if_empty: false }
+    weekly: { mode: digest, day: Mon, time: "07:00" }   # policy moves suit a weekly digest
+  lookback_hours: 30
+  state_file: ./state/seen.jsonl
+  run_timeout_seconds: 1800
+  state_max_lines: 5000
+  deepdive_threshold: 0.85
+  deepdive_max_items: 5
+  dedup:
+    by: [url, title_fuzzy]
+    fuzzy_threshold: 0.85
+  show_borderline: true
+  borderline_band: 0.2
+
+tracking:
+  enabled: true
+  watch:
+    - { entity: "EU AI Act", metrics: ["mention_count"] }
+    # track other rules/bills you must comply with as they progress
+  min_pct_change: 8
+  repeat_streak: 2
+  mention_spike_factor: 2.0
+  label_confidence: true
+  observations_max_lines: 20000
+
+output:
+  email_to: ""
+  knowledge_base: ./kb/
+  dashboard: true
+
+governance:
+  require_profile_review: true
+  profile_refresh_days: 30
+  flag_low_confidence: true

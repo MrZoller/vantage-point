@@ -1,0 +1,114 @@
+# ============================================================
+# SAMPLE: Critical open-source dependency & security watch
+# Use case: an engineering team staying ahead of what forces an upgrade, patch, or
+# migration in the open-source projects it ships on - releases, breaking changes,
+# CVEs/advisories, deprecations/EOL, and maintainer/governance/license changes.
+# SUBJECT = your dependency set; ANCHOR = your team (a user of those projects).
+#
+# To use:  cp samples/oss-dependency-watch.yaml monitor-config.yaml
+#          (list YOUR actual stack/libraries under subject.seeds + anchor.seeds),
+#          then:  ./bin/bootstrap.sh ; review profile.draft.yaml ; cp it to profile.yaml
+# `derived:` blocks are intentionally empty - bootstrap fills them; you approve them.
+# ============================================================
+version: 1
+
+models:
+  bootstrap: opus
+  monitor:   sonnet
+  # deepdive: opus    # OPTIONAL: corroborate advisories/breaking changes on a stronger model
+  # editor:   opus    # OPTIONAL: curate + polish the report before delivery
+
+subject:
+  name: "Critical open-source dependencies for our stack"
+  description: >
+    The open-source projects our product depends on in production: new releases and
+    changelogs, breaking changes and migration notes, security advisories (CVEs),
+    deprecations and end-of-life, and maintainer / governance / license changes.
+  seeds:
+    - https://github.com/advisories       # GitHub Security Advisories
+    - https://nvd.nist.gov                # CVE feed
+    - https://endoflife.date              # version support / EOL windows
+    # pin each dependency's GitHub releases page as a seed, e.g.:
+    # - https://github.com/<org>/<repo>/releases
+  scope:
+    in:  ["new releases & changelogs", "breaking changes & migration notes",
+          "security advisories / CVEs", "deprecations & end-of-life",
+          "maintainer / governance / license changes"]
+    out: ["pre-release / nightly churn", "cosmetic documentation updates",
+          "projects we don't depend on"]
+  derived:
+    structure: null
+    key_players: []
+    news_sources: []
+    event_taxonomy: []
+    last_bootstrapped: null
+    confidence_notes: null
+
+anchor:
+  name: "Our engineering team"
+  type: organization
+  description: >
+    A team running these dependencies in production. Relevance is judged against what
+    forces action: security fixes and breaking changes first, then deprecations and
+    EOL that put us on a clock.
+  relationship_to_subject: user
+  seeds:
+    profile:
+      stack: ["<language/runtime + version>", "<framework + version>"]
+      key_libraries: ["<library 1>", "<library 2>", "<library 3>"]
+      versions_pinned: ["<current major versions you run>"]
+      risk_priorities: ["security / CVEs", "breaking changes", "EOL / support windows"]
+  derived:
+    interests: []
+    peer_or_competitive_set: []
+    counterparties: []
+    signal_definitions:
+      opportunity: null     # e.g. a release that removes a workaround you maintain
+      threat: null          # e.g. a CVE or breaking change in a library you depend on
+      shift: null           # e.g. a maintainer/governance change affecting a core dep
+    last_bootstrapped: null
+    confidence_notes: null
+
+relevance:
+  threshold: 0.6
+  rubric: null
+  calibration:
+    relevant: []
+    not_relevant: []
+
+monitoring:
+  cadence:
+    daily:  { mode: terse,  send_if_empty: false }   # security wants a daily sweep
+    weekly: { mode: digest, day: Mon, time: "07:00" }
+  lookback_hours: 30
+  state_file: ./state/seen.jsonl
+  run_timeout_seconds: 1800
+  state_max_lines: 5000
+  deepdive_threshold: 0.85
+  deepdive_max_items: 5
+  dedup:
+    by: [url, title_fuzzy]
+    fuzzy_threshold: 0.85
+  show_borderline: true
+  borderline_band: 0.2
+
+tracking:
+  enabled: true
+  watch:
+    - { entity: "<your framework>", metrics: ["latest_version", "open_advisories"] }
+    - { entity: "<key library>",    metrics: ["latest_version", "open_advisories"] }
+  min_pct_change: 8
+  repeat_streak: 2
+  mention_spike_factor: 2.0
+  label_confidence: true
+  observations_max_lines: 20000
+
+output:
+  email_to: ""
+  knowledge_base: ./kb/
+  dashboard: true
+
+governance:
+  require_profile_review: true
+  profile_refresh_days: 30
+  flag_low_confidence: true

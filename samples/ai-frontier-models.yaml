@@ -1,0 +1,118 @@
+# ============================================================
+# SAMPLE: Frontier AI models & LLM providers
+# Use case: a product/engineering team building on LLMs that needs to know, fast,
+# when something ships that changes which model/API to build on, what it costs, or
+# how to integrate it. SUBJECT = the model landscape; ANCHOR = your team (a builder).
+#
+# To use:  cp samples/ai-frontier-models.yaml monitor-config.yaml
+#          (fill the <...> bits under anchor.seeds), then:  ./bin/bootstrap.sh
+#          review profile.draft.yaml, then:  cp profile.draft.yaml profile.yaml
+# `derived:` blocks are intentionally empty - bootstrap fills them; you approve them.
+# ============================================================
+version: 1
+
+models:
+  bootstrap: opus     # infrequent, depth matters
+  monitor:   sonnet   # daily, cheap scoring
+  # deepdive: opus    # OPTIONAL: corroborate the top items on a stronger model
+  # editor:   opus    # OPTIONAL: curate + polish the report before delivery
+
+subject:
+  name: "Frontier AI models & LLM providers"
+  description: >
+    Releases and capability changes from the major LLM providers and notable open
+    models: new models, benchmark/eval results, API & SDK changes, pricing,
+    deprecations and breaking changes, context-window and rate-limit changes, and
+    research with near-term product impact.
+  seeds:
+    - https://www.anthropic.com/news
+    - https://openai.com/news/
+    - https://blog.google/technology/ai/
+    - https://ai.meta.com/blog/
+    - https://huggingface.co/blog
+    - https://lmarena.ai                # community benchmark / leaderboard signal
+  scope:
+    in:  ["model releases", "capability & benchmark results", "API/SDK & pricing changes",
+          "deprecations & breaking changes", "context-window & rate-limit changes",
+          "research with near-term product impact"]
+    out: ["general AI hype & opinion", "funding-only news with no product impact",
+          "unverified leaks & rumors"]
+  derived:
+    structure: null
+    key_players: []
+    news_sources: []
+    event_taxonomy: []
+    last_bootstrapped: null
+    confidence_notes: null
+
+anchor:
+  name: "Our product engineering team"
+  type: organization
+  description: >
+    A team shipping features on top of LLM APIs. Relevance is judged against what
+    changes our build: which model/API we should use, our cost/latency, and our
+    integration (tool-use, structured output, context, retention).
+  relationship_to_subject: builder
+  seeds:
+    profile:
+      building: ["<one line: what you ship on top of LLMs>"]
+      providers_in_use: ["<primary provider>", "<fallback provider>"]
+      priorities: ["cost", "latency", "long-context", "tool-use reliability",
+                   "data retention / privacy"]
+      watchlist: ["Claude (Anthropic)", "GPT (OpenAI)", "Gemini (Google)",
+                  "Llama (Meta)", "Mistral", "notable open models"]
+  derived:
+    interests: []
+    peer_or_competitive_set: []
+    counterparties: []
+    signal_definitions:
+      opportunity: null     # e.g. a cheaper/longer-context model that fits our use
+      threat: null          # e.g. a deprecation/price hike on a model we depend on
+      shift: null           # e.g. a capability that changes how we should architect
+    last_bootstrapped: null
+    confidence_notes: null
+
+relevance:
+  threshold: 0.6
+  rubric: null
+  calibration:
+    relevant: []
+    not_relevant: []
+
+monitoring:
+  cadence:
+    daily:  { mode: terse,  send_if_empty: false }
+    weekly: { mode: digest, day: Mon, time: "07:00" }
+  lookback_hours: 30
+  state_file: ./state/seen.jsonl
+  run_timeout_seconds: 1800
+  state_max_lines: 5000
+  deepdive_threshold: 0.85
+  deepdive_max_items: 5
+  dedup:
+    by: [url, title_fuzzy]
+    fuzzy_threshold: 0.85
+  show_borderline: true
+  borderline_band: 0.2
+
+tracking:
+  enabled: true
+  watch:
+    - { entity: "Claude (Anthropic)", metrics: ["context_window_tokens", "api_price_per_mtok_input"] }
+    - { entity: "GPT (OpenAI)",       metrics: ["context_window_tokens", "api_price_per_mtok_input"] }
+    - { entity: "Gemini (Google)",    metrics: ["context_window_tokens", "api_price_per_mtok_input"] }
+  min_pct_change: 8
+  repeat_streak: 2
+  mention_spike_factor: 2.0
+  label_confidence: true
+  observations_max_lines: 20000
+
+output:
+  email_to: ""                # e.g. "you@example.com"; blank = no email (read from kb/)
+  knowledge_base: ./kb/
+  dashboard: true
+
+governance:
+  require_profile_review: true
+  profile_refresh_days: 30
+  flag_low_confidence: true

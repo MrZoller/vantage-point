@@ -243,6 +243,27 @@ YAML
 }
 test_cfg_get_text
 
+echo "== samples: each sample config is structurally valid (shell-readable) =="
+test_sample_configs() {
+  # shellcheck source=bin/config-lib.sh
+  source "$ROOT/bin/config-lib.sh"
+  local s name blk missing
+  for s in "$ROOT"/samples/*.yaml; do
+    [ -e "$s" ] || { fail "no sample configs found"; return; }
+    name="$(basename "$s")"
+    if [ -n "$(cfg_get models monitor "$s")" ];      then pass "$name: models.monitor set";     else fail "$name: models.monitor set";     fi
+    if [ -n "$(cfg_get_text subject name "$s")" ];   then pass "$name: subject.name set";        else fail "$name: subject.name set";        fi
+    if [ -n "$(cfg_get_text anchor name "$s")" ];    then pass "$name: anchor.name set";         else fail "$name: anchor.name set";         fi
+    if [ -n "$(cfg_get relevance threshold "$s")" ]; then pass "$name: relevance.threshold set"; else fail "$name: relevance.threshold set"; fi
+    missing=""
+    for blk in subject anchor relevance monitoring tracking output governance; do
+      grep -q "^$blk:" "$s" || missing="$missing $blk"
+    done
+    if [ -z "$missing" ]; then pass "$name: all top-level blocks present"; else fail "$name: missing blocks:$missing"; fi
+  done
+}
+test_sample_configs
+
 echo "== _esc: escapes &, <, > correctly (even under bash 5.2 patsub_replacement) =="
 test_esc() {
   # shellcheck source=bin/email-lib.sh
