@@ -332,6 +332,31 @@ test_install_collision_escaped_path() {
 }
 test_install_collision_escaped_path
 
+echo "== install-launchd: a colliding rename is rejected without dropping the old schedule =="
+test_install_rename_collision_preserves() {
+  local home="$TMP/rcphome" la co a b rc
+  la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  a="$TMP/rcp-a/checkout"; b="$TMP/rcp-b/checkout"
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    printf '#!/usr/bin/env bash\n' > "$co/bin/monitor.sh"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: alpha\n' > "$a/monitor-config.yaml"
+  printf 'version: 1\ndeployment:\n  instance: beta\n'  > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )
+  # Rename A to beta (collides with the live B) and reinstall A.
+  printf 'version: 1\ndeployment:\n  instance: beta\n' > "$a/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 ); rc=$?
+  assert_eq "the colliding rename is rejected" "1" "$rc"
+  if [ -f "$la/ai.zoller.vantagepoint.alpha.daily.plist" ]; then pass "A's existing schedule is preserved on a rejected rename"; else fail "A's existing schedule is preserved on a rejected rename"; fi
+}
+test_install_rename_collision_preserves
+
 echo "== monitor.sh: argument + review-gate behavior (no claude needed) =="
 test_monitor_gates() {
   # Run from an ISOLATED copy with no profile.yaml, so the review gate always

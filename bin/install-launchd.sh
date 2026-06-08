@@ -144,6 +144,17 @@ fi
 
 mkdir -p "$LA_DIR" "$ROOT/state"
 
+# Refuse to hijack a label that already belongs to a DIFFERENT live checkout (e.g. two
+# clones whose deployment.instance slugify to the same value). Labels must be unique.
+# Run this BEFORE retiring anything, so a rejected rename leaves the existing schedule
+# intact rather than removing the old labels and then bailing out.
+for label in "${LABELS[@]}"; do
+  if [ -f "$LA_DIR/$label.plist" ] && ! label_is_ours "$label"; then
+    echo "[install-launchd] label $label already belongs to a different checkout - set a unique deployment.instance" >&2
+    exit 1
+  fi
+done
+
 # Retire any of OUR previously-installed agents whose label we're NOT about to
 # (re)install - i.e. after renaming deployment.instance (or moving the checkout, via
 # the marker). Scoped to this checkout, so sibling instances are untouched.
@@ -152,15 +163,6 @@ installed_labels | while IFS= read -r label; do
   case " ${LABELS[*]} " in *" $label "*) continue ;; esac
   remove_label "$label"
   echo "[install-launchd] retired stale agent $label (relabelled/moved this checkout)"
-done
-
-# Refuse to hijack a label that already belongs to a DIFFERENT live checkout (e.g. two
-# clones whose deployment.instance slugify to the same value). Labels must be unique.
-for label in "${LABELS[@]}"; do
-  if [ -f "$LA_DIR/$label.plist" ] && ! label_is_ours "$label"; then
-    echo "[install-launchd] label $label already belongs to a different checkout - set a unique deployment.instance" >&2
-    exit 1
-  fi
 done
 
 # Iterate modes (template filenames are fixed); the label is namespaced per instance.
