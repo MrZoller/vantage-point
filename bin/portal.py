@@ -27,7 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -87,6 +87,12 @@ th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;le
 .spark{font-size:1.15em;letter-spacing:1px;color:var(--accent);
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .num{font-variant-numeric:tabular-nums}.muted{color:var(--muted)}
+.viz{max-width:100%;height:auto;display:block}
+.viz text.cal-m{fill:#9aa3af;font-size:9px;font-family:inherit}
+.sublabel{font-size:12px;color:var(--muted);margin:0 0 6px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--muted);align-items:center}
+.legend .lg{display:inline-flex;align-items:center;gap:5px}
+.legend .sw{width:11px;height:11px;border-radius:3px;display:inline-block}
 ul.events{list-style:none;padding:0;margin:0}
 ul.events li{padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}
 ul.events li:last-child{border:0}
@@ -298,6 +304,139 @@ def recent_events():
     events = [r for r in read_jsonl(OBS) if r.get("metric") == "event"]
     events.sort(key=_ts, reverse=True)
     return events[:MAX_EVENTS]
+
+
+# ------------------------------------------------------------------ activity visuals
+# Server-rendered inline SVG (no JS, no deps) so it works under the strict CSP and the
+# repo's dependency-light rule. Built from the `date` (YYYY-MM-DD) + `signal` fields on
+# each surfaced item in seen.jsonl.
+
+CAL_WEEKS = 13                                   # ~a quarter of history
+CAL_LEVELS = ["#ebedf0", "#cdd8fb", "#9db4f6", "#5f82ef", "#2f5bea"]  # 0..4, accent ramp
+SIG_ORDER = ["opportunity", "shift", "threat"]   # stack bottom -> top
+SIG_COLORS = {"opportunity": "#1e9e6a", "shift": "#2f5bea", "threat": "#d6455d"}
+
+
+def _surfaced_by_date():
+    """date(YYYY-MM-DD) -> {signal: count} for surfaced (non-dropped) items in seen.jsonl.
+    Rows without a well-formed date are skipped, like any malformed agent output."""
+    out = {}
+    for rec in read_jsonl(SEEN):
+        sig = rec.get("signal")
+        if sig == "dropped":
+            continue
+        d = rec.get("date")
+        if not (isinstance(d, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", d)):
+            continue
+        out.setdefault(d, {})
+        out[d][sig] = out[d].get(sig, 0) + 1
+    return out
+
+
+def _week_grid():
+    """(start_sunday, weeks, today) for a CAL_WEEKS window ending today, columns aligned
+    to Sunday so the calendar and the weekly signal-mix share one time axis."""
+    today = datetime.now(timezone.utc).date()
+    start = today - timedelta(days=CAL_WEEKS * 7 - 1)
+    start -= timedelta(days=(start.weekday() + 1) % 7)   # weekday(): Mon=0..Sun=6 -> snap to Sunday
+    return start, (today - start).days // 7 + 1, today
+
+
+def _legend(items):  # items: [(color, label), ...]
+    spans = "".join('<span class="lg"><span class="sw" style="background:%s"></span>%s</span>'
+                    % (c, esc(label)) for c, label in items)
+    return '<div class="legend">%s</div>' % spans
+
+
+def _cal_level(count, mx):
+    if count <= 0:
+        return 0
+    if mx <= 1:
+        return len(CAL_LEVELS) - 1
+    return 1 + min(len(CAL_LEVELS) - 2, (count - 1) * (len(CAL_LEVELS) - 1) // mx)
+
+
+def activity_calendar():
+    """GitHub-style heatmap: one cell per day, shaded by items surfaced that day."""
+    by_date = _surfaced_by_date()
+    if not by_date:
+        return ""
+    totals = {d: sum(v.values()) for d, v in by_date.items()}
+    mx = max(totals.values())
+    start, weeks, today = _week_grid()
+    cell, gap, top = 13, 3, 18
+    step = cell + gap
+    w, h = weeks * step, top + 7 * step
+    cells, months, last_month = [], [], None
+    d = start
+    while d <= today:
+        col = (d - start).days // 7
+        row = (d.weekday() + 1) % 7              # Sunday = 0
+        ds = d.isoformat()
+        c = totals.get(ds, 0)
+        label = "%s: %d item%s" % (ds, c, "" if c == 1 else "s")
+        cells.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2" fill="%s">'
+                     '<title>%s</title></rect>'
+                     % (col * step, top + row * step, cell, cell,
+                        CAL_LEVELS[_cal_level(c, mx)], esc(label)))
+        if row == 0:                            # column starts on a Sunday -> month label
+            m = d.strftime("%b")
+            if m != last_month:
+                months.append('<text x="%d" y="12" class="cal-m">%s</text>' % (col * step, esc(m)))
+                last_month = m
+        d += timedelta(days=1)
+    svg = ('<svg class="viz" viewBox="0 0 %d %d" width="%d" height="%d" '
+           'role="img" aria-label="Items surfaced per day">%s%s</svg>'
+           % (w, h, w, h, "".join(months), "".join(cells)))
+    ramp = _legend([(CAL_LEVELS[0], "less")] + [(c, "") for c in CAL_LEVELS[1:-1]]
+                   + [(CAL_LEVELS[-1], "more")])
+    return svg + ramp
+
+
+def signal_mix():
+    """Weekly stacked bars of opportunity / shift / threat over the same window."""
+    by_date = _surfaced_by_date()
+    if not by_date:
+        return ""
+    start, weeks, today = _week_grid()
+    wk = [dict() for _ in range(weeks)]
+    for ds, sigs in by_date.items():
+        try:
+            d = date.fromisoformat(ds)
+        except ValueError:
+            continue
+        if start <= d <= today:
+            i = (d - start).days // 7
+            for sig, c in sigs.items():
+                wk[i][sig] = wk[i].get(sig, 0) + c
+    totals = [sum(w.get(s, 0) for s in SIG_ORDER) for w in wk]
+    mx = max(totals) if totals else 0
+    if mx == 0:                                  # only unknown-signal items -> nothing to stack
+        return ""
+    barw, gap, top, ph = 14, 6, 6, 90
+    step = barw + gap
+    w, h = weeks * step, top + ph + 16
+    bars, last_month = [], None
+    for i, counts in enumerate(wk):
+        x, y = i * step, top + ph
+        for sig in SIG_ORDER:
+            c = counts.get(sig, 0)
+            if c <= 0:
+                continue
+            seg = max(2, round(c / mx * ph))
+            y -= seg
+            bars.append('<rect x="%d" y="%d" width="%d" height="%d" fill="%s">'
+                        '<title>week of %s: %d %s</title></rect>'
+                        % (x, y, barw, seg, SIG_COLORS[sig],
+                           (start + timedelta(days=i * 7)).isoformat(), c, esc(sig)))
+        m = (start + timedelta(days=i * 7)).strftime("%b")
+        if m != last_month:
+            bars.append('<text x="%d" y="%d" class="cal-m">%s</text>' % (x, h - 3, esc(m)))
+            last_month = m
+    svg = ('<svg class="viz" viewBox="0 0 %d %d" width="%d" height="%d" '
+           'role="img" aria-label="Signal mix by week">%s</svg>'
+           % (w, h, w, h, "".join(bars)))
+    return svg + _legend([(SIG_COLORS[s], s) for s in SIG_ORDER])
 
 
 def list_reports():
@@ -526,6 +665,15 @@ def overview_inner(static=False):
                  '<div class="l">last run</div></div>'
                  % (esc(last.replace("T", " ")[:16]) if last else "&mdash;"))
     parts.append('</div>')
+
+    cal, mix = activity_calendar(), signal_mix()
+    if cal or mix:
+        parts.append('<div class="card"><h2>Activity</h2>')
+        if cal:
+            parts.append('<p class="sublabel">Items surfaced per day</p>%s' % cal)
+        if mix:
+            parts.append('<p class="sublabel" style="margin-top:18px">Signal mix by week</p>%s' % mix)
+        parts.append('</div>')
 
     parts.append('<div class="card"><h2>Tracked entities</h2>')
     if rows:

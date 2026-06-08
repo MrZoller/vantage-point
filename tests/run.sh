@@ -900,12 +900,17 @@ test_portal_export() {
     printf '{"timestamp":"2026-06-05T07:00:00Z","entity":"Tudor BB58","metric":"event","event_type":"leak","value":"X <b>raw</b> & co","source":"u"}\n'
   } > "$repo/state/observations.jsonl"
   printf 'r\n' > "$repo/kb/2026-06-06.daily.md"
+  # A surfaced item dated today so the Activity visuals render in the static export.
+  printf '{"id":"i1","date":"%s","signal":"opportunity","title":"x","url":"https://x"}\n' \
+    "$(date -u +%F)" > "$repo/state/seen.jsonl"
   ( cd "$repo" && python3 bin/portal.py --export >/dev/null )
   html="$repo/kb/index.html"
   if [ ! -f "$html" ]; then fail "portal wrote kb/index.html"; return; fi
   pass "portal wrote kb/index.html"
   assert_contains "lists the tracked entity (despite a malformed line)" "$(cat "$html")" "Tudor BB58"
   assert_contains "renders a sparkline cell" "$(cat "$html")" 'class="spark"'
+  assert_contains "export includes the Activity visuals" "$(cat "$html")" "Activity"
+  assert_contains "export embeds an inline SVG (no JS, CSP-safe)" "$(cat "$html")" "<svg"
   assert_contains "event detail falls back to value when note is absent" "$(cat "$html")" "new GMT teased"
   assert_contains "HTML-escapes injected text" "$(cat "$html")" "X &lt;b&gt;raw&lt;/b&gt; &amp; co"
   case "$(cat "$html")" in
@@ -1095,6 +1100,47 @@ PY
   assert_contains "a digest at least as fresh as the profile is used" "$out" "FRESH True"
 }
 test_portal_fallback_links_and_freshness
+
+echo "== portal.py: activity calendar + signal-mix render inline SVG from seen.jsonl =="
+test_portal_activity_visuals() {
+  local repo="$TMP/pav" out
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  out="$(python3 - "$repo/bin/portal.py" <<'PY'
+import importlib.util, json, os, sys
+from datetime import datetime, timezone, timedelta
+root = os.path.dirname(os.path.dirname(sys.argv[1]))
+today = datetime.now(timezone.utc).date()
+def r(days_ago, sig, n):
+    return {"id": "%s%d" % (sig, days_ago), "date": (today - timedelta(days=days_ago)).isoformat(),
+            "signal": sig, "title": "t", "url": "https://x"}
+rows = [r(0, "opportunity", 1), r(0, "threat", 1), r(1, "shift", 1), r(8, "opportunity", 1)]
+rows += [{"id": "d", "date": today.isoformat(), "signal": "dropped", "title": "d"},  # excluded
+         {"id": "nd", "signal": "opportunity", "title": "no date"},                  # skipped
+         {"id": "bd", "date": "not-a-date", "signal": "threat", "title": "bad"}]      # skipped
+with open(os.path.join(root, "state", "seen.jsonl"), "w") as f:
+    for row in rows:
+        f.write(json.dumps(row) + "\n")
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+cal, mix = m.activity_calendar(), m.signal_mix()
+print("CAL_SVG", cal.count("<svg"))
+print("CAL_TODAY", ("%s: 2 items" % today.isoformat()) in cal)   # dropped item excluded -> 2 not 3
+print("MIX_SVG", mix.count("<svg"))
+print("MIX_THREAT", m.SIG_COLORS["threat"] in mix)
+open(os.path.join(root, "state", "seen.jsonl"), "w").close()      # empty -> visuals omitted
+print("EMPTY_CAL", repr(m.activity_calendar()))
+print("EMPTY_MIX", repr(m.signal_mix()))
+PY
+)"
+  assert_contains "calendar renders one inline SVG" "$out" "CAL_SVG 1"
+  assert_contains "calendar counts surfaced items per day (drops the 'dropped' item)" "$out" "CAL_TODAY True"
+  assert_contains "signal mix renders one inline SVG" "$out" "MIX_SVG 1"
+  assert_contains "signal mix includes the threat color" "$out" "MIX_THREAT True"
+  assert_contains "calendar is omitted when there are no dated items" "$out" "EMPTY_CAL ''"
+  assert_contains "signal mix is omitted when there are no dated items" "$out" "EMPTY_MIX ''"
+}
+test_portal_activity_visuals
 
 echo "== monitor.sh: an absolute state_file is named to Claude verbatim (no .// prefix) =="
 test_state_file_absolute() {
