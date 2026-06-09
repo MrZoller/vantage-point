@@ -28,12 +28,24 @@ from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin, urlparse
 
 FEED_ITEM_RE = re.compile(r"^(\s*)-\s*['\"]?(https?://\S+?)['\"]?\s*(?:#.*)?$")
-FEEDS_KEY_RE = re.compile(r"^(\s*)feeds:\s*(\[\s*\])?\s*(?:#.*)?$")
+FEEDS_KEY_RE = re.compile(r"^(\s*)feeds:\s*(\[[^\]]*\])?\s*(?:#.*)?$")
+
+
+def _inline_urls(bracketed):
+    """URLs from an inline YAML list body like '[a, "b"]' (brackets included)."""
+    urls = []
+    for part in bracketed[1:-1].split(","):
+        part = part.strip().strip("'\"")
+        if part.startswith(("http://", "https://")):
+            urls.append(part)
+    return urls
 
 
 def feeds_from(path):
     """All URLs under any `feeds:` list in a YAML file, scanned without a YAML
-    library (per the repo convention). `feeds: []` and a missing file read as none."""
+    library (per the repo convention). Handles both block lists (`- url` lines)
+    and inline lists (`feeds: [url, url]`) -- a one-line config must not silently
+    lose the deterministic sweep. A missing file reads as none."""
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -46,8 +58,13 @@ def feeds_from(path):
             continue
         m = FEEDS_KEY_RE.match(line)
         if m:
-            in_feeds = m.group(2) is None       # `feeds: []` has nothing to collect
-            key_indent = len(m.group(1))
+            inline = m.group(2)
+            if inline is not None:              # `feeds: [...]` (possibly empty)
+                urls.extend(_inline_urls(inline))
+                in_feeds = False
+            else:                               # bare `feeds:` -> a block list follows
+                in_feeds = True
+                key_indent = len(m.group(1))
             continue
         if in_feeds:
             fm = FEED_ITEM_RE.match(line)
@@ -105,6 +122,19 @@ def _atom_link(el):
     return fallback
 
 
+def _rss_link(el):
+    """An RSS item's URL: <link>, else a permalink <guid> (the RSS default unless
+    isPermaLink="false") -- feeds that only set a guid still yield candidates."""
+    link = _child_text(el, {"link"})
+    if link:
+        return link
+    for child in el:
+        if _local(child.tag) == "guid" \
+                and (child.get("isPermaLink") or "true").lower() != "false":
+            return (child.text or "").strip()
+    return ""
+
+
 def _parse_when(text):
     """RFC 822 (RSS) or ISO 8601 (Atom) -> aware UTC datetime, else None.
 
@@ -145,7 +175,7 @@ def parse_entries(data):
         for el in root.iter():
             if _local(el.tag) != "item":
                 continue
-            entries.append((_child_text(el, {"title"}), _child_text(el, {"link"}),
+            entries.append((_child_text(el, {"title"}), _rss_link(el),
                             _parse_when(_child_text(el, {"pubdate", "date"}))))
     return entries
 

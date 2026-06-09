@@ -1192,6 +1192,7 @@ fb = [
     {"timestamp": now, "id": "g1", "verdict": "up"},
     {"timestamp": now, "id": "g2", "verdict": "up"},
     {"timestamp": now, "id": "b1", "verdict": "down"},
+    {"timestamp": now, "id": "pruned1", "verdict": "down"},  # item pruned from seen.jsonl
 ]
 with open(os.path.join(root, "state", "feedback.jsonl"), "w") as f:
     for r in fb:
@@ -1203,8 +1204,8 @@ print("N30", n)
 print("UPS", ups)
 print("DOWNS", downs)
 card = m.calibration_card()
-print("PRECISION_LINE", "67% precision" in card and "(2 up of 3 graded)" in card)
-print("COVERAGE_LINE", "75% coverage" in card)
+print("PRECISION_LINE", "50% precision" in card and "(2 up of 4 graded)" in card)
+print("COVERAGE_LINE", "80% coverage" in card)
 print("CHART_SVG", card.count("<svg"))
 print("ALPHA_RATE", "100% (2/2)" in card)
 print("BETA_RATE", "0% (0/1)" in card)
@@ -1212,11 +1213,11 @@ open(os.path.join(root, "state", "feedback.jsonl"), "w").close()
 print("EMPTY_CARD", repr(m.calibration_card()))
 PY
   out="$(python3 "$py" "$repo/bin/portal.py")"
-  assert_contains "30d denominator excludes dropped + out-of-window items" "$out" "N30 4"
+  assert_contains "30d denominator includes a graded-but-pruned item" "$out" "N30 5"
   assert_contains "a regrade counts its newest verdict (up)" "$out" "UPS 2"
-  assert_contains "downs counted" "$out" "DOWNS 1"
-  assert_contains "precision is over graded items only (2/3 = 67%)" "$out" "PRECISION_LINE True"
-  assert_contains "coverage keeps the headline honest (3/4 graded)" "$out" "COVERAGE_LINE True"
+  assert_contains "a pruned item's grade still counts (by grade timestamp)" "$out" "DOWNS 2"
+  assert_contains "precision is over graded items only (2/4 = 50%)" "$out" "PRECISION_LINE True"
+  assert_contains "coverage keeps the headline honest (4/5 graded)" "$out" "COVERAGE_LINE True"
   assert_contains "renders the weekly precision SVG" "$out" "CHART_SVG 1"
   assert_contains "per-source hit rate: alpha.com 100%" "$out" "ALPHA_RATE True"
   assert_contains "per-source hit rate: beta.com 0%" "$out" "BETA_RATE True"
@@ -1255,7 +1256,8 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 ents = {r["name"]: r for r in m.all_entities()}
 print("NAMES", "|".join(sorted(ents)))
 print("OBS", ents["Tudor BB58"]["observations"])
-print("ITEMS", ents["Tudor BB58"]["items"])         # tagged + non-dropped only
+print("ITEMS", ents["Tudor BB58"]["items"])         # tagged + legacy-named, like the dossier
+print("ITEMS_AI", ents["AI"]["items"])              # whole-token: a1 only, not "Prepaid"
 print("LAST", ents["Tudor BB58"]["last"])
 ids = [i["id"] for i in m.entity_items("Tudor BB58")]
 print("MATCHED", "|".join(sorted(ids)))             # t1 (tagged) + t2 (named), no x1/x2
@@ -1265,7 +1267,8 @@ PY
   out="$(python3 "$py" "$repo/bin/portal.py")"
   assert_contains "entities come from observations AND item tags" "$out" "NAMES AI|Pelagos 39|Tudor BB58"
   assert_contains "observation count" "$out" "OBS 3"
-  assert_contains "item count excludes dropped" "$out" "ITEMS 1"
+  assert_contains "index item count matches the dossier (tagged + legacy-named)" "$out" "ITEMS 2"
+  assert_contains "index legacy match is whole-token too" "$out" "ITEMS_AI 1"
   assert_contains "last activity is the newest of obs/items" "$out" "LAST 2026-06-06"
   assert_contains "dossier matches tagged + legacy named items only" "$out" "MATCHED t1|t2"
   assert_contains "event timeline is entity-scoped" "$out" "EVENTS 1"
@@ -1630,12 +1633,16 @@ rss = ('<?xml version="1.0"?>\n<rss version="2.0"><channel><title>R</title>\n'
        '<pubDate>%s</pubDate></item>\n'
        '<item><title>Relative link story</title><link>/rel/post</link>'
        '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Guid only story</title><guid>https://ex.com/guid-only</guid>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Opaque guid story</title><guid isPermaLink="false">opaque-1</guid>'
+       '<pubDate>%s</pubDate></item>\n'
        '<item><title>Stale RSS story</title><link>https://ex.com/stale</link>'
        '<pubDate>%s</pubDate></item>\n'
        '<item><title>Already seen story</title><link>https://ex.com/seen</link>'
        '<pubDate>%s</pubDate></item>\n'
        '<item><title>Undated story</title><link>https://ex.com/undated</link></item>\n'
-       '</channel></rss>\n') % (fresh, offset, rel, old, fresh)
+       '</channel></rss>\n') % (fresh, offset, rel, rel, rel, old, fresh)
 atom = ('<?xml version="1.0"?>\n<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>\n'
         '<entry><title>Fresh Atom entry</title>'
         '<link rel="alternate" href="https://ax.com/entry"/>'
@@ -1685,9 +1692,15 @@ YAML
     "$(head -1 "$TMP/cand.jsonl")" "Offset story"
   assert_contains "a relative entry link is resolved against the feed URL" \
     "$out" "\"url\": \"http://127.0.0.1:$port/rel/post\""
+  assert_contains "a permalink <guid> stands in for a missing <link>" "$out" "https://ex.com/guid-only"
+  case "$out" in *"Opaque guid story"*) fail "a non-permalink guid item is skipped" ;; *) pass "a non-permalink guid item is skipped" ;; esac
   assert_contains "candidates carry the link host as source" "$out" '"source": "ex.com"'
-  assert_contains "stats line counts candidates and feeds" "$(cat "$err")" "5 candidate(s) from 4 feed(s)"
+  assert_contains "stats line counts candidates and feeds" "$(cat "$err")" "6 candidate(s) from 4 feed(s)"
   assert_contains "stats line counts failed feeds" "$(cat "$err")" "2 feed(s) failed"
+  # An inline YAML list (`feeds: [url]`) must work too -- not silently parse as none.
+  printf 'subject:\n  derived:\n    feeds: [http://127.0.0.1:%s/rss.xml]\n' "$port" > "$TMP/inline.yaml"
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-inline.jsonl" "$TMP/inline.yaml" 2>/dev/null
+  assert_contains "an inline feeds list is parsed" "$(cat "$TMP/cand-inline.jsonl" 2>/dev/null)" "Fresh RSS story"
   # --max caps to the newest N (again: only correct under UTC normalization).
   python3 "$ROOT/bin/fetch.py" --hours 30 --max 1 --out "$TMP/cand1.jsonl" \
     "$TMP/feeds-profile.yaml" 2>/dev/null

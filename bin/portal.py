@@ -331,9 +331,18 @@ def _item_entities(rec):
     return [e for e in ents if isinstance(e, str) and e]
 
 
+def _entity_word_re(name):
+    """Whole-token matcher for an entity name (lookarounds, not bare substring),
+    so a short entity like "AI" can't match every item containing "paid"."""
+    return re.compile(r"(?<!\w)" + re.escape(str(name).lower()) + r"(?!\w)")
+
+
 def all_entities():
     """Every entity on file -- observed in observations.jsonl or tagged on a surfaced
-    item -- with item/observation counts and the latest activity date."""
+    item -- with item/observation counts and the latest activity date. Items are
+    counted with the SAME matching the dossier uses (explicit `entities` tags plus
+    the whole-token legacy name match over title/so_what), so the index can't show
+    0 items while the dossier page lists some."""
     agg = {}
 
     def row(name):
@@ -346,15 +355,29 @@ def all_entities():
         r = row(ent)
         r["observations"] += 1
         r["last"] = max(r["last"], _ts(rec)[:10])
-    for rec in read_jsonl(SEEN):
-        if rec.get("signal") == "dropped":
+
+    # Newest record per id, like entity_items -- so the two views stay consistent.
+    items, ids = [], set()
+    for rec in reversed(read_jsonl(SEEN)):
+        rid = rec.get("id")
+        if not isinstance(rid, str) or not rid or rid in ids or rec.get("signal") == "dropped":
             continue
+        ids.add(rid)
+        items.append(rec)
+    for rec in items:                            # tags can introduce new entities
+        for ent in _item_entities(rec):
+            row(ent)
+    matchers = {name: _entity_word_re(name) for name in agg}
+    for rec in items:
         d = rec.get("date")
         d = d if isinstance(d, str) else ""
-        for ent in _item_entities(rec):
-            r = row(ent)
-            r["items"] += 1
-            r["last"] = max(r["last"], d)
+        tags = {e.lower() for e in _item_entities(rec)}
+        blob = ("%s %s" % (rec.get("title", ""), rec.get("so_what", ""))).lower()
+        for name, word in matchers.items():
+            if str(name).lower() in tags or word.search(blob):
+                r = agg[name]
+                r["items"] += 1
+                r["last"] = max(r["last"], d)
     return sorted(agg.values(), key=lambda r: str(r["name"]).lower())
 
 
@@ -364,7 +387,7 @@ def entity_items(name):
     The legacy name match requires whole tokens (lookarounds, not bare substring), so
     a short entity like "AI" can't pull in every item containing "paid"."""
     needle = str(name).lower()
-    word = re.compile(r"(?<!\w)" + re.escape(needle) + r"(?!\w)")
+    word = _entity_word_re(name)
     items, ids = [], set()
     for rec in reversed(read_jsonl(SEEN)):
         rid = rec.get("id")
@@ -565,7 +588,12 @@ def _grade_date(rid, rec, surfaced):
 
 
 def calibration_stats():
-    """(surfaced, ups, downs) over items surfaced in the last 30 days."""
+    """(surfaced, ups, downs) over items surfaced in the last 30 days.
+
+    A graded item whose seen.jsonl record was pruned (state_max_lines) still counts,
+    bucketed by its grade timestamp -- the same fallback precision_chart uses -- so
+    the headline numbers can't silently drop valid recent grades on high-volume or
+    low-retention installs."""
     surfaced = _surfaced_index()
     graded = _latest_feedback()
     cutoff = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
@@ -579,6 +607,19 @@ def calibration_stats():
             ups += 1
         elif verdict == "down":
             downs += 1
+    for rid, rec in graded.items():
+        if rid in surfaced:
+            continue
+        verdict = rec.get("verdict")
+        if verdict not in ("up", "down"):
+            continue
+        d = _ts(rec)[:10]
+        if d and d >= cutoff:
+            n += 1                               # it was surfaced once, then pruned
+            if verdict == "up":
+                ups += 1
+            else:
+                downs += 1
     return n, ups, downs
 
 
