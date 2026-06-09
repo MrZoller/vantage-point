@@ -200,6 +200,22 @@ attention), and the next bootstrap tunes the rubric AND the source ranking/feeds
 items like it get swept at all. The Calibration card counts reported misses beside
 the precision figure to keep the headline honest.
 
+## Phase 15 — profile-refresh diff ✅ (shipped)
+
+The durable half of the learning loop ("grades consolidate at the next bootstrap")
+hinged on a review nobody is helped through: re-reading a whole profile. Make the
+refresh gate a 2-minute skim instead:
+- On a re-bootstrap (an approved `profile.yaml` exists), `bootstrap.sh` writes
+  **`profile.draft.diff`** — a unified diff of the draft vs the approved profile —
+  and folds it into the "draft ready for review" email as a *What changed vs the
+  approved profile* section (truncated past 200 lines; appended after the editorial
+  pass so the editor can never touch it). First run / identical draft / no `diff`
+  tool → a note, never a failure.
+- The portal's draft view (`/profile?draft=1`) leads with the same diff, computed
+  live via `difflib` so it can't go stale; the awaiting-review banner links to it.
+- Approval stays the deliberate local `cp` — this lowers the cost of the gate, it
+  doesn't move it.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

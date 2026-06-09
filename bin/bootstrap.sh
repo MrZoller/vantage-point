@@ -21,8 +21,10 @@ export PATH="$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 CONFIG="monitor-config.yaml"
 PROMPT="bootstrap-prompt.md"
+PROFILE="profile.yaml"               # the currently-approved profile (absent on a first run)
 DRAFT="profile.draft.yaml"
 SUMMARY="profile.draft.summary.md"   # human-readable digest the agent writes alongside
+DIFF_FILE="profile.draft.diff"       # on a refresh: what the draft changes vs the approved profile
 
 [ -f "$CONFIG" ] || { echo "missing $CONFIG" >&2; exit 1; }
 [ -f "$PROMPT" ] || { echo "missing $PROMPT" >&2; exit 1; }
@@ -108,6 +110,31 @@ $(cat "$CONFIG")
 echo
 echo "[bootstrap] draft written to $DRAFT"
 
+# ---- refresh diff: what this draft changes vs the approved profile ----
+# On a refresh the review gate should be a skim of WHAT CHANGED (what your grades
+# re-ranked, which sources moved) rather than a re-read of the whole profile. Write
+# a unified diff alongside the draft and fold it into the review email below.
+# First bootstrap (no approved profile), an identical draft, or no diff tool ->
+# skipped with a note, never a failure.
+rm -f "$DIFF_FILE"
+if [ -f "$PROFILE" ] && [ -s "$DRAFT" ]; then
+  if command -v diff >/dev/null 2>&1; then
+    diff_rc=0
+    diff -u "$PROFILE" "$DRAFT" > "$DIFF_FILE" || diff_rc=$?
+    if [ "$diff_rc" -ge 2 ]; then     # 0 = identical, 1 = differs, >= 2 = trouble
+      echo "[bootstrap] WARNING: diff failed (exit $diff_rc) - no $DIFF_FILE written" >&2
+      rm -f "$DIFF_FILE"
+    elif [ -s "$DIFF_FILE" ]; then
+      echo "[bootstrap] refresh diff written to $DIFF_FILE (draft vs approved $PROFILE)"
+    else
+      rm -f "$DIFF_FILE"
+      echo "[bootstrap] note: the draft is identical to the approved $PROFILE" >&2
+    fi
+  else
+    echo "[bootstrap] note: no diff tool found - skipping $DIFF_FILE" >&2
+  fi
+fi
+
 # ---- optional delivery: email the draft summary as a review aid ----
 # Approval stays a deliberate LOCAL step (cp draft -> profile.yaml); this only
 # notifies + summarizes. Both the editorial polish and the email are opt-in and
@@ -142,6 +169,18 @@ low-confidence / uncertainty flag - faithfulness to the draft beats polish. Edit
     if command -v msmtp >/dev/null 2>&1; then
       DELIVER="$(mktemp)"
       cat "$SUMMARY" > "$DELIVER"
+      # On a refresh, the diff vs the approved profile is the real review surface --
+      # appended AFTER the (possibly editor-polished) summary, never edited itself.
+      if [ -s "$DIFF_FILE" ]; then
+        {
+          printf '\n\n---\n\n## What changed vs the approved profile\n\n```diff\n'
+          head -n 200 "$DIFF_FILE"
+          if [ "$(wc -l < "$DIFF_FILE")" -gt 200 ]; then
+            printf '... (truncated - the full diff is in %s)\n' "$DIFF_FILE"
+          fi
+          printf '```\n'
+        } >> "$DELIVER"
+      fi
       # shellcheck disable=SC2016  # backticks are literal Markdown; %s are printf placeholders
       printf '\n\n---\n\n**To approve:** review `%s`, edit if needed, then run `cp %s profile.yaml` on the host. Nothing is monitored until you do.\n' \
         "$DRAFT" "$DRAFT" >> "$DELIVER"
@@ -165,6 +204,7 @@ fi
 
 echo "[bootstrap] Review it, edit as needed, then APPROVE with:"
 echo "             cp $DRAFT profile.yaml"
+[ -s "$DIFF_FILE" ] && echo "             (what changed vs the approved profile: $DIFF_FILE)"
 # Optional: copy the digest too so the portal's Profile tab shows it for the approved
 # profile (it renders profile.summary.md like the bootstrap email; YAML stays the source).
 [ -f "$SUMMARY" ] && echo "             cp $SUMMARY profile.summary.md   # optional: nicer Profile tab"

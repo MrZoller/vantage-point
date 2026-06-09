@@ -95,7 +95,8 @@ flowchart LR
    tab**, and grades take effect on two clocks: the newest ones are applied as **live
    calibration on the very next run** (a thumbs-down filters its lookalikes the next
    morning), and the **next profile refresh** — a re-run of the research step that you
-   review and approve — consolidates all of them into the rubric durably. Spotted
+   review and approve — consolidates all of them into the rubric durably (the refresh
+   review is a short *what changed* diff against the approved profile, not a re-read). Spotted
    something relevant it *never* surfaced? Report the URL as a **missed signal** from
    the same tab and it's treated as a false negative on both clocks. The portal
    also *measures* the loop: a Calibration view tracks precision week by week (with

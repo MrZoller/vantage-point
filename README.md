@@ -263,9 +263,12 @@ the email is converted. The startup-adjacent log line notes which form was sent
 a **"profile draft ready for review"** email: a human-readable summary of what it
 inferred (market, key players, anchor, rubric highlights, and its lowest-confidence
 guesses to check), so you can triage the draft from your inbox. With `models.editor`
-set it's polished by the editor first. This is a review *aid* — approval stays the
-deliberate local step (`cp profile.draft.yaml profile.yaml`); the email even spells
-that out. Same fail-safe rules: a send failure never loses the on-disk draft.
+set it's polished by the editor first. On a *refresh* (an approved `profile.yaml`
+already exists) the email also carries a **What changed vs the approved profile**
+section — the `profile.draft.diff` unified diff, appended after the editorial pass so
+it's never rewritten. This is a review *aid* — approval stays the deliberate local
+step (`cp profile.draft.yaml profile.yaml`); the email even spells that out. Same
+fail-safe rules: a send failure never loses the on-disk draft.
 
 (The `output.distribution` list in the config is documentation only — it sketches the
 intended multi-channel shape. Only `email_to` and `webhook_url` are wired today.)
@@ -391,11 +394,15 @@ and check `./bin/usage.sh` for where the spend goes.
   into the launchd log. `state/seen.jsonl` is pruned to `monitoring.state_max_lines`
   (default 5000, `0` to disable) each run so it can't grow without bound.
 - **Refresh.** Re-run `bootstrap.sh` on the `governance.profile_refresh_days`
-  cadence; review the new draft against the old `profile.yaml` before promoting.
-  Anchors drift — new awards, hires, capabilities — and a stale profile quietly
-  mis-scores everything. `monitor.sh` warns (it doesn't refuse) when the approved
-  profile's `last_bootstrapped` is older than `profile_refresh_days`, so a forgotten
-  refresh is visible in the run log.
+  cadence. Anchors drift — new awards, hires, capabilities — and a stale profile
+  quietly mis-scores everything. `monitor.sh` warns (it doesn't refuse) when the
+  approved profile's `last_bootstrapped` is older than `profile_refresh_days`, so a
+  forgotten refresh is visible in the run log. On a refresh the review is a skim,
+  not a re-read: bootstrap writes **`profile.draft.diff`** (the draft vs the
+  approved profile — what your grades re-ranked, which sources moved), folds it
+  into the review email as a *What changed* section, and the portal's draft view
+  leads with the same diff computed live. Approve with the usual
+  `cp profile.draft.yaml profile.yaml`.
 - **Tuning.** First week, read every daily and grade it. Move false positives into
   `relevance.calibration.not_relevant` and misses into `relevant`, then re-bootstrap
   so the rubric learns your taste. That feedback loop is the whole reason to

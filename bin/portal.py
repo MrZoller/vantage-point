@@ -19,6 +19,7 @@ ASCII (sparkline block glyphs are built from code points at runtime) so it diffs
 cleanly and runs anywhere python3 does. Markdown reports render via the same
 pandoc/cmark-gfm/cmark chain the email uses, with a light built-in fallback.
 """
+import difflib
 import hashlib
 import html
 import json
@@ -122,6 +123,7 @@ ul.events li:last-child{border:0}
 pre.yaml{background:#0f172a;color:#e2e8f0;padding:18px 20px;border-radius:10px;overflow-x:auto;
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.5;margin:0}
 pre.yaml .k{color:#7cc5ff}pre.yaml .c{color:#64748b;font-style:italic}
+pre.yaml .da{color:#7ee2a8}pre.yaml .dr{color:#f8a1ae}
 /* report body: mirrors bin/email-lib.sh .body so a report reads like its email */
 .body h1{font-size:19px;margin:22px 0 8px;color:#10151f}
 .body h2{font-size:14px;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid #eceef2;
@@ -1302,6 +1304,50 @@ def entity_inner(query):
     return "".join(parts)
 
 
+def draft_diff():
+    """Unified diff of the pending draft vs the approved profile, computed live
+    (stdlib difflib) so it can never go stale. Empty when either file is missing
+    or they match -- a first bootstrap has nothing to diff against."""
+    try:
+        with open(PROFILE, encoding="utf-8") as f:
+            a = f.read().splitlines()
+        with open(PROFILE_DRAFT, encoding="utf-8") as f:
+            b = f.read().splitlines()
+    except OSError:
+        return ""
+    return "\n".join(difflib.unified_diff(
+        a, b, fromfile="profile.yaml", tofile="profile.draft.yaml", lineterm=""))
+
+
+def render_diff(text):
+    """Read-only diff rendering: escape everything, then tint +/- lines."""
+    lines = []
+    for raw in text.split("\n"):
+        line = esc(raw)
+        if raw.startswith("+") and not raw.startswith("+++"):
+            lines.append('<span class="da">%s</span>' % line)
+        elif raw.startswith("-") and not raw.startswith("---"):
+            lines.append('<span class="dr">%s</span>' % line)
+        elif raw.startswith("@@"):
+            lines.append('<span class="c">%s</span>' % line)
+        else:
+            lines.append(line)
+    return '<pre class="yaml">%s</pre>' % "\n".join(lines)
+
+
+def draft_diff_card():
+    """The 'what changed' card on the draft view -- the refresh review surface:
+    skim what your grades re-ranked instead of re-reading the whole profile."""
+    d = draft_diff()
+    if not d:
+        return ""
+    return ('<div class="card"><h2>What changed vs the approved profile</h2>'
+            '<p class="sublabel">Computed live from <code>profile.yaml</code> vs '
+            '<code>profile.draft.yaml</code>. Review it, edit the draft if needed, '
+            'then approve with <code>cp profile.draft.yaml profile.yaml</code>.</p>'
+            '%s</div>' % render_diff(d))
+
+
 def render_yaml(text):
     """Read-only YAML rendering: escape everything, then lightly tint comments and keys.
     Display only -- the file is never written from here."""
@@ -1364,14 +1410,17 @@ def profile_inner(query):
     banner = ""
     if os.path.exists(PROFILE_DRAFT) and not draft:
         banner = ('<div class="banner">A <strong>profile.draft.yaml</strong> is awaiting '
-                  'review. <a href="/profile?draft=1">View the draft</a> &mdash; promote it '
-                  'with <code>cp profile.draft.yaml profile.yaml</code>.</div>')
+                  'review. <a href="/profile?draft=1">View the draft and what changed</a> '
+                  '&mdash; promote it with <code>cp profile.draft.yaml profile.yaml</code>.'
+                  '</div>')
     if draft:
         yaml_path, summary_path = PROFILE_DRAFT, PROFILE_DRAFT_SUMMARY
         title, subtitle = "Profile draft", "Profile draft - for review"
         intro = ('The bootstrap\'s proposed profile, not yet approved. '
                  '<a href="/profile">View the approved profile</a>.')
         missing = "No profile.draft.yaml present."
+        # On a refresh, lead the review with the diff against the approved profile.
+        banner += draft_diff_card()
     else:
         yaml_path, summary_path = PROFILE, PROFILE_SUMMARY
         title, subtitle = "Profile", "Approved profile"

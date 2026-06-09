@@ -1218,6 +1218,39 @@ test_portal_missed() {
 }
 test_portal_missed
 
+echo "== portal.py: the draft view leads with a live diff vs the approved profile =="
+test_portal_draft_diff() {
+  local repo="$TMP/pdiff" out py="$TMP/pdiff.py"
+  mkdir -p "$repo/bin"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  printf 'relevance:\n  threshold: 0.6\n  old_line: kept\n' > "$repo/profile.yaml"
+  # The draft raises the threshold and carries a raw <script> to prove the diff
+  # rendering escapes rather than serves it.
+  printf 'relevance:\n  threshold: 0.7\n  note: "<script>alert(1)</script>"\n' > "$repo/profile.draft.yaml"
+  cat > "$py" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+page = m.profile_inner({"draft": ["1"]})
+print("CARD", "What changed vs the approved profile" in page)
+print("MINUS", '<span class="dr">-  threshold: 0.6</span>' in page)
+print("PLUS", '<span class="da">+  threshold: 0.7</span>' in page)
+print("ESCAPED", "<script>alert(1)</script>" not in page)
+approved = m.profile_inner({})
+print("BANNER", "View the draft and what changed" in approved)
+os.remove(m.PROFILE_DRAFT)
+print("NO_DRAFT_CARD", "What changed" not in m.profile_inner({}))
+PY
+  out="$(python3 "$py" "$repo/bin/portal.py")"
+  assert_contains "draft view shows the what-changed card" "$out" "CARD True"
+  assert_contains "removed lines are tinted" "$out" "MINUS True"
+  assert_contains "added lines are tinted" "$out" "PLUS True"
+  assert_contains "diff content is escaped, not served as markup" "$out" "ESCAPED True"
+  assert_contains "approved view's banner points at the diff" "$out" "BANNER True"
+  assert_contains "no card without a pending draft" "$out" "NO_DRAFT_CARD True"
+}
+test_portal_draft_diff
+
 echo "== portal.py: the light-markdown fallback renders a GFM table (watchlist) =="
 test_portal_light_table() {
   # Exercise the no-renderer path directly so it's deterministic regardless of whether
@@ -2146,6 +2179,51 @@ YAML
   fi
 }
 test_bootstrap_email
+
+echo "== bootstrap.sh: a refresh writes profile.draft.diff and emails what changed =="
+test_bootstrap_refresh_diff() {
+  local repo="$TMP/bootdiff" home="$TMP/boothome8" out msg="$TMP/boot_msg4.eml"
+  make_fake_bootstrap_repo "$repo" "$home"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+output:
+  email_to: "me@example.com"
+YAML
+  # An approved profile that differs from the draft the stub claude writes
+  # ("derived: {}") -> the refresh path must produce a reviewable diff.
+  printf 'derived: {}\nstale_key: to-be-dropped\n' > "$repo/profile.yaml"
+  out="$( cd "$repo" && MSG_OUT="$msg" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "announces the refresh diff" "$out" "refresh diff written to profile.draft.diff"
+  assert_contains "the diff file records the dropped line" \
+    "$(cat "$repo/profile.draft.diff" 2>/dev/null)" "-stale_key: to-be-dropped"
+  assert_contains "the review email carries the what-changed section" \
+    "$(cat "$msg" 2>/dev/null)" "What changed vs the approved profile"
+  assert_contains "the review email carries the diff body" \
+    "$(cat "$msg" 2>/dev/null)" "stale_key: to-be-dropped"
+  assert_contains "the final approval hint points at the diff" "$out" "what changed vs the approved profile: profile.draft.diff"
+
+  # First bootstrap (no approved profile): no diff file, no email section.
+  local repo2="$TMP/bootdiff2" home2="$TMP/boothome9" msg2="$TMP/boot_msg5.eml"
+  make_fake_bootstrap_repo "$repo2" "$home2"
+  cat "$repo/monitor-config.yaml" > "$repo2/monitor-config.yaml"
+  ( cd "$repo2" && MSG_OUT="$msg2" HOME="$home2" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  if [ -f "$repo2/profile.draft.diff" ]; then fail "no diff file on a first bootstrap"; else pass "no diff file on a first bootstrap"; fi
+  case "$(cat "$msg2" 2>/dev/null)" in
+    *"What changed vs the approved profile"*) fail "no what-changed section on a first bootstrap" ;;
+    *) pass "no what-changed section on a first bootstrap" ;;
+  esac
+
+  # An identical draft: note it, leave no empty diff file behind.
+  local repo3="$TMP/bootdiff3" home3="$TMP/boothome10" out3
+  make_fake_bootstrap_repo "$repo3" "$home3"
+  printf 'derived: {}\n' > "$repo3/profile.yaml"     # exactly what the stub will draft
+  out3="$( cd "$repo3" && HOME="$home3" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "notes an identical draft" "$out3" "identical to the approved"
+  if [ -f "$repo3/profile.draft.diff" ]; then fail "no diff file when draft is identical"; else pass "no diff file when draft is identical"; fi
+}
+test_bootstrap_refresh_diff
 
 echo "== bootstrap.sh: editorial pass polishes the summary when models.editor is set =="
 test_bootstrap_editor() {

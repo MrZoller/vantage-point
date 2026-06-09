@@ -14,6 +14,8 @@ stays consistent instead of re-deriving them.
   writes `profile.draft.yaml` (+ a `profile.draft.summary.md`); a human promotes it to
   `profile.yaml` (the review gate). Optionally editor-polishes + emails the summary as a
   "draft ready for review" — a review aid, not the approval (that stays the local `cp`).
+  On a refresh it also writes `profile.draft.diff` (draft vs approved) and folds it into
+  the email; the portal draft view shows the same diff live (difflib).
 - **monitor** (`bin/monitor.sh` + `monitor-prompt.md`): scheduled daily/weekly run —
   deterministic feed pre-sweep (`bin/fetch.py`, from `subject.derived.feeds`) + live
   calibration injection (recent post-bootstrap grades, `relevance.recent_grades`) →

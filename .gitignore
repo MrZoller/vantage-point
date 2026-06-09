@@ -6,6 +6,7 @@ monitor-config.yaml
 # competitive-intelligence artifact built from public sources. Keep it local.
 profile.yaml
 profile.draft.yaml
+profile.draft.diff
 profile.summary.md
 profile.draft.summary.md
 .init.*
