@@ -29,7 +29,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone, timedelta, date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(ROOT, "monitor-config.yaml")
@@ -144,8 +144,8 @@ pre.yaml .k{color:#7cc5ff}pre.yaml .c{color:#64748b;font-style:italic}
 }
 """
 
-NAV = [("/", "Overview"), ("/reports", "Reports"), ("/review", "Review"),
-       ("/profile", "Profile"), ("/config", "Config")]
+NAV = [("/", "Overview"), ("/reports", "Reports"), ("/entities", "Entities"),
+       ("/review", "Review"), ("/profile", "Profile"), ("/config", "Config")]
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -317,6 +317,99 @@ def recent_events():
     return events[:MAX_EVENTS]
 
 
+# ----------------------------------------------------------------- entity dossiers
+# Reports are perishable; what's KNOWN about an entity should compound. These views
+# assemble everything on file per tracked entity -- metric series, the event
+# timeline, and the surfaced items that concerned it -- into one accumulating page.
+
+def _item_entities(rec):
+    """The tracked entities an item record was tagged with (newer records carry an
+    `entities` list; anything malformed reads as untagged)."""
+    ents = rec.get("entities")
+    if not isinstance(ents, list):
+        return []
+    return [e for e in ents if isinstance(e, str) and e]
+
+
+def _entity_word_re(name):
+    """Whole-token matcher for an entity name (lookarounds, not bare substring),
+    so a short entity like "AI" can't match every item containing "paid"."""
+    return re.compile(r"(?<!\w)" + re.escape(str(name).lower()) + r"(?!\w)")
+
+
+def all_entities():
+    """Every entity on file -- observed in observations.jsonl or tagged on a surfaced
+    item -- with item/observation counts and the latest activity date. Items are
+    counted with the SAME matching the dossier uses (explicit `entities` tags plus
+    the whole-token legacy name match over title/so_what), so the index can't show
+    0 items while the dossier page lists some."""
+    agg = {}
+
+    def row(name):
+        return agg.setdefault(name, {"name": name, "items": 0, "observations": 0, "last": ""})
+
+    for rec in read_jsonl(OBS):
+        ent = rec.get("entity")
+        if not isinstance(ent, str) or not ent:
+            continue
+        r = row(ent)
+        r["observations"] += 1
+        r["last"] = max(r["last"], _ts(rec)[:10])
+
+    # Newest record per id, like entity_items -- so the two views stay consistent.
+    items, ids = [], set()
+    for rec in reversed(read_jsonl(SEEN)):
+        rid = rec.get("id")
+        if not isinstance(rid, str) or not rid or rid in ids or rec.get("signal") == "dropped":
+            continue
+        ids.add(rid)
+        items.append(rec)
+    for rec in items:                            # tags can introduce new entities
+        for ent in _item_entities(rec):
+            row(ent)
+    matchers = {name: _entity_word_re(name) for name in agg}
+    for rec in items:
+        d = rec.get("date")
+        d = d if isinstance(d, str) else ""
+        tags = {e.lower() for e in _item_entities(rec)}
+        blob = ("%s %s" % (rec.get("title", ""), rec.get("so_what", ""))).lower()
+        for name, word in matchers.items():
+            if str(name).lower() in tags or word.search(blob):
+                r = agg[name]
+                r["items"] += 1
+                r["last"] = max(r["last"], d)
+    return sorted(agg.values(), key=lambda r: str(r["name"]).lower())
+
+
+def entity_items(name):
+    """Surfaced items about an entity, newest first: tagged with it via `entities`,
+    or -- for items recorded before tagging existed -- naming it in title/so_what.
+    The legacy name match requires whole tokens (lookarounds, not bare substring), so
+    a short entity like "AI" can't pull in every item containing "paid"."""
+    needle = str(name).lower()
+    word = _entity_word_re(name)
+    items, ids = [], set()
+    for rec in reversed(read_jsonl(SEEN)):
+        rid = rec.get("id")
+        if not isinstance(rid, str) or not rid or rid in ids or rec.get("signal") == "dropped":
+            continue
+        tagged = any(e.lower() == needle for e in _item_entities(rec))
+        blob = "%s %s" % (rec.get("title", ""), rec.get("so_what", ""))
+        if tagged or word.search(blob.lower()):
+            ids.add(rid)
+            items.append(rec)
+        if len(items) >= MAX_ITEMS:
+            break
+    return items
+
+
+def entity_events(name):
+    events = [r for r in read_jsonl(OBS)
+              if r.get("entity") == name and r.get("metric") == "event"]
+    events.sort(key=_ts, reverse=True)
+    return events[:30]
+
+
 # ------------------------------------------------------------------ activity visuals
 # Server-rendered inline SVG (no JS, no deps) so it works under the strict CSP and the
 # repo's dependency-light rule. Built from the `date` (YYYY-MM-DD) + `signal` fields on
@@ -465,6 +558,181 @@ def signal_mix():
     return svg + _legend([(SIG_COLORS[s], s) for s in SIG_ORDER])
 
 
+# ------------------------------------------------------------------ calibration stats
+# "Does grading actually make it sharper?" -- measured, not asserted. Precision is
+# computed over GRADED items only: an ungraded item is unknown, not an implicit
+# positive, so the grading COVERAGE is always reported alongside to keep the
+# headline honest. Items are bucketed by the date they were surfaced.
+
+def _surfaced_index():
+    """id -> {date, source} for surfaced (non-dropped) items in seen.jsonl.
+    First record per id wins (a rerun may append the same id again)."""
+    out = {}
+    for rec in read_jsonl(SEEN):
+        rid = rec.get("id")
+        if not isinstance(rid, str) or not rid or rid in out or rec.get("signal") == "dropped":
+            continue
+        d = rec.get("date")
+        src = rec.get("source")
+        out[rid] = {
+            "date": d if isinstance(d, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", d) else "",
+            "source": src if isinstance(src, str) else "",
+        }
+    return out
+
+
+def _grade_date(rid, rec, surfaced):
+    """The YYYY-MM-DD bucket for a graded item: the date it was surfaced, falling
+    back to the grade's own timestamp if the item has been pruned from seen.jsonl."""
+    return surfaced.get(rid, {}).get("date") or _ts(rec)[:10]
+
+
+def calibration_stats():
+    """(surfaced, ups, downs) over items surfaced in the last 30 days.
+
+    A graded item whose seen.jsonl record was pruned (state_max_lines) still counts,
+    bucketed by its grade timestamp -- the same fallback precision_chart uses -- so
+    the headline numbers can't silently drop valid recent grades on high-volume or
+    low-retention installs."""
+    surfaced = _surfaced_index()
+    graded = _latest_feedback()
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
+    n = ups = downs = 0
+    for rid, info in surfaced.items():
+        if not info["date"] or info["date"] < cutoff:
+            continue
+        n += 1
+        verdict = graded.get(rid, {}).get("verdict")
+        if verdict == "up":
+            ups += 1
+        elif verdict == "down":
+            downs += 1
+    for rid, rec in graded.items():
+        if rid in surfaced:
+            continue
+        verdict = rec.get("verdict")
+        if verdict not in ("up", "down"):
+            continue
+        d = _ts(rec)[:10]
+        if d and d >= cutoff:
+            n += 1                               # it was surfaced once, then pruned
+            if verdict == "up":
+                ups += 1
+            else:
+                downs += 1
+    return n, ups, downs
+
+
+def precision_chart():
+    """Weekly bars of precision (% thumbs-up among graded items), over the same
+    window as the other Activity charts. The faint full-height track marks weeks
+    that have grades; weeks without grades render nothing (unknown, not zero)."""
+    surfaced = _surfaced_index()
+    graded = _latest_feedback()
+    if not graded:
+        return ""
+    start, weeks, today = _week_grid()
+    wk = [[0, 0] for _ in range(weeks)]            # [ups, downs] per week
+    for rid, rec in graded.items():
+        verdict = rec.get("verdict")
+        if verdict not in ("up", "down"):
+            continue
+        try:
+            d = date.fromisoformat(_grade_date(rid, rec, surfaced))
+        except ValueError:
+            continue
+        if start <= d <= today:
+            i = (d - start).days // 7
+            wk[i][0 if verdict == "up" else 1] += 1
+    if not any(u + dn for u, dn in wk):
+        return ""
+    barw, gap, top, ph = 14, 6, 6, 90
+    step = barw + gap
+    w, h = weeks * step, top + ph + 16
+    bars, last_month = [], None
+    for i, (ups, downs) in enumerate(wk):
+        x = i * step
+        total = ups + downs
+        if total:
+            frac = ups / total
+            seg = max(2, round(frac * ph))
+            bars.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2" fill="%s" '
+                        'fill-opacity=".15"/>' % (x, top, barw, ph, ACCENT))
+            bars.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2" fill="%s">'
+                        '<title>week of %s: %d%% up (%d of %d graded)</title></rect>'
+                        % (x, top + ph - seg, barw, seg, ACCENT,
+                           (start + timedelta(days=i * 7)).isoformat(),
+                           round(frac * 100), ups, total))
+        m = (start + timedelta(days=i * 7)).strftime("%b")
+        if m != last_month:
+            bars.append('<text x="%d" y="%d" class="cal-m">%s</text>' % (x, h - 3, esc(m)))
+            last_month = m
+    return ('<svg class="viz" viewBox="0 0 %d %d" width="%d" height="%d" '
+            'role="img" aria-label="Precision by week">%s</svg>'
+            % (w, h, w, h, "".join(bars)))
+
+
+def source_stats():
+    """Per-source value attribution: surfaced / graded / thumbs-up counts, busiest
+    sources first (capped). Tells you which sources earn their rank -- and feeds
+    the judgement call of pruning or promoting them at the next bootstrap."""
+    surfaced = _surfaced_index()
+    graded = _latest_feedback()
+    agg = {}
+    for rid, info in surfaced.items():
+        src = info["source"] or "(unknown)"
+        row = agg.setdefault(src, [0, 0, 0])       # surfaced, graded, ups
+        row[0] += 1
+        verdict = graded.get(rid, {}).get("verdict")
+        if verdict in ("up", "down"):
+            row[1] += 1
+            if verdict == "up":
+                row[2] += 1
+    rows = [{"source": s, "surfaced": a[0], "graded": a[1], "ups": a[2]}
+            for s, a in agg.items()]
+    rows.sort(key=lambda r: (-r["surfaced"], r["source"]))
+    return rows[:12]
+
+
+def calibration_card(static=False):
+    """The Overview's Calibration card. Omitted until the first grade exists."""
+    if not _latest_feedback():
+        return ""
+    surfaced30, ups30, downs30 = calibration_stats()
+    graded30 = ups30 + downs30
+    chart = precision_chart()
+    parts = ['<div class="card"><h2>Calibration</h2>']
+    if graded30:
+        precision = round(100 * ups30 / graded30)
+        coverage = round(100 * graded30 / surfaced30) if surfaced30 else 0
+        parts.append('<p class="sublabel">Last 30 days: <strong>%d%% precision</strong> '
+                     '(%d up of %d graded) &middot; %d%% coverage (%d of %d surfaced '
+                     'items graded)</p>' % (precision, ups30, graded30, coverage,
+                                            graded30, surfaced30))
+    else:
+        where = "the Review tab" if static else '<a href="/review">Review</a>'
+        parts.append('<p class="sublabel">No grades on the last 30 days of items '
+                     '&mdash; thumb items in %s to track precision.</p>' % where)
+    if chart:
+        parts.append('<p class="sublabel" style="margin-top:14px">Precision by week '
+                     '(graded items only)</p>%s' % chart)
+    rows = [r for r in source_stats() if r["graded"]]
+    if rows:
+        parts.append('<p class="sublabel" style="margin-top:14px">Source hit rates '
+                     '(graded items, all time)</p>')
+        parts.append('<table><tr><th>Source</th><th>Surfaced</th><th>Graded</th>'
+                     '<th>Thumbs-up rate</th></tr>')
+        for r in rows:
+            rate = '%d%% (%d/%d)' % (round(100 * r["ups"] / r["graded"]),
+                                     r["ups"], r["graded"])
+            parts.append('<tr><td>%s</td><td class="num">%d</td><td class="num">%d</td>'
+                         '<td class="num">%s</td></tr>'
+                         % (esc(r["source"]), r["surfaced"], r["graded"], rate))
+        parts.append('</table>')
+    parts.append('</div>')
+    return "".join(parts)
+
+
 def list_reports():
     """Daily/weekly report basenames, newest first (names are date-prefixed)."""
     try:
@@ -515,17 +783,24 @@ def _ts(rec):
     return t if isinstance(t, str) else ""
 
 
-def latest_verdicts():
-    """id -> newest verdict (by timestamp) from the feedback log."""
+def _latest_feedback():
+    """id -> newest feedback record (by timestamp). Non-string ids are skipped --
+    the log is agent-adjacent and hand-editable, and a non-scalar id would be an
+    unhashable dict key."""
     latest = {}
     for rec in read_jsonl(FEEDBACK):
         rid = rec.get("id")
-        if not rid:
+        if not isinstance(rid, str) or not rid:
             continue
         prev = latest.get(rid)
         if prev is None or _ts(rec) >= _ts(prev):
             latest[rid] = rec
-    return {rid: rec.get("verdict") for rid, rec in latest.items()}
+    return latest
+
+
+def latest_verdicts():
+    """id -> newest verdict (by timestamp) from the feedback log."""
+    return {rid: rec.get("verdict") for rid, rec in _latest_feedback().items()}
 
 
 def record_grade(item, verdict):
@@ -703,14 +978,20 @@ def overview_inner(static=False):
             parts.append('<p class="sublabel" style="margin-top:18px">Signal mix by week</p>%s' % mix)
         parts.append('</div>')
 
+    parts.append(calibration_card(static=static))
+
     parts.append('<div class="card"><h2>Tracked entities</h2>')
     if rows:
         parts.append('<table><tr><th>Entity</th><th>Metric</th><th>Latest</th>'
                      '<th>Recent</th><th>As of</th></tr>')
         for r in rows:
+            # In the live portal the entity opens its dossier; the static export has
+            # no /entity route, so it keeps plain text.
+            ent = esc(r["entity"]) if static else (
+                '<a href="%s">%s</a>' % (esc(entity_href(r["entity"])), esc(r["entity"])))
             parts.append('<tr><td>%s</td><td>%s</td><td class="num">%s %s</td>'
                          '<td class="spark">%s</td><td class="muted">%s</td></tr>'
-                         % (esc(r["entity"]), esc(r["metric"]), esc(r["latest"]),
+                         % (ent, esc(r["metric"]), esc(r["latest"]),
                             esc(r["unit"]), spark(r["series"]), esc(r["as_of"])))
         parts.append('</table>')
     else:
@@ -846,6 +1127,97 @@ def review_inner(just=None):
         if v:
             parts.append('<span class="verdict">graded: %s</span>' % esc(v))
         parts.append('</div></div>')
+    parts.append('</div>')
+    return "".join(parts)
+
+
+def entity_href(name):
+    return "/entity?e=" + quote(str(name), safe="")
+
+
+def entities_inner():
+    rows = all_entities()
+    parts = ['<h1>Entities</h1>',
+             '<p class="meta">A dossier per tracked entity, accumulated across runs '
+             '&mdash; metrics, events, and the items surfaced about it.</p>',
+             '<div class="card">']
+    if rows:
+        parts.append('<table><tr><th>Entity</th><th>Items</th><th>Observations</th>'
+                     '<th>Last activity</th></tr>')
+        for r in rows:
+            last = esc(r["last"]) if r["last"] else "&mdash;"
+            parts.append('<tr><td><a href="%s">%s</a></td><td class="num">%d</td>'
+                         '<td class="num">%d</td><td class="muted">%s</td></tr>'
+                         % (esc(entity_href(r["name"])), esc(r["name"]),
+                            r["items"], r["observations"], last))
+        parts.append('</table>')
+    else:
+        parts.append('<p class="muted">No entities yet &mdash; they accumulate as the '
+                     'monitor records observations and tags surfaced items.</p>')
+    parts.append('</div>')
+    return "".join(parts)
+
+
+def entity_inner(query):
+    name = (query.get("e") or [""])[0]
+    known = {r["name"] for r in all_entities()}
+    if name not in known:
+        return ('<div class="card"><h1>Entity not found</h1>'
+                '<p class="muted"><a href="/entities">Back to entities</a></p></div>')
+    parts = ['<p class="meta noprint"><a href="/entities">&larr; All entities</a></p>',
+             '<h1>%s</h1>' % esc(name),
+             '<p class="meta">Everything on file for this entity, oldest state to '
+             'newest report.</p>']
+
+    metrics = [r for r in tracked_entities() if r["entity"] == name]
+    if metrics:
+        parts.append('<div class="card"><h2>Metrics</h2>'
+                     '<table><tr><th>Metric</th><th>Latest</th><th>Recent</th>'
+                     '<th>As of</th></tr>')
+        for r in metrics:
+            parts.append('<tr><td>%s</td><td class="num">%s %s</td>'
+                         '<td class="spark">%s</td><td class="muted">%s</td></tr>'
+                         % (esc(r["metric"]), esc(r["latest"]), esc(r["unit"]),
+                            spark(r["series"]), esc(r["as_of"])))
+        parts.append('</table></div>')
+
+    events = entity_events(name)
+    if events:
+        parts.append('<div class="card"><h2>Event timeline</h2><ul class="events">')
+        for e in events:
+            note = e.get("note")
+            if not note:
+                v = e.get("value")
+                note = v if isinstance(v, str) else ""
+            parts.append('<li class="muted">%s | %s: %s</li>'
+                         % (esc(_ts(e)[:10]), esc(e.get("event_type", "event")), esc(note)))
+        parts.append('</ul></div>')
+
+    items = entity_items(name)
+    parts.append('<div class="card"><h2>Surfaced items</h2>')
+    if items:
+        verdicts = latest_verdicts()
+        for it in items:
+            parts.append('<div class="item"><div class="sig">%s &middot; %s &middot; '
+                         'score %s</div>'
+                         % (esc(it.get("date", "")), esc(it.get("signal", "?")),
+                            esc(it.get("score", "?"))))
+            parts.append('<div><strong>%s</strong></div>' % esc(it.get("title", "")))
+            if it.get("so_what"):
+                parts.append('<div class="muted">%s</div>' % esc(it["so_what"]))
+            link = safe_url(it.get("url"))
+            tail = []
+            if link:
+                tail.append('<a href="%s" target="_blank" rel="noopener noreferrer">'
+                            'source</a>' % esc(link))
+            v = verdicts.get(it.get("id"))
+            if v:
+                tail.append('<span class="verdict">graded: %s</span>' % esc(v))
+            if tail:
+                parts.append('<div class="grade">%s</div>' % " ".join(tail))
+            parts.append('</div>')
+    else:
+        parts.append('<p class="muted">No surfaced items mention this entity yet.</p>')
     parts.append('</div>')
     return "".join(parts)
 
@@ -998,6 +1370,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, shell("/", overview_inner()))
         elif path == "/reports":
             self._send(200, shell("/reports", reports_inner(q), title=report_title(q)))
+        elif path == "/entities":
+            self._send(200, shell("/entities", entities_inner(), title="Entities"))
+        elif path == "/entity":
+            name = (q.get("e") or [""])[0]
+            self._send(200, shell("/entities", entity_inner(q), title=name or "Entity"))
         elif path == "/review":
             self._send(200, shell("/review", review_inner(), title="Review"))
         elif path == "/profile":

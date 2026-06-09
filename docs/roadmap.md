@@ -96,14 +96,67 @@ on the review gate:
   (rendering + `send_email`) so monitor and bootstrap share one implementation (and
   bootstrap drops its bespoke, drift-prone config parser).
 
+## Phase 7 — live calibration ✅ (shipped)
+
+Close the lag between grading an item and the grade changing anything. Each monitor
+run injects the newest **post-bootstrap** grades from `state/feedback.jsonl` (latest
+verdict per item via `dedupe-feedback.py --since <last_bootstrapped> --max N`) into
+the triage prompt as worked examples — a thumbs-down filters its lookalikes the next
+run. Capped by `relevance.recent_grades` (default 20, `0` = off); grades older than
+the approved profile are excluded because the rubric already absorbed them at
+bootstrap. Fail-safe: any problem skips the injection, never the run.
+
+## Phase 8 — precision tracking ✅ (shipped)
+
+Prove (or disprove) "it gets sharper as you grade" with data the system already has.
+The portal Overview gains a **Calibration** card, built by joining
+`state/feedback.jsonl` (latest verdict per item) to `state/seen.jsonl` (surfaced
+items): 30-day **precision over graded items only** — an ungraded item is unknown,
+not an implicit positive — with **grading coverage** alongside to keep the headline
+honest, a precision-by-week SVG on the same time axis as the other Activity charts,
+and **per-source hit rates** (surfaced / graded / thumbs-up rate) to show which
+sources earn their rank before the next bootstrap re-ranks them. Stdlib-only,
+server-rendered, omitted until the first grade exists.
+
+## Phase 9 — webhook delivery ✅ (shipped)
+
+A second delivery channel so reports can land where a team sees them. Set
+`output.webhook_url` and each delivered report is POSTed there as one JSON object
+(`bin/webhook.py`, stdlib only). The payload is polyglot — `text` for Slack incoming
+webhooks, `content` (2000-char-truncated) for Discord, `title`/`mode`/`date`/
+`report_markdown` for generic receivers — so one URL works across services. Parallels
+the email path exactly: opt-in via config, fail-safe (a failed post warns; the run
+succeeds and the report is already in `kb/`), same report content.
+
+## Phase 10 — entity dossiers ✅ (shipped)
+
+Reports are perishable; what's *known* about an entity should compound. The portal
+gains an **Entities** tab: an index of every entity on file (observed in
+`observations.jsonl` or tagged on a surfaced item) and a dossier page per entity —
+its metric series with sparklines, its event timeline, and every surfaced item that
+concerned it (with grade verdicts where given). Surfaced item records now carry an
+`entities: [...]` tag (exact names from `tracking.watch` + the profile watchlist, see
+`monitor-prompt.md`); pre-tagging records still land in dossiers via a
+case-insensitive title/so_what name match. Entity names on the Overview link to their
+dossiers; the static export keeps plain text (it has no `/entity` route).
+
+## Phase 11 — deterministic feed sweep ✅ (shipped)
+
+Make recall auditable instead of hoped-for. Bootstrap now also emits
+`subject.derived.feeds` — verified RSS/Atom URLs for the ranked sources that have
+them. Each monitor run starts with `bin/fetch.py` (stdlib only) pulling those feeds
+deterministically: entries inside the lookback window (daily = `lookback_hours`,
+weekly = 7 days + overlap), not already in `seen.jsonl`, deduped across feeds, capped
+at `monitoring.fetch_max_items` (default 200, `0` disables). The candidates land in a
+scratch JSONL the triage prompt names as *the* sweep of those feeds — score first,
+don't re-fetch — so the agent's own bounded browsing covers only feedless sources
+(the recall backstop; "feeds-first + agentic backstop"). A broken feed is a warning,
+never a failed run; with no feeds configured the monitor behaves exactly as before.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:
 
-- **Second delivery channel.** A Slack / Discord / Telegram (or generic webhook)
-  delivery option, so `output.distribution` becomes real instead of documentation.
-  Would parallel the email path: opt-in via config, fail-safe (never breaks the run),
-  same report content.
 - **Thread-friendly email subject.** Gmail collapses daily reports into one
   conversation because the subject prefix is stable. Option to lead the subject with
   the date or market (e.g. `<market> — daily <date>`) or add a per-run token so each

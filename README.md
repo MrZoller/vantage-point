@@ -29,8 +29,10 @@ vantage-point/
 │   ├── install-launchd.sh        # install/remove the launchd agents (no repo edits)
 │   ├── usage.sh                  # roll up state/runs.log: cost/turns/tokens
 │   ├── portal.sh                 # launch the unified web portal (or --export kb/index.html)
-│   ├── portal.py                 # the portal app: overview, reports, review, profile, config
-│   └── dedupe-feedback.py        # collapse feedback.jsonl to latest-per-id (for bootstrap)
+│   ├── portal.py                 # the portal app: overview, reports, entities, review, profile, config
+│   ├── fetch.py                  # deterministic feed pre-sweep (profile feeds -> candidates)
+│   ├── webhook.py                # POST a report as JSON to output.webhook_url (Slack/Discord/generic)
+│   └── dedupe-feedback.py        # collapse feedback.jsonl to latest-per-id (bootstrap + live calibration)
 └── launchd/
     ├── ai.zoller.vantagepoint.daily.plist    # templates; __VP_ROOT__ filled in at install
     └── ai.zoller.vantagepoint.weekly.plist
@@ -236,7 +238,27 @@ deliberate local step (`cp profile.draft.yaml profile.yaml`); the email even spe
 that out. Same fail-safe rules: a send failure never loses the on-disk draft.
 
 (The `output.distribution` list in the config is documentation only — it sketches the
-intended multi-channel shape. Only `email_to` is wired today.)
+intended multi-channel shape. Only `email_to` and `webhook_url` are wired today.)
+
+## Webhook delivery (optional)
+
+To land each report somewhere a *team* sees it — a Slack or Discord channel, or any
+service of your own — set `output.webhook_url`:
+
+```yaml
+output:
+  webhook_url: "https://hooks.slack.com/services/T000/B000/XXXX"   # blank = off
+```
+
+Each delivered report is POSTed there as one JSON object (`bin/webhook.py`, Python
+stdlib, no new dependency). The payload is deliberately polyglot so one URL "just
+works" across receivers: `text` (heading + full report Markdown — what Slack
+incoming webhooks render), `content` (the same, truncated to Discord's 2000-char
+limit), and `title`/`mode`/`date`/`report_markdown` for generic receivers; each
+service reads its key and ignores the rest. It runs alongside email (set either or
+both) and follows the same fail-safe contract: a failed post logs a warning and the
+run still succeeds — the report is already in `kb/`. Webhook URLs are credentials;
+keep them in your gitignored `monitor-config.yaml`, not in anything committed.
 
 ## Running on Linux (cron) instead
 
@@ -350,6 +372,26 @@ false` to turn the whole layer off. `observations.jsonl` is pruned to
 
 See `docs/roadmap.md` for the larger roadmap this is part of.
 
+## Deterministic feed sweep (auditable recall)
+
+The agentic sweep is only as complete as what the model happened to browse that run —
+which makes "what did it miss?" unanswerable. The feed sweep fixes that for every
+source that has a feed: when the approved profile lists **RSS/Atom URLs** under
+`subject.derived.feeds` (bootstrap now discovers and verifies these; you can also add
+your own), each run starts with `bin/fetch.py` (Python stdlib) pulling those feeds
+*deterministically* — entries inside the lookback window, not already in
+`state/seen.jsonl`, capped at `monitoring.fetch_max_items` (default 200, `0`
+disables) — into a candidate file the triage agent must score *first*. The agent
+stops being a crawler for those sources (its weakest role) and spends its bounded
+browsing only on ranked sources no feed covers (the recall backstop).
+
+What you gain: recall over feed-covered sources becomes a recorded fact (the run log
+notes `feed sweep: N candidate(s)`, and every candidate is scored + recorded to
+state), runs get cheaper (turns aren't spent navigating), and two runs over the same
+day see the same candidates. Fail-safe as always: a feed that's down or unparseable
+is a stderr warning, never a failed run; no feeds at all means the monitor behaves
+exactly as before.
+
 ## How findings are conveyed
 
 Reports are built to be *read and acted on*, not skimmed:
@@ -362,10 +404,16 @@ Reports are built to be *read and acted on*, not skimmed:
 - The **web portal** (`bin/portal.sh`) ties the operator surfaces together in one
   clean page: an **Overview** (an activity heatmap of items surfaced per day and a
   weekly opportunity/threat/shift signal-mix chart, plus tracked entities + sparklines,
-  recent events, and recent runs), **Reports** (every daily/weekly briefing rendered
+  recent events, and recent runs — and once you start grading, a **Calibration** card:
+  30-day precision over graded items with grading coverage alongside, a
+  precision-by-week chart, and per-source hit rates, so "it gets sharper as you grade"
+  is measured rather than asserted), **Reports** (every daily/weekly briefing rendered
   with the same styling as its email — any report prints cleanly to PDF via your
   browser's **Print → Save as PDF**, and *Save all as PDF* renders every report into one
-  printable document), **Review** (the grading UI, below), and read-only
+  printable document), **Entities** (a dossier per tracked entity, accumulated across
+  runs: its metric series with sparklines, its event timeline, and every surfaced item
+  that concerned it — reports are perishable, dossiers compound; entity names on the
+  Overview link straight to them), **Review** (the grading UI, below), and read-only
   **Profile** and **Config** views. The Overview charts are server-rendered inline SVG —
   no JavaScript, so they work under the portal's strict CSP and stay dependency-light. The **Profile** tab renders the human-readable digest (`profile.summary.md`, or
   `profile.draft.summary.md` for a pending draft) with the same styling as the bootstrap
@@ -443,11 +491,21 @@ ssh -L 8000:localhost:8000 you@mini   # reach it from your laptop (or VS Code Re
 ```
 
 A click records the grade — with the item's full context — to `state/feedback.jsonl`
-(localhost-bound, no public listener). The next
-`bin/bootstrap.sh` reads those grades as ground-truth calibration and tunes
-`relevance.rubric` (and `relevance.calibration`) to match them, then you review/approve
-the draft as usual. So the loop is: **monitor surfaces → you thumb → re-bootstrap →
-sharper rubric** — quality compounds the longer you run it, with no config editing by hand.
+(localhost-bound, no public listener). Grades then take effect on two clocks:
+
+- **Next run (live calibration).** Each monitor run injects your newest
+  *post-bootstrap* grades (latest verdict per item, capped at
+  `relevance.recent_grades`, default 20; `0` disables) into the triage prompt as
+  worked examples — so a thumbs-down filters its lookalikes the very next morning,
+  without waiting for a profile refresh. Grades older than the approved profile's
+  `last_bootstrapped` are excluded (the rubric already absorbed them).
+- **Next refresh (durable consolidation).** The next `bin/bootstrap.sh` reads *all*
+  grades as ground-truth calibration and tunes `relevance.rubric` (and
+  `relevance.calibration`) to match them, then you review/approve the draft as usual.
+
+So the loop is: **monitor surfaces → you thumb → next run already adjusts →
+re-bootstrap consolidates** — quality compounds the longer you run it, with no config
+editing by hand.
 
 ## Tests
 

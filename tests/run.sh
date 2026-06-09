@@ -552,7 +552,9 @@ test_encode_header
 make_fake_repo() {
   local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
-  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$repo/bin/"; cp_libs "$repo/bin"
+  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" \
+     "$ROOT/bin/webhook.py" "$ROOT/bin/fetch.py" "$repo/bin/"
+  cp_libs "$repo/bin"
   cat > "$repo/monitor-config.yaml" <<YAML
 version: 1
 models:
@@ -1160,6 +1162,137 @@ PY
 }
 test_portal_activity_visuals
 
+echo "== portal.py: calibration card computes precision / coverage / source hit rates =="
+test_portal_calibration() {
+  local repo="$TMP/pcal" out py="$TMP/pcal.py"
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  # File-based probe (not a heredoc inside $()): bash 3.2's $() parser chokes on that.
+  cat > "$py" <<'PY'
+import importlib.util, json, os, sys
+from datetime import datetime, timezone, timedelta
+root = os.path.dirname(os.path.dirname(sys.argv[1]))
+today = datetime.now(timezone.utc).date()
+d0, d1 = today.isoformat(), (today - timedelta(days=1)).isoformat()
+old = (today - timedelta(days=60)).isoformat()
+seen = [
+    {"id": "g1", "date": d0, "signal": "opportunity", "title": "good", "source": "alpha.com", "url": "https://a"},
+    {"id": "g2", "date": d1, "signal": "threat", "title": "good2", "source": "alpha.com", "url": "https://a2"},
+    {"id": "b1", "date": d1, "signal": "shift", "title": "bad", "source": "beta.com", "url": "https://b"},
+    {"id": "u1", "date": d0, "signal": "shift", "title": "ungraded", "source": "beta.com", "url": "https://b2"},
+    {"id": "dr", "date": d0, "signal": "dropped", "title": "dropped", "source": "alpha.com"},
+    {"id": "oo", "date": old, "signal": "threat", "title": "out of window", "source": "alpha.com", "url": "https://a3"},
+]
+with open(os.path.join(root, "state", "seen.jsonl"), "w") as f:
+    for r in seen:
+        f.write(json.dumps(r) + "\n")
+now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+fb = [
+    {"timestamp": "2020-01-01T00:00:00Z", "id": "g1", "verdict": "down"},  # regraded below
+    {"timestamp": now, "id": "g1", "verdict": "up"},
+    {"timestamp": now, "id": "g2", "verdict": "up"},
+    {"timestamp": now, "id": "b1", "verdict": "down"},
+    {"timestamp": now, "id": "pruned1", "verdict": "down"},  # item pruned from seen.jsonl
+]
+with open(os.path.join(root, "state", "feedback.jsonl"), "w") as f:
+    for r in fb:
+        f.write(json.dumps(r) + "\n")
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+n, ups, downs = m.calibration_stats()
+print("N30", n)
+print("UPS", ups)
+print("DOWNS", downs)
+card = m.calibration_card()
+print("PRECISION_LINE", "50% precision" in card and "(2 up of 4 graded)" in card)
+print("COVERAGE_LINE", "80% coverage" in card)
+print("CHART_SVG", card.count("<svg"))
+print("ALPHA_RATE", "100% (2/2)" in card)
+print("BETA_RATE", "0% (0/1)" in card)
+open(os.path.join(root, "state", "feedback.jsonl"), "w").close()
+print("EMPTY_CARD", repr(m.calibration_card()))
+PY
+  out="$(python3 "$py" "$repo/bin/portal.py")"
+  assert_contains "30d denominator includes a graded-but-pruned item" "$out" "N30 5"
+  assert_contains "a regrade counts its newest verdict (up)" "$out" "UPS 2"
+  assert_contains "a pruned item's grade still counts (by grade timestamp)" "$out" "DOWNS 2"
+  assert_contains "precision is over graded items only (2/4 = 50%)" "$out" "PRECISION_LINE True"
+  assert_contains "coverage keeps the headline honest (4/5 graded)" "$out" "COVERAGE_LINE True"
+  assert_contains "renders the weekly precision SVG" "$out" "CHART_SVG 1"
+  assert_contains "per-source hit rate: alpha.com 100%" "$out" "ALPHA_RATE True"
+  assert_contains "per-source hit rate: beta.com 0%" "$out" "BETA_RATE True"
+  assert_contains "card is omitted until the first grade exists" "$out" "EMPTY_CARD ''"
+}
+test_portal_calibration
+
+echo "== portal.py: entity dossiers join observations + tagged/legacy items =="
+test_portal_entities() {
+  local repo="$TMP/pent" out py="$TMP/pent.py" port=8795 page
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  {
+    printf '{"timestamp":"2026-05-01T07:00:00Z","entity":"Tudor BB58","metric":"secondary_price_usd","value":3650,"unit":"USD","source":"u"}\n'
+    printf '{"timestamp":"2026-06-01T07:00:00Z","entity":"Tudor BB58","metric":"secondary_price_usd","value":3200,"unit":"USD","source":"u"}\n'
+    printf '{"timestamp":"2026-06-06T07:00:00Z","entity":"Tudor BB58","metric":"event","event_type":"leak","value":"new GMT teased","source":"u"}\n'
+    printf '{"timestamp":"2026-06-02T07:00:00Z","entity":"Pelagos 39","metric":"new_listings","value":4,"source":"u"}\n'
+    printf '{"timestamp":"2026-06-02T07:00:00Z","entity":"AI","metric":"mention_count","value":5,"source":"u"}\n'
+  } > "$repo/state/observations.jsonl"
+  {
+    # Tagged with the entity (the new `entities` field)...
+    printf '{"id":"t1","date":"2026-06-06","signal":"threat","title":"Price cut announced","entities":["Tudor BB58"],"so_what":"undercuts","url":"https://a","source":"alpha.com"}\n'
+    # ...a pre-tagging record that only NAMES it (case-insensitive fallback)...
+    printf '{"id":"t2","date":"2026-06-01","signal":"opportunity","title":"TUDOR bb58 supply gap","url":"https://b","source":"beta.com"}\n'
+    # ...an unrelated item and a dropped-but-tagged item: both excluded.
+    printf '{"id":"x1","date":"2026-06-06","signal":"shift","title":"Other news","url":"https://c","source":"c.com"}\n'
+    printf '{"id":"x2","date":"2026-06-06","signal":"dropped","title":"noise","entities":["Tudor BB58"],"score":0.2}\n'
+    # Short-entity ("AI") fallback: whole-token match only -- "Prepaid" must not hit.
+    printf '{"id":"a1","date":"2026-06-06","signal":"shift","title":"AI regulation looms","url":"https://d","source":"d.com"}\n'
+    printf '{"id":"a2","date":"2026-06-06","signal":"shift","title":"Prepaid plans rejigged","url":"https://e","source":"e.com"}\n'
+  } > "$repo/state/seen.jsonl"
+  cat > "$py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+ents = {r["name"]: r for r in m.all_entities()}
+print("NAMES", "|".join(sorted(ents)))
+print("OBS", ents["Tudor BB58"]["observations"])
+print("ITEMS", ents["Tudor BB58"]["items"])         # tagged + legacy-named, like the dossier
+print("ITEMS_AI", ents["AI"]["items"])              # whole-token: a1 only, not "Prepaid"
+print("LAST", ents["Tudor BB58"]["last"])
+ids = [i["id"] for i in m.entity_items("Tudor BB58")]
+print("MATCHED", "|".join(sorted(ids)))             # t1 (tagged) + t2 (named), no x1/x2
+print("EVENTS", len(m.entity_events("Tudor BB58")))
+print("MATCHED_AI", "|".join(sorted(i["id"] for i in m.entity_items("AI"))))
+PY
+  out="$(python3 "$py" "$repo/bin/portal.py")"
+  assert_contains "entities come from observations AND item tags" "$out" "NAMES AI|Pelagos 39|Tudor BB58"
+  assert_contains "observation count" "$out" "OBS 3"
+  assert_contains "index item count matches the dossier (tagged + legacy-named)" "$out" "ITEMS 2"
+  assert_contains "index legacy match is whole-token too" "$out" "ITEMS_AI 1"
+  assert_contains "last activity is the newest of obs/items" "$out" "LAST 2026-06-06"
+  assert_contains "dossier matches tagged + legacy named items only" "$out" "MATCHED t1|t2"
+  assert_contains "event timeline is entity-scoped" "$out" "EVENTS 1"
+  assert_contains "a short entity matches whole tokens only (no 'Prepaid' for 'AI')" "$out" "MATCHED_AI a1"
+
+  if ! command -v curl >/dev/null 2>&1; then pass "entity pages (skipped: no curl)"; return; fi
+  ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
+  local srv=$!
+  page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/entities" || true)"
+  assert_contains "entities index lists the entity" "$page" "Tudor BB58"
+  assert_contains "entities index links the dossier" "$page" '/entity?e=Tudor%20BB58'
+  page="$(curl -s "http://127.0.0.1:$port/entity?e=Tudor%20BB58" || true)"
+  assert_contains "dossier shows the metric series" "$page" "secondary_price_usd"
+  assert_contains "dossier shows the event timeline" "$page" "new GMT teased"
+  assert_contains "dossier lists a tagged surfaced item" "$page" "Price cut announced"
+  assert_contains "dossier lists a legacy item that names the entity" "$page" "supply gap"
+  page="$(curl -s "http://127.0.0.1:$port/entity?e=Nope" || true)"
+  assert_contains "an unknown entity 404s gracefully" "$page" "Entity not found"
+  page="$(curl -s "http://127.0.0.1:$port/" || true)"
+  assert_contains "overview links a tracked entity to its dossier" "$page" '/entity?e=Tudor%20BB58'
+  kill "$srv" 2>/dev/null || true
+}
+test_portal_entities
+
 echo "== monitor.sh: an absolute state_file is named to Claude verbatim (no .// prefix) =="
 test_state_file_absolute() {
   local repo="$TMP/absrepo" out abs="$TMP/abs-seen.jsonl" args="$TMP/abs_args"
@@ -1242,6 +1375,75 @@ test_feedback_dedupe() {
 }
 test_feedback_dedupe
 
+echo "== dedupe-feedback.py: --since/--max scope the live-calibration window =="
+test_feedback_window() {
+  local fb="$TMP/fbwin.jsonl" out
+  printf '%s\n' \
+    '{"timestamp":"2026-05-01T00:00:00Z","id":"old","verdict":"down"}' \
+    '{"timestamp":"2026-06-02T00:00:00Z","id":"a","verdict":"up"}' \
+    '{"timestamp":"2026-06-03T00:00:00Z","id":"b","verdict":"down"}' \
+    '{"timestamp":"2026-06-04T00:00:00Z","id":"c","verdict":"up"}' > "$fb"
+  out="$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb" --since 2026-06-01)"
+  assert_eq "--since keeps only post-cutoff grades" "3" "$(printf '%s\n' "$out" | grep -c .)"
+  case "$out" in
+    *'"old"'*) fail "--since excludes the pre-cutoff grade" ;;
+    *) pass "--since excludes the pre-cutoff grade" ;;
+  esac
+  # Grades from the cutoff DAY itself are kept (ISO ts > bare date, lexically).
+  assert_contains "a grade on the cutoff day survives --since" \
+    "$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb" --since 2026-06-02)" '"a"'
+  out="$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb" --since 2026-06-01 --max 2)"
+  assert_eq "--max keeps only the newest N" "2" "$(printf '%s\n' "$out" | grep -c .)"
+  case "$out" in
+    *'"a"'*) fail "--max drops the oldest in-window grade" ;;
+    *) pass "--max drops the oldest in-window grade" ;;
+  esac
+  # Chronological output: the older in-window grade (b) precedes the newest (c).
+  assert_contains "--max output is chronological (oldest first)" \
+    "$(printf '%s' "$out" | head -1)" '"id": "b"'
+}
+test_feedback_window
+
+echo "== monitor.sh: injects post-bootstrap grades as live calibration =="
+test_live_calibration() {
+  local repo="$TMP/livecal" out args="$TMP/livecal_args"
+  make_fake_repo "$repo" "2026-01-01"          # profile vintage = the grade cutoff
+  # A stub claude that records the prompt it was handed.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  printf '%s\n' \
+    '{"timestamp":"2025-12-01T00:00:00Z","id":"pre","verdict":"down","title":"absorbed-by-bootstrap"}' \
+    '{"timestamp":"2026-02-01T00:00:00Z","id":"post","verdict":"down","title":"fresh-thumbs-down"}' \
+    > "$repo/state/feedback.jsonl"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "announces the live-calibration injection" "$out" "live calibration: applying 1 recent grade"
+  assert_contains "prompt carries the grades block" "$(cat "$args" 2>/dev/null)" "RECENT OPERATOR GRADES"
+  assert_contains "the post-bootstrap grade is injected" "$(cat "$args" 2>/dev/null)" "fresh-thumbs-down"
+  case "$(cat "$args" 2>/dev/null)" in
+    *absorbed-by-bootstrap*) fail "a pre-bootstrap grade is excluded (already in the rubric)" ;;
+    *) pass "a pre-bootstrap grade is excluded (already in the rubric)" ;;
+  esac
+
+  # relevance.recent_grades: 0 switches the injection off entirely.
+  local args2="$TMP/livecal_args2"
+  printf 'relevance:\n  recent_grades: 0\n' >> "$repo/monitor-config.yaml"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args2" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  case "$(cat "$args2" 2>/dev/null)" in
+    *"RECENT OPERATOR GRADES"*) fail "recent_grades: 0 disables the injection" ;;
+    *) pass "recent_grades: 0 disables the injection" ;;
+  esac
+}
+test_live_calibration
+
 echo "== portal.py: latest_verdicts picks the newest timestamp, not file order =="
 test_feedback_latest_verdict() {
   local repo="$TMP/fbverdict" out
@@ -1288,6 +1490,299 @@ SH
   fi
 }
 test_email_subject
+
+# A capturing webhook server: appends each POST body to the file in $2 and responds
+# 200. serve_forever (killed by the test) so a port-open probe connection can't
+# consume the one real request.
+write_capture_httpd() {  # <script-path>
+  cat > "$1" <<'PY'
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        with open(sys.argv[2], "ab") as f:
+            f.write(self.rfile.read(n) + b"\n")
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *args):
+        pass
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+}
+
+wait_port() {  # <port> -- wait (max ~5s) for something to listen on 127.0.0.1:<port>
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+    : "$i"
+    if python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(0.2); sys.exit(s.connect_ex(("127.0.0.1", int(sys.argv[1]))))' "$1" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+echo "== webhook.py: posts one polyglot JSON payload (Slack text / Discord content) =="
+test_webhook_py() {
+  local srv="$TMP/caphttpd.py" body="$TMP/wh_body.json" probe="$TMP/wh_probe.py" out rc port=8793
+  write_capture_httpd "$srv"
+  python3 "$srv" "$port" "$body" >/dev/null 2>&1 &
+  local pid=$!
+  if ! wait_port "$port"; then fail "capture server came up"; kill "$pid" 2>/dev/null; return; fi
+  printf '# Daily\n\n- **Item** matters\n' | \
+    python3 "$ROOT/bin/webhook.py" "http://127.0.0.1:$port/hook" "[VP: Test] daily 2026-06-09" daily 2026-06-09
+  rc=$?
+  kill "$pid" 2>/dev/null || true
+  assert_eq "exits 0 on a 2xx response" "0" "$rc"
+  cat > "$probe" <<'PY'
+import json, sys
+payload = json.loads(open(sys.argv[1]).read().strip())
+print("HEADING_LEADS_TEXT", payload["text"].startswith("[VP: Test] daily 2026-06-09"))
+print("MD_INTACT", payload["report_markdown"].startswith("# Daily"))
+print("MODE", payload["mode"], "DATE", payload["date"])
+print("CONTENT_EQ_TEXT", payload["content"] == payload["text"])  # short report: no truncation
+PY
+  out="$(python3 "$probe" "$body")"
+  assert_contains "Slack text leads with the heading" "$out" "HEADING_LEADS_TEXT True"
+  assert_contains "report_markdown carries the untouched body" "$out" "MD_INTACT True"
+  assert_contains "metadata keys are present" "$out" "MODE daily DATE 2026-06-09"
+  assert_contains "short reports are not truncated" "$out" "CONTENT_EQ_TEXT True"
+
+  # Discord-limit truncation, computed without a server.
+  cat > "$probe" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("wh", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+p = m.build_payload("h", "daily", "2026-06-09", "x" * 5000)
+print("CONTENT_FITS_DISCORD", len(p["content"]) <= 2000)
+print("CONTENT_MARKED", p["content"].endswith("... (truncated)"))
+print("TEXT_FULL", len(p["text"]) > 5000 - 1)
+PY
+  out="$(python3 "$probe" "$ROOT/bin/webhook.py")"
+  assert_contains "content fits Discord's 2000-char limit" "$out" "CONTENT_FITS_DISCORD True"
+  assert_contains "truncation is marked" "$out" "CONTENT_MARKED True"
+  assert_contains "text/report_markdown stay untruncated" "$out" "TEXT_FULL True"
+
+  # Failure modes: unreachable URL -> 1; non-http scheme -> 2. Both print to stderr.
+  printf 'r\n' | python3 "$ROOT/bin/webhook.py" "http://127.0.0.1:1/hook" h daily 2026-06-09 2>/dev/null
+  assert_eq "an unreachable webhook exits 1" "1" "$?"
+  printf 'r\n' | python3 "$ROOT/bin/webhook.py" "file:///etc/passwd" h daily 2026-06-09 2>/dev/null
+  assert_eq "a non-http(s) scheme is rejected with exit 2" "2" "$?"
+}
+test_webhook_py
+
+echo "== monitor.sh: posts the report to output.webhook_url; a failed post can't fail the run =="
+test_monitor_webhook() {
+  local repo="$TMP/whrepo" out rc srv="$TMP/caphttpd2.py" body="$TMP/wh_mon.json" port=8794
+  make_fake_repo "$repo"
+  # cfg_get re-enters a repeated top-level block, so appending a second output:
+  # block is a valid way to set webhook_url on the fixture config.
+  printf 'output:\n  webhook_url: "http://127.0.0.1:%s/hook"\n' "$port" >> "$repo/monitor-config.yaml"
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'webhook report body\n' > "kb/.$(date +%F).daily.partial.md"
+printf '{"num_turns":1}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  write_capture_httpd "$srv"
+  python3 "$srv" "$port" "$body" >/dev/null 2>&1 &
+  local pid=$!
+  if ! wait_port "$port"; then fail "capture server came up"; kill "$pid" 2>/dev/null; return; fi
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  kill "$pid" 2>/dev/null || true
+  assert_eq "run exits 0" "0" "$rc"
+  assert_contains "announces the webhook post" "$out" "posted report to webhook"
+  assert_contains "the posted payload carries the report" "$(cat "$body" 2>/dev/null)" "webhook report body"
+  assert_contains "the heading names the monitored subject" "$(cat "$body" 2>/dev/null)" "[Vantage Point: Test Market & Co] daily"
+
+  # Unreachable webhook: the run must still succeed and keep the report.
+  local repo2="$TMP/whrepo2"
+  make_fake_repo "$repo2"
+  printf 'output:\n  webhook_url: "http://127.0.0.1:1/hook"\n' >> "$repo2/monitor-config.yaml"
+  cp "$repo/stub/claude" "$repo2/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" bash "$repo2/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "a failed webhook post still exits 0" "0" "$rc"
+  assert_contains "warns that the webhook post failed" "$out" "webhook post failed"
+  if [ -s "$repo2/kb/$(date +%F).daily.md" ]; then pass "report survives a failed webhook post"; else fail "report survives a failed webhook post"; fi
+}
+test_monitor_webhook
+
+# Write RSS/Atom/broken feed fixtures (dates relative to now) into the dir in $1.
+write_feed_fixtures() {  # <dir>
+  python3 - "$1" <<'PY'
+import os, sys
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
+d = sys.argv[1]
+now = datetime.now(timezone.utc)
+fresh, old = format_datetime(now - timedelta(hours=2)), format_datetime(now - timedelta(hours=200))
+# The NEWEST entry (30 min ago) carries a -10:00 offset: if fetch.py formatted its
+# wall-clock time with a Z suffix it would sort ~10h old instead of first.
+offset = format_datetime((now - timedelta(minutes=30)).astimezone(timezone(timedelta(hours=-10))))
+rel = format_datetime(now - timedelta(hours=3))
+rss = ('<?xml version="1.0"?>\n<rss version="2.0"><channel><title>R</title>\n'
+       '<item><title>Fresh RSS story</title><link>https://ex.com/fresh</link>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Offset story</title><link>https://ex.com/offset</link>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Relative link story</title><link>/rel/post</link>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Guid only story</title><guid>https://ex.com/guid-only</guid>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Opaque guid story</title><guid isPermaLink="false">opaque-1</guid>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Stale RSS story</title><link>https://ex.com/stale</link>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Already seen story</title><link>https://ex.com/seen</link>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Undated story</title><link>https://ex.com/undated</link></item>\n'
+       '</channel></rss>\n') % (fresh, offset, rel, rel, rel, old, fresh)
+atom = ('<?xml version="1.0"?>\n<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>\n'
+        '<entry><title>Fresh Atom entry</title>'
+        '<link rel="alternate" href="https://ax.com/entry"/>'
+        '<updated>%s</updated></entry>\n</feed>\n'
+        % (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+with open(os.path.join(d, "rss.xml"), "w") as f:
+    f.write(rss)
+with open(os.path.join(d, "atom.xml"), "w") as f:
+    f.write(atom)
+with open(os.path.join(d, "bad.xml"), "w") as f:
+    f.write("not xml at all {")
+PY
+}
+
+echo "== fetch.py: deterministic feed sweep (window, dedup, cap, broken feeds) =="
+test_fetch_py() {
+  local dir="$TMP/feeds" out err rc port=8796
+  mkdir -p "$dir"
+  write_feed_fixtures "$dir"
+  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) >/dev/null 2>&1 &
+  local srv=$!
+  if ! wait_port "$port"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
+  cat > "$TMP/feeds-profile.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/rss.xml
+      - http://127.0.0.1:$port/atom.xml
+      - http://127.0.0.1:$port/bad.xml
+      - http://127.0.0.1:1/dead.xml
+YAML
+  printf '{"url":"https://ex.com/seen","id":"s1"}\n' > "$TMP/feeds-seen.jsonl"
+  err="$TMP/fetch.err"
+  python3 "$ROOT/bin/fetch.py" --hours 30 --max 10 \
+    --seen "$TMP/feeds-seen.jsonl" --out "$TMP/cand.jsonl" \
+    "$TMP/feeds-profile.yaml" 2> "$err"; rc=$?
+  assert_eq "exits 0 despite broken + unreachable feeds" "0" "$rc"
+  out="$(cat "$TMP/cand.jsonl" 2>/dev/null)"
+  assert_contains "keeps a fresh RSS item" "$out" "Fresh RSS story"
+  assert_contains "keeps a fresh Atom item" "$out" "Fresh Atom entry"
+  assert_contains "keeps an undated item (can't be proven stale)" "$out" "Undated story"
+  case "$out" in *"Stale RSS story"*) fail "drops an item older than the window" ;; *) pass "drops an item older than the window" ;; esac
+  case "$out" in *"/seen"*) fail "drops an item already in the seen file" ;; *) pass "drops an item already in the seen file" ;; esac
+  # The -10:00-offset entry is the newest item: only a UTC-normalized published
+  # value sorts it first (wall-clock-with-Z would bury it ~10h down the list).
+  assert_contains "newest candidate first despite a timezone offset" \
+    "$(head -1 "$TMP/cand.jsonl")" "Offset story"
+  assert_contains "a relative entry link is resolved against the feed URL" \
+    "$out" "\"url\": \"http://127.0.0.1:$port/rel/post\""
+  assert_contains "a permalink <guid> stands in for a missing <link>" "$out" "https://ex.com/guid-only"
+  case "$out" in *"Opaque guid story"*) fail "a non-permalink guid item is skipped" ;; *) pass "a non-permalink guid item is skipped" ;; esac
+  assert_contains "candidates carry the link host as source" "$out" '"source": "ex.com"'
+  assert_contains "stats line counts candidates and feeds" "$(cat "$err")" "6 candidate(s) from 4 feed(s)"
+  assert_contains "stats line counts failed feeds" "$(cat "$err")" "2 feed(s) failed"
+  # An inline YAML list (`feeds: [url]`) must work too -- not silently parse as none.
+  printf 'subject:\n  derived:\n    feeds: [http://127.0.0.1:%s/rss.xml]\n' "$port" > "$TMP/inline.yaml"
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-inline.jsonl" "$TMP/inline.yaml" 2>/dev/null
+  assert_contains "an inline feeds list is parsed" "$(cat "$TMP/cand-inline.jsonl" 2>/dev/null)" "Fresh RSS story"
+  # --max caps to the newest N (again: only correct under UTC normalization).
+  python3 "$ROOT/bin/fetch.py" --hours 30 --max 1 --out "$TMP/cand1.jsonl" \
+    "$TMP/feeds-profile.yaml" 2>/dev/null
+  assert_eq "--max 1 keeps one candidate" "1" "$(wc -l < "$TMP/cand1.jsonl" | tr -d ' ')"
+  assert_contains "--max keeps the newest (offset-normalized) candidate" \
+    "$(cat "$TMP/cand1.jsonl")" "Offset story"
+  kill "$srv" 2>/dev/null || true
+  # No feeds configured: exit 0, no output file, a clear note.
+  printf 'subject:\n  derived:\n    feeds: []\n' > "$TMP/nofeeds.yaml"
+  err="$( python3 "$ROOT/bin/fetch.py" --out "$TMP/none.jsonl" "$TMP/nofeeds.yaml" 2>&1 )"; rc=$?
+  assert_eq "no feeds exits 0" "0" "$rc"
+  assert_contains "notes the skip" "$err" "no feeds configured"
+  if [ -f "$TMP/none.jsonl" ]; then fail "writes no candidates file without feeds"; else pass "writes no candidates file without feeds"; fi
+}
+test_fetch_py
+
+echo "== monitor.sh: feeds the pre-fetched candidates to triage (and cleans up) =="
+test_monitor_fetch() {
+  local repo="$TMP/fetchrepo" dir="$TMP/feeds2" out args="$TMP/fetch_args" port=8797
+  make_fake_repo "$repo"
+  mkdir -p "$dir"
+  write_feed_fixtures "$dir"
+  cat > "$repo/profile.yaml" <<YAML
+subject:
+  derived:
+    last_bootstrapped: 2099-01-01
+    feeds:
+      - http://127.0.0.1:$port/rss.xml
+anchor:
+  derived:
+    last_bootstrapped: 2099-01-01
+YAML
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) >/dev/null 2>&1 &
+  local srv=$!
+  if ! wait_port "$port"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  kill "$srv" 2>/dev/null || true
+  assert_contains "announces the feed sweep" "$out" "feed sweep:"
+  assert_contains "prompt names the candidates file" "$(cat "$args" 2>/dev/null)" "PRE-FETCHED CANDIDATES"
+  assert_contains "prompt points at the right path" "$(cat "$args" 2>/dev/null)" "state/.candidates.daily.jsonl"
+  if [ -f "$repo/state/.candidates.daily.jsonl" ]; then fail "candidates file cleaned up after the run"; else pass "candidates file cleaned up after the run"; fi
+
+  # No feeds in the profile -> no candidates note, run unchanged.
+  local repo2="$TMP/fetchrepo2" args2="$TMP/fetch_args2"
+  make_fake_repo "$repo2"
+  cp "$repo/stub/claude" "$repo2/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args2" HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" \
+          bash "$repo2/bin/monitor.sh" daily 2>&1 )"
+  case "$(cat "$args2" 2>/dev/null)" in
+    *"PRE-FETCHED CANDIDATES"*) fail "no candidates note without feeds" ;;
+    *) pass "no candidates note without feeds" ;;
+  esac
+
+  # An unreachable feed must not fail the run.
+  local repo3="$TMP/fetchrepo3"
+  make_fake_repo "$repo3"
+  cat > "$repo3/profile.yaml" <<'YAML'
+subject:
+  derived:
+    last_bootstrapped: 2099-01-01
+    feeds:
+      - http://127.0.0.1:1/dead.xml
+anchor:
+  derived:
+    last_bootstrapped: 2099-01-01
+YAML
+  local rc
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo3/stub:$PATH" bash "$repo3/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "a dead feed can't fail the run" "0" "$rc"
+}
+test_monitor_fetch
 
 echo "== usage.sh: rolls up runs.log within the window =="
 test_usage() {

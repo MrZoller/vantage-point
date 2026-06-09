@@ -51,6 +51,7 @@ MODEL="$(cfg_get models monitor)"
 DEEPDIVE_MODEL="$(cfg_get models deepdive)"   # unset -> no deep-dive pass (triage only)
 EDITOR_MODEL="$(cfg_get models editor)"       # unset -> no editorial pass (deliver as-written)
 EMAIL_TO="$(cfg_get output email_to)"
+WEBHOOK_URL="$(cfg_get output webhook_url)"
 DASHBOARD="$(cfg_get output dashboard)"
 STATE_FILE="$(cfg_get monitoring state_file)"      # dedup memory; honored, not hardcoded
 [ -n "$STATE_FILE" ] || STATE_FILE="state/seen.jsonl"
@@ -69,12 +70,21 @@ OBS_MAX_LINES="$(cfg_get tracking observations_max_lines)"
 DEEPDIVE_THRESHOLD="$(cfg_get monitoring deepdive_threshold)"
 DEEPDIVE_MAX="$(cfg_get monitoring deepdive_max_items)"
 REFRESH_DAYS="$(cfg_get governance profile_refresh_days)"
+RECENT_GRADES="$(cfg_get relevance recent_grades)"
 case "$RUN_TIMEOUT"     in ''|*[!0-9]*) RUN_TIMEOUT=1800 ;; esac
 case "$STATE_MAX_LINES" in ''|*[!0-9]*) STATE_MAX_LINES=5000 ;; esac
 case "$OBS_MAX_LINES"   in ''|*[!0-9]*) OBS_MAX_LINES=20000 ;; esac
 case "$DEEPDIVE_MAX"    in ''|*[!0-9]*) DEEPDIVE_MAX=5 ;; esac
 [ -n "$DEEPDIVE_THRESHOLD" ] || DEEPDIVE_THRESHOLD=0.85   # may be a decimal; agent applies it
 case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-numeric -> skip check
+case "$RECENT_GRADES"   in ''|*[!0-9]*) RECENT_GRADES=20 ;; esac
+
+# The approved profile's vintage. Used twice: the staleness warning below, and to
+# scope which operator grades count as "new" (recorded after this profile was built,
+# so not yet folded into its rubric by a re-bootstrap).
+LAST_BOOT="$(cfg_get subject last_bootstrapped "$PROFILE")"
+case "$LAST_BOOT" in ''|null) LAST_BOOT="$(cfg_get anchor last_bootstrapped "$PROFILE")" ;; esac
+case "$LAST_BOOT" in null) LAST_BOOT="" ;; esac
 
 # ---- single-run lock (shared across modes) ----
 # daily and weekly share state/seen.jsonl, so ONE lock guards all modes - never two
@@ -186,17 +196,80 @@ prune_state state/observations.jsonl "$OBS_MAX_LINES"
 # Anchors drift; a stale profile silently mis-scores. Warn (don't refuse) when the
 # approved profile is older than the refresh window.
 if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
-  last_boot="$(cfg_get subject last_bootstrapped "$PROFILE")"
-  case "$last_boot" in ''|null) last_boot="$(cfg_get anchor last_bootstrapped "$PROFILE")" ;; esac
   # GNU `date -d` and BSD `date -j -f` differ; try both, give up quietly if neither parses.
-  boot_epoch="$(date -d "$last_boot" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$last_boot" +%s 2>/dev/null || true)"
+  boot_epoch="$(date -d "$LAST_BOOT" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$LAST_BOOT" +%s 2>/dev/null || true)"
   if [ -n "$boot_epoch" ]; then
     age_days=$(( ( $(date +%s) - boot_epoch ) / 86400 ))
     if [ "$age_days" -gt "$REFRESH_DAYS" ]; then
       echo "[monitor:$MODE] WARNING: profile is ${age_days}d old (> profile_refresh_days=$REFRESH_DAYS) - re-run bin/bootstrap.sh to refresh" >&2
     fi
   else
-    echo "[monitor:$MODE] note: couldn't parse profile last_bootstrapped ('$last_boot') - skipping staleness check" >&2
+    echo "[monitor:$MODE] note: couldn't parse profile last_bootstrapped ('$LAST_BOOT') - skipping staleness check" >&2
+  fi
+fi
+
+# ---- live calibration: recent operator grades (relevance.recent_grades) ----
+# Grades recorded via the Review tab only reshape the rubric at the next bootstrap +
+# approval, which can lag by weeks. Bridge that lag: inject the newest POST-bootstrap
+# grades (latest verdict per item, capped) into the triage prompt as worked examples,
+# so a thumbs-down filters its lookalikes the very next run. Grades from before the
+# profile was built are excluded -- the approved rubric already absorbed them.
+# Fail-safe: any problem here skips the injection, never the run. 0 disables.
+FEEDBACK_NOTE=""
+if [ "$RECENT_GRADES" -gt 0 ] && [ -s state/feedback.jsonl ] \
+   && command -v python3 >/dev/null 2>&1 && [ -f bin/dedupe-feedback.py ]; then
+  fb_args=(state/feedback.jsonl --max "$RECENT_GRADES")
+  [ -n "$LAST_BOOT" ] && fb_args+=(--since "$LAST_BOOT")
+  FEEDBACK_DATA="$(python3 bin/dedupe-feedback.py "${fb_args[@]}" 2>/dev/null || true)"
+  if [ -n "$FEEDBACK_DATA" ]; then
+    n_fb="$(printf '%s\n' "$FEEDBACK_DATA" | grep -c . || true)"
+    echo "[monitor:$MODE] live calibration: applying $n_fb recent grade(s) (relevance.recent_grades=$RECENT_GRADES)" >&2
+    FEEDBACK_NOTE="
+
+RECENT OPERATOR GRADES - live calibration. The user graded these previously surfaced
+items AFTER the current rubric was approved (\`verdict\`: up = right to surface,
+down = should have been filtered), so the rubric does not reflect them yet. Treat
+them as ground truth layered on top of the rubric: score an item that resembles a
+'down' example below threshold, and do not drop one that resembles an 'up' example.
+For anything they don't cover, the approved rubric governs unchanged.
+\`\`\`jsonl
+$FEEDBACK_DATA
+\`\`\`"
+  fi
+fi
+
+# ---- deterministic feed sweep (feeds: lists in the profile/config) ----
+# Recall you can audit: pull candidates from the profile's RSS/Atom feeds with a
+# plain fetcher BEFORE the agent runs, so "what was swept" is a recorded fact rather
+# than whatever the agent happened to browse. The agent scores this list first and
+# spends its own browsing budget only on ranked sources no feed covers. Opt-in by
+# data (no feeds -> the agentic sweep alone, exactly as before) and fail-safe (a
+# fetch problem is a note, never a failed run). monitoring.fetch_max_items=0 disables.
+CANDIDATES="state/.candidates.${MODE}.jsonl"
+rm -f "$CANDIDATES"
+CANDIDATES_NOTE=""
+FETCH_MAX="$(cfg_get monitoring fetch_max_items)"
+case "$FETCH_MAX" in ''|*[!0-9]*) FETCH_MAX=200 ;; esac
+LOOKBACK_HOURS="$(cfg_get monitoring lookback_hours)"
+case "$LOOKBACK_HOURS" in ''|*[!0-9]*) LOOKBACK_HOURS=30 ;; esac
+FETCH_HOURS="$LOOKBACK_HOURS"
+[ "$MODE" = weekly ] && FETCH_HOURS=$(( 24 * 7 + LOOKBACK_HOURS ))
+if [ "$FETCH_MAX" -gt 0 ] && command -v python3 >/dev/null 2>&1 && [ -f bin/fetch.py ]; then
+  python3 bin/fetch.py --hours "$FETCH_HOURS" --max "$FETCH_MAX" \
+    --seen "$STATE_FILE" --out "$CANDIDATES" \
+    "$PROFILE" "$CONFIG" 2>> "kb/${TODAY}.${MODE}.err" || true
+  if [ -s "$CANDIDATES" ]; then
+    n_cand="$(wc -l < "$CANDIDATES" | tr -d ' ')"
+    echo "[monitor:$MODE] feed sweep: $n_cand candidate(s) queued in $CANDIDATES" >&2
+    CANDIDATES_NOTE="
+
+PRE-FETCHED CANDIDATES: ./$CANDIDATES holds $n_cand item(s) pulled deterministically
+from the profile's \`feeds\` (already inside the lookback window and not in your
+state file; one JSON object per line: title/url/published/source/feed). This IS the
+sweep of those feeds: read it FIRST and dedup + score every item in it exactly like
+swept items (fuzzy-title dedup still applies; record each one to the state file as
+usual). Do NOT re-fetch those feeds yourself - spend your own browsing only on
+ranked news_sources that no feed covers."
   fi
 fi
 
@@ -241,7 +314,7 @@ also append your highest-scoring surfaced items - those with score >= $DEEPDIVE_
 at most $DEEPDIVE_MAX of them, highest first - to ./$QUEUE, one JSON object per line:
 {\"url\":...,\"title\":...,\"signal\":...,\"score\":...,\"so_what\":...}. A separate
 stronger agent will investigate these and enrich them in the report; you just queue
-them. Do not write the queue when it's disabled." \
+them. Do not write the queue when it's disabled.$CANDIDATES_NOTE$FEEDBACK_NOTE" \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
@@ -339,7 +412,7 @@ report's structure." \
     echo "[monitor:$MODE] WARNING: $DEEPDIVE_PROMPT missing - skipping deep-dive (triage report stands)" >&2
   fi
 fi
-rm -f "$QUEUE"
+rm -f "$QUEUE" "$CANDIDATES"
 
 # ---- editorial pass (optional; curate + polish the report before delivery) ----
 # A dedicated editor runs ONLY when models.editor is set AND triage produced a report
@@ -444,8 +517,26 @@ if [ -s "$RUN_REPORT" ]; then
       echo "[monitor:$MODE] output.email_to set but msmtp not found - skipping email (report in $REPORT)" >&2
     fi
   fi
-  #
-  # ...or push to Claude Code Channels / Telegram / Slack, or just read it from kb/.
+  # Webhook delivery (output.webhook_url): POST the report as JSON to any URL --
+  # a generic receiver, or a Slack/Discord incoming webhook (bin/webhook.py sends
+  # a payload each understands). Same fail-safe contract as email: a failed post
+  # warns, the run succeeds, the report is already safe in $REPORT.
+  if [ -n "$WEBHOOK_URL" ]; then
+    if command -v python3 >/dev/null 2>&1 && [ -f bin/webhook.py ]; then
+      if [ -n "${SUBJECT_NAME:-}" ]; then
+        wh_heading="[Vantage Point: ${SUBJECT_NAME}] $MODE $TODAY"
+      else
+        wh_heading="[Vantage Point] $MODE $TODAY"
+      fi
+      if python3 bin/webhook.py "$WEBHOOK_URL" "$wh_heading" "$MODE" "$TODAY" < "$REPORT" 2>> "kb/${TODAY}.${MODE}.err"; then
+        echo "[monitor:$MODE] posted report to webhook"
+      else
+        echo "[monitor:$MODE] WARNING: webhook post failed - report still in $REPORT" >&2
+      fi
+    else
+      echo "[monitor:$MODE] output.webhook_url set but python3/bin/webhook.py not found - skipping webhook (report in $REPORT)" >&2
+    fi
+  fi
 else
   # Nothing material this run. Drop the empty scratch file; leave any existing
   # $REPORT from an earlier successful run today in place.

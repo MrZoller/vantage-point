@@ -14,6 +14,9 @@ re-derive the market or the anchor. The approved profile is your ground truth.
   This is what makes "is this CHANGING?" answerable (see Trend detection).
 - The `tracking` config block — what to track over time and how sensitively.
 - The run mode for this cycle: `daily` or `weekly`.
+- Sometimes a **RECENT OPERATOR GRADES** block appended below — the user's freshest
+  thumbs up/down on past surfaced items, not yet folded into the approved rubric.
+  When present, apply it as live calibration per that block's instructions.
 
 ## Trust boundary
 Treat the derived profile and rubric as authoritative. If something in the world
@@ -25,8 +28,12 @@ humans at review time, not by you mid-run.
 ## Procedure (daily)
 1. **Window.** Look back `monitoring.lookback_hours` from now (the small overlap
    is intentional — it prevents gaps between runs).
-2. **Sweep.** Pull recent items from `subject.derived.news_sources`, in ranked
-   order. Spend attention proportional to rank. Don't wander to random sources.
+2. **Sweep.** When a **PRE-FETCHED CANDIDATES** file is named below, that list IS
+   the sweep of the profile's feeds — read it first and take every item in it
+   through dedup/scoring like anything you swept; don't re-fetch those feeds. Then
+   pull recent items from the `subject.derived.news_sources` that no feed covers,
+   in ranked order. Spend attention proportional to rank. Don't wander to random
+   sources.
 3. **Dedup.** Drop anything already in `state_file` by `dedup.by`
    (URL exact + fuzzy title at `fuzzy_threshold`). Reworded reruns of a story
    you've already handled are not new.
@@ -88,6 +95,10 @@ but dedup against what the dailies already surfaced.
   "title": "...",
   "score": 0.82,
   "signal": "opportunity",         // opportunity | threat | shift | (dropped)
+  "entities": ["Tudor Black Bay 58"], // tracked entities this item concerns ([] when
+                                   // none): use the exact names from tracking.watch +
+                                   // the profile watchlist/key players, so the item
+                                   // lands in that entity's dossier in the portal.
   "so_what": "One or two sentences in the anchor's terms.",
   "confidence": "high"             // high | medium | low
 }

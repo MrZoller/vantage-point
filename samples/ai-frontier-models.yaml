@@ -46,6 +46,7 @@ subject:
     structure: null
     key_players: []
     news_sources: []
+    feeds: []                 # verified RSS/Atom URLs; bin/fetch.py pre-pulls these each run
     event_taxonomy: []
     last_bootstrapped: null
     confidence_notes: null
