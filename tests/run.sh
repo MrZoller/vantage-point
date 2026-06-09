@@ -553,7 +553,7 @@ make_fake_repo() {
   local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
   cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" \
-     "$ROOT/bin/webhook.py" "$repo/bin/"
+     "$ROOT/bin/webhook.py" "$ROOT/bin/fetch.py" "$repo/bin/"
   cp_libs "$repo/bin"
   cat > "$repo/monitor-config.yaml" <<YAML
 version: 1
@@ -1603,6 +1603,152 @@ SH
   if [ -s "$repo2/kb/$(date +%F).daily.md" ]; then pass "report survives a failed webhook post"; else fail "report survives a failed webhook post"; fi
 }
 test_monitor_webhook
+
+# Write RSS/Atom/broken feed fixtures (dates relative to now) into the dir in $1.
+write_feed_fixtures() {  # <dir>
+  python3 - "$1" <<'PY'
+import os, sys
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
+d = sys.argv[1]
+now = datetime.now(timezone.utc)
+fresh, old = format_datetime(now - timedelta(hours=2)), format_datetime(now - timedelta(hours=200))
+rss = ('<?xml version="1.0"?>\n<rss version="2.0"><channel><title>R</title>\n'
+       '<item><title>Fresh RSS story</title><link>https://ex.com/fresh</link>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Stale RSS story</title><link>https://ex.com/stale</link>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Already seen story</title><link>https://ex.com/seen</link>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Undated story</title><link>https://ex.com/undated</link></item>\n'
+       '</channel></rss>\n') % (fresh, old, fresh)
+atom = ('<?xml version="1.0"?>\n<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>\n'
+        '<entry><title>Fresh Atom entry</title>'
+        '<link rel="alternate" href="https://ax.com/entry"/>'
+        '<updated>%s</updated></entry>\n</feed>\n'
+        % (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+with open(os.path.join(d, "rss.xml"), "w") as f:
+    f.write(rss)
+with open(os.path.join(d, "atom.xml"), "w") as f:
+    f.write(atom)
+with open(os.path.join(d, "bad.xml"), "w") as f:
+    f.write("not xml at all {")
+PY
+}
+
+echo "== fetch.py: deterministic feed sweep (window, dedup, cap, broken feeds) =="
+test_fetch_py() {
+  local dir="$TMP/feeds" out err rc port=8796
+  mkdir -p "$dir"
+  write_feed_fixtures "$dir"
+  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) >/dev/null 2>&1 &
+  local srv=$!
+  if ! wait_port "$port"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
+  cat > "$TMP/feeds-profile.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/rss.xml
+      - http://127.0.0.1:$port/atom.xml
+      - http://127.0.0.1:$port/bad.xml
+      - http://127.0.0.1:1/dead.xml
+YAML
+  printf '{"url":"https://ex.com/seen","id":"s1"}\n' > "$TMP/feeds-seen.jsonl"
+  err="$TMP/fetch.err"
+  python3 "$ROOT/bin/fetch.py" --hours 30 --max 10 \
+    --seen "$TMP/feeds-seen.jsonl" --out "$TMP/cand.jsonl" \
+    "$TMP/feeds-profile.yaml" 2> "$err"; rc=$?
+  assert_eq "exits 0 despite broken + unreachable feeds" "0" "$rc"
+  out="$(cat "$TMP/cand.jsonl" 2>/dev/null)"
+  assert_contains "keeps a fresh RSS item" "$out" "Fresh RSS story"
+  assert_contains "keeps a fresh Atom item" "$out" "Fresh Atom entry"
+  assert_contains "keeps an undated item (can't be proven stale)" "$out" "Undated story"
+  case "$out" in *"Stale RSS story"*) fail "drops an item older than the window" ;; *) pass "drops an item older than the window" ;; esac
+  case "$out" in *"/seen"*) fail "drops an item already in the seen file" ;; *) pass "drops an item already in the seen file" ;; esac
+  assert_contains "newest candidate first" "$(head -1 "$TMP/cand.jsonl")" "Fresh Atom entry"
+  assert_contains "candidates carry the link host as source" "$out" '"source": "ex.com"'
+  assert_contains "stats line counts candidates and feeds" "$(cat "$err")" "3 candidate(s) from 4 feed(s)"
+  assert_contains "stats line counts failed feeds" "$(cat "$err")" "2 feed(s) failed"
+  # --max caps to the newest N.
+  python3 "$ROOT/bin/fetch.py" --hours 30 --max 1 --out "$TMP/cand1.jsonl" \
+    "$TMP/feeds-profile.yaml" 2>/dev/null
+  assert_eq "--max 1 keeps one candidate" "1" "$(wc -l < "$TMP/cand1.jsonl" | tr -d ' ')"
+  kill "$srv" 2>/dev/null || true
+  # No feeds configured: exit 0, no output file, a clear note.
+  printf 'subject:\n  derived:\n    feeds: []\n' > "$TMP/nofeeds.yaml"
+  err="$( python3 "$ROOT/bin/fetch.py" --out "$TMP/none.jsonl" "$TMP/nofeeds.yaml" 2>&1 )"; rc=$?
+  assert_eq "no feeds exits 0" "0" "$rc"
+  assert_contains "notes the skip" "$err" "no feeds configured"
+  if [ -f "$TMP/none.jsonl" ]; then fail "writes no candidates file without feeds"; else pass "writes no candidates file without feeds"; fi
+}
+test_fetch_py
+
+echo "== monitor.sh: feeds the pre-fetched candidates to triage (and cleans up) =="
+test_monitor_fetch() {
+  local repo="$TMP/fetchrepo" dir="$TMP/feeds2" out args="$TMP/fetch_args" port=8797
+  make_fake_repo "$repo"
+  mkdir -p "$dir"
+  write_feed_fixtures "$dir"
+  cat > "$repo/profile.yaml" <<YAML
+subject:
+  derived:
+    last_bootstrapped: 2099-01-01
+    feeds:
+      - http://127.0.0.1:$port/rss.xml
+anchor:
+  derived:
+    last_bootstrapped: 2099-01-01
+YAML
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) >/dev/null 2>&1 &
+  local srv=$!
+  if ! wait_port "$port"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  kill "$srv" 2>/dev/null || true
+  assert_contains "announces the feed sweep" "$out" "feed sweep:"
+  assert_contains "prompt names the candidates file" "$(cat "$args" 2>/dev/null)" "PRE-FETCHED CANDIDATES"
+  assert_contains "prompt points at the right path" "$(cat "$args" 2>/dev/null)" "state/.candidates.daily.jsonl"
+  if [ -f "$repo/state/.candidates.daily.jsonl" ]; then fail "candidates file cleaned up after the run"; else pass "candidates file cleaned up after the run"; fi
+
+  # No feeds in the profile -> no candidates note, run unchanged.
+  local repo2="$TMP/fetchrepo2" args2="$TMP/fetch_args2"
+  make_fake_repo "$repo2"
+  cp "$repo/stub/claude" "$repo2/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args2" HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" \
+          bash "$repo2/bin/monitor.sh" daily 2>&1 )"
+  case "$(cat "$args2" 2>/dev/null)" in
+    *"PRE-FETCHED CANDIDATES"*) fail "no candidates note without feeds" ;;
+    *) pass "no candidates note without feeds" ;;
+  esac
+
+  # An unreachable feed must not fail the run.
+  local repo3="$TMP/fetchrepo3"
+  make_fake_repo "$repo3"
+  cat > "$repo3/profile.yaml" <<'YAML'
+subject:
+  derived:
+    last_bootstrapped: 2099-01-01
+    feeds:
+      - http://127.0.0.1:1/dead.xml
+anchor:
+  derived:
+    last_bootstrapped: 2099-01-01
+YAML
+  local rc
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo3/stub:$PATH" bash "$repo3/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "a dead feed can't fail the run" "0" "$rc"
+}
+test_monitor_fetch
 
 echo "== usage.sh: rolls up runs.log within the window =="
 test_usage() {

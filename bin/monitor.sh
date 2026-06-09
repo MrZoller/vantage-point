@@ -238,6 +238,41 @@ $FEEDBACK_DATA
   fi
 fi
 
+# ---- deterministic feed sweep (feeds: lists in the profile/config) ----
+# Recall you can audit: pull candidates from the profile's RSS/Atom feeds with a
+# plain fetcher BEFORE the agent runs, so "what was swept" is a recorded fact rather
+# than whatever the agent happened to browse. The agent scores this list first and
+# spends its own browsing budget only on ranked sources no feed covers. Opt-in by
+# data (no feeds -> the agentic sweep alone, exactly as before) and fail-safe (a
+# fetch problem is a note, never a failed run). monitoring.fetch_max_items=0 disables.
+CANDIDATES="state/.candidates.${MODE}.jsonl"
+rm -f "$CANDIDATES"
+CANDIDATES_NOTE=""
+FETCH_MAX="$(cfg_get monitoring fetch_max_items)"
+case "$FETCH_MAX" in ''|*[!0-9]*) FETCH_MAX=200 ;; esac
+LOOKBACK_HOURS="$(cfg_get monitoring lookback_hours)"
+case "$LOOKBACK_HOURS" in ''|*[!0-9]*) LOOKBACK_HOURS=30 ;; esac
+FETCH_HOURS="$LOOKBACK_HOURS"
+[ "$MODE" = weekly ] && FETCH_HOURS=$(( 24 * 7 + LOOKBACK_HOURS ))
+if [ "$FETCH_MAX" -gt 0 ] && command -v python3 >/dev/null 2>&1 && [ -f bin/fetch.py ]; then
+  python3 bin/fetch.py --hours "$FETCH_HOURS" --max "$FETCH_MAX" \
+    --seen "$STATE_FILE" --out "$CANDIDATES" \
+    "$PROFILE" "$CONFIG" 2>> "kb/${TODAY}.${MODE}.err" || true
+  if [ -s "$CANDIDATES" ]; then
+    n_cand="$(wc -l < "$CANDIDATES" | tr -d ' ')"
+    echo "[monitor:$MODE] feed sweep: $n_cand candidate(s) queued in $CANDIDATES" >&2
+    CANDIDATES_NOTE="
+
+PRE-FETCHED CANDIDATES: ./$CANDIDATES holds $n_cand item(s) pulled deterministically
+from the profile's \`feeds\` (already inside the lookback window and not in your
+state file; one JSON object per line: title/url/published/source/feed). This IS the
+sweep of those feeds: read it FIRST and dedup + score every item in it exactly like
+swept items (fuzzy-title dedup still applies; record each one to the state file as
+usual). Do NOT re-fetch those feeds yourself - spend your own browsing only on
+ranked news_sources that no feed covers."
+  fi
+fi
+
 echo "[monitor:$MODE] model=${MODEL:-(CLI default)}${DEEPDIVE_MODEL:+ deepdive=$DEEPDIVE_MODEL}${EDITOR_MODEL:+ editor=$EDITOR_MODEL} $TODAY -> $REPORT"
 
 # Clear this run's scratch files (leftovers from an aborted earlier run).
@@ -279,7 +314,7 @@ also append your highest-scoring surfaced items - those with score >= $DEEPDIVE_
 at most $DEEPDIVE_MAX of them, highest first - to ./$QUEUE, one JSON object per line:
 {\"url\":...,\"title\":...,\"signal\":...,\"score\":...,\"so_what\":...}. A separate
 stronger agent will investigate these and enrich them in the report; you just queue
-them. Do not write the queue when it's disabled.$FEEDBACK_NOTE" \
+them. Do not write the queue when it's disabled.$CANDIDATES_NOTE$FEEDBACK_NOTE" \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
@@ -377,7 +412,7 @@ report's structure." \
     echo "[monitor:$MODE] WARNING: $DEEPDIVE_PROMPT missing - skipping deep-dive (triage report stands)" >&2
   fi
 fi
-rm -f "$QUEUE"
+rm -f "$QUEUE" "$CANDIDATES"
 
 # ---- editorial pass (optional; curate + polish the report before delivery) ----
 # A dedicated editor runs ONLY when models.editor is set AND triage produced a report

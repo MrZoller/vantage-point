@@ -28,8 +28,12 @@ humans at review time, not by you mid-run.
 ## Procedure (daily)
 1. **Window.** Look back `monitoring.lookback_hours` from now (the small overlap
    is intentional — it prevents gaps between runs).
-2. **Sweep.** Pull recent items from `subject.derived.news_sources`, in ranked
-   order. Spend attention proportional to rank. Don't wander to random sources.
+2. **Sweep.** When a **PRE-FETCHED CANDIDATES** file is named below, that list IS
+   the sweep of the profile's feeds — read it first and take every item in it
+   through dedup/scoring like anything you swept; don't re-fetch those feeds. Then
+   pull recent items from the `subject.derived.news_sources` that no feed covers,
+   in ranked order. Spend attention proportional to rank. Don't wander to random
+   sources.
 3. **Dedup.** Drop anything already in `state_file` by `dedup.by`
    (URL exact + fuzzy title at `fuzzy_threshold`). Reworded reruns of a story
    you've already handled are not new.

@@ -23,6 +23,14 @@ From the seeds plus your own public research, determine:
 - **news_sources** — RANK where news in this market actually breaks first. The
   monitor spends most of its attention here, so be concrete: named outlets,
   official channels, filings, registries — with URLs where you can.
+- **feeds** — machine-readable feeds for those sources: a plain list of working
+  **RSS/Atom URLs** under `subject.derived.feeds`. The monitor pre-fetches these
+  deterministically every run (cheap, complete, auditable), so every working feed
+  you find here directly improves daily recall. Look for the usual suspects
+  (`/feed`, `/rss`, `/atom.xml`, `/index.xml`, a `<link rel="alternate">` on the
+  source's pages) and **verify each URL actually serves a feed** before listing
+  it — a guessed URL is worse than none. Sources without a feed simply stay in
+  `news_sources` for the monitor's own sweep.
 - **event_taxonomy** — the recurring *kinds* of events worth noticing.
 
 ### 2. Profile the ANCHOR (whose interests define relevance)

@@ -140,6 +140,19 @@ concerned it (with grade verdicts where given). Surfaced item records now carry 
 case-insensitive title/so_what name match. Entity names on the Overview link to their
 dossiers; the static export keeps plain text (it has no `/entity` route).
 
+## Phase 11 — deterministic feed sweep ✅ (shipped)
+
+Make recall auditable instead of hoped-for. Bootstrap now also emits
+`subject.derived.feeds` — verified RSS/Atom URLs for the ranked sources that have
+them. Each monitor run starts with `bin/fetch.py` (stdlib only) pulling those feeds
+deterministically: entries inside the lookback window (daily = `lookback_hours`,
+weekly = 7 days + overlap), not already in `seen.jsonl`, deduped across feeds, capped
+at `monitoring.fetch_max_items` (default 200, `0` disables). The candidates land in a
+scratch JSONL the triage prompt names as *the* sweep of those feeds — score first,
+don't re-fetch — so the agent's own bounded browsing covers only feedless sources
+(the recall backstop; "feeds-first + agentic backstop"). A broken feed is a warning,
+never a failed run; with no feeds configured the monitor behaves exactly as before.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

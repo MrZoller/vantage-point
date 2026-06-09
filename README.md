@@ -370,6 +370,26 @@ false` to turn the whole layer off. `observations.jsonl` is pruned to
 
 See `docs/roadmap.md` for the larger roadmap this is part of.
 
+## Deterministic feed sweep (auditable recall)
+
+The agentic sweep is only as complete as what the model happened to browse that run —
+which makes "what did it miss?" unanswerable. The feed sweep fixes that for every
+source that has a feed: when the approved profile lists **RSS/Atom URLs** under
+`subject.derived.feeds` (bootstrap now discovers and verifies these; you can also add
+your own), each run starts with `bin/fetch.py` (Python stdlib) pulling those feeds
+*deterministically* — entries inside the lookback window, not already in
+`state/seen.jsonl`, capped at `monitoring.fetch_max_items` (default 200, `0`
+disables) — into a candidate file the triage agent must score *first*. The agent
+stops being a crawler for those sources (its weakest role) and spends its bounded
+browsing only on ranked sources no feed covers (the recall backstop).
+
+What you gain: recall over feed-covered sources becomes a recorded fact (the run log
+notes `feed sweep: N candidate(s)`, and every candidate is scored + recorded to
+state), runs get cheaper (turns aren't spent navigating), and two runs over the same
+day see the same candidates. Fail-safe as always: a feed that's down or unparseable
+is a stderr warning, never a failed run; no feeds at all means the monitor behaves
+exactly as before.
+
 ## How findings are conveyed
 
 Reports are built to be *read and acted on*, not skimmed:
