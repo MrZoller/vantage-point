@@ -43,6 +43,10 @@ models:
                       # a dedicated editor curates + polishes the report before
                       # delivery (lead, order, cut, tighten) without adding facts or
                       # dropping citations. Runs only on days a report is delivered.
+  # init:     opus    # OPTIONAL model for bin/init.sh's one-time draft review. Unset,
+                      # it inherits models.bootstrap: init runs once per deployment and
+                      # shapes everything downstream, so it rides the deep-research
+                      # model, not the cheap daily one.
 
 # Run budgets — the cost levers. Runs authenticate against your subscription, not
 # API billing, so `--max-budget-usd` can't govern them; what actually bounds spend
@@ -56,6 +60,7 @@ budgets:
   monitor_max_turns: 40     # the daily/weekly triage pass
   deepdive_max_turns: 40    # the corroboration pass (only when models.deepdive is set)
   editor_max_turns: 15      # the editorial pass (only when models.editor is set)
+  init_max_turns: 15        # bin/init.sh's one-time draft review (only if you opt in)
   monthly_cost_usd: 0       # warn when 30-day estimated spend crosses this (0 = off)
 
 subject:

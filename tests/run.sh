@@ -492,24 +492,38 @@ YAML
 test_cfg_get_text
 
 echo "== samples: the example + each sample config is structurally valid (shell-readable) =="
+# assert_config_structure <label> <file> - the structural checks every shippable
+# config must pass; also applied to the config bin/init.sh emits.
+assert_config_structure() {
+  local name="$1" s="$2" blk missing
+  # shellcheck source=bin/config-lib.sh
+  source "$ROOT/bin/config-lib.sh"
+  if [ -n "$(cfg_get models monitor "$s")" ];      then pass "$name: models.monitor set";     else fail "$name: models.monitor set";     fi
+  if [ -n "$(cfg_get_text subject name "$s")" ];   then pass "$name: subject.name set";        else fail "$name: subject.name set";        fi
+  if [ -n "$(cfg_get_text anchor name "$s")" ];    then pass "$name: anchor.name set";         else fail "$name: anchor.name set";         fi
+  if [ -n "$(cfg_get relevance threshold "$s")" ]; then pass "$name: relevance.threshold set"; else fail "$name: relevance.threshold set"; fi
+  missing=""
+  for blk in budgets subject anchor relevance monitoring tracking output governance; do
+    grep -q "^$blk:" "$s" || missing="$missing $blk"
+  done
+  if [ -z "$missing" ]; then pass "$name: all top-level blocks present"; else fail "$name: missing blocks:$missing"; fi
+}
 test_sample_configs() {
   # shellcheck source=bin/config-lib.sh
   source "$ROOT/bin/config-lib.sh"
-  local s name blk missing
+  local s name
   # The annotated reference config is validated alongside the samples so its example
   # values stay shell-readable and complete.
   for s in "$ROOT"/monitor-config.example.yaml "$ROOT"/samples/*.yaml; do
     [ -e "$s" ] || { fail "no sample configs found"; return; }
     name="$(basename "$s")"
-    if [ -n "$(cfg_get models monitor "$s")" ];      then pass "$name: models.monitor set";     else fail "$name: models.monitor set";     fi
-    if [ -n "$(cfg_get_text subject name "$s")" ];   then pass "$name: subject.name set";        else fail "$name: subject.name set";        fi
-    if [ -n "$(cfg_get_text anchor name "$s")" ];    then pass "$name: anchor.name set";         else fail "$name: anchor.name set";         fi
-    if [ -n "$(cfg_get relevance threshold "$s")" ]; then pass "$name: relevance.threshold set"; else fail "$name: relevance.threshold set"; fi
-    missing=""
-    for blk in budgets subject anchor relevance monitoring tracking output governance; do
-      grep -q "^$blk:" "$s" || missing="$missing $blk"
-    done
-    if [ -z "$missing" ]; then pass "$name: all top-level blocks present"; else fail "$name: missing blocks:$missing"; fi
+    assert_config_structure "$name" "$s"
+    # models.init ships commented out (the init review inherits models.bootstrap).
+    if [ -z "$(cfg_get models init "$s")" ] && grep -q '# init:' "$s"; then
+      pass "$name: models.init present but commented"
+    else
+      fail "$name: models.init present but commented"
+    fi
   done
 }
 test_sample_configs
@@ -2126,6 +2140,235 @@ YAML
   assert_contains "still emails the unedited summary" "$(cat "$msg" 2>/dev/null)" "Profile draft summary"
 }
 test_bootstrap_editor_failure
+
+# An isolated init.sh checkout: the wizard + config-lib, the example template, and
+# the samples (incl. their README, which feeds the template menu). A stub `claude`
+# goes under the fake HOME's .npm-global/bin, which init.sh PREPENDS to PATH - so
+# the stub wins over any real claude (no network call). The stub's review behavior
+# is driven by $INIT_REVIEW: ok (default) writes a suggested config that bumps
+# relevance.threshold 0.6 -> 0.7; fail/empty/invalid exercise the fail-safe paths.
+make_fake_init_repo() {  # <repo> <home>
+  local repo="$1" home="$2"
+  mkdir -p "$repo/bin" "$repo/samples" "$home/.npm-global/bin"
+  cp "$ROOT/bin/init.sh" "$ROOT/bin/config-lib.sh" "$repo/bin/"
+  cp "$ROOT/monitor-config.example.yaml" "$repo/"
+  cp "$ROOT"/samples/*.yaml "$ROOT/samples/README.md" "$repo/samples/"
+  cat > "$home/.npm-global/bin/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_RAN:-}" ] && : > "$CLAUDE_RAN"
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+case "${INIT_REVIEW:-ok}" in
+  fail)    exit 1 ;;
+  empty)   : > .init.suggested.yaml ;;
+  invalid) printf 'not: a config\n' > .init.suggested.yaml ;;
+  *)       sed 's/^  threshold: 0.6/  threshold: 0.7/' .init.draft.yaml > .init.suggested.yaml
+           echo "- suggested raising the relevance threshold" ;;
+esac
+exit 0
+SH
+  chmod +x "$home/.npm-global/bin/claude"
+}
+
+# On the example template (which has an anchor competitors key) the wizard asks 13
+# questions before the review prompt; init_blanks emits 13 blank answers (= keep
+# every template value) followed by the given review/apply/bootstrap answers.
+init_blanks() { printf '%s\n' '' '' '' '' '' '' '' '' '' '' '' '' '' "$@"; }
+
+echo "== init.sh: an all-defaults run writes a valid config offline (no claude) =="
+test_init_defaults() {
+  local repo="$TMP/initdef" home="$TMP/inithome1" rc marker="$TMP/init_ran1"
+  make_fake_init_repo "$repo" "$home"
+  # EOF on every question = keep every default; the wizard must finish offline.
+  ( CLAUDE_RAN="$marker" HOME="$home" bash "$repo/bin/init.sh" </dev/null >/dev/null 2>&1 ); rc=$?
+  assert_eq "all-defaults run exits 0" "0" "$rc"
+  if [ ! -f "$repo/monitor-config.yaml" ]; then fail "config written"; return; fi
+  pass "config written"
+  assert_config_structure "init defaults" "$repo/monitor-config.yaml"
+  assert_eq "subject.name keeps the template's value" \
+    "Enterprise AI platforms & LLM products" "$(cfg_get_text subject name "$repo/monitor-config.yaml")"
+  assert_contains "template comments are preserved" \
+    "$(cat "$repo/monitor-config.yaml")" "Trusted seeds"
+  assert_contains "empty derived: blocks survive untouched" \
+    "$(cat "$repo/monitor-config.yaml")" "key_players: []"
+  if [ -f "$marker" ]; then fail "claude is NOT invoked when the review is skipped"; else pass "claude is NOT invoked when the review is skipped"; fi
+  if ls "$repo"/.init.*.yaml >/dev/null 2>&1; then fail "no temp drafts left behind"; else pass "no temp drafts left behind"; fi
+}
+test_init_defaults
+
+echo "== init.sh: refuses to overwrite an existing config unless --force =="
+test_init_overwrite_guard() {
+  local repo="$TMP/initguard" home="$TMP/inithome2" rc out
+  make_fake_init_repo "$repo" "$home"
+  printf 'sentinel: 1\n' > "$repo/monitor-config.yaml"
+  out="$( HOME="$home" bash "$repo/bin/init.sh" </dev/null 2>&1 )"; rc=$?
+  assert_eq "refuses with exit 1" "1" "$rc"
+  assert_contains "names the --force escape hatch" "$out" "--force"
+  assert_eq "existing config left untouched" "sentinel: 1" "$(cat "$repo/monitor-config.yaml")"
+  ( HOME="$home" bash "$repo/bin/init.sh" --force </dev/null >/dev/null 2>&1 ); rc=$?
+  assert_eq "--force run exits 0" "0" "$rc"
+  assert_contains "--force overwrites the old config" \
+    "$(cat "$repo/monitor-config.yaml")" "Enterprise AI platforms"
+  ( HOME="$home" bash "$repo/bin/init.sh" --bogus </dev/null >/dev/null 2>&1 ); rc=$?
+  assert_eq "an unknown argument exits 2" "2" "$rc"
+  ( HOME="$home" bash "$repo/bin/init.sh" --help </dev/null >/dev/null 2>&1 ); rc=$?
+  assert_eq "--help exits 0" "0" "$rc"
+}
+test_init_overwrite_guard
+
+echo "== init.sh: answers with & / ' / \" / # round-trip through the cfg readers =="
+test_init_quoting() {
+  local repo="$TMP/initquote" home="$TMP/inithome3" rc out cfg
+  make_fake_init_repo "$repo" "$home"
+  out="$( printf '%s\n' \
+      '1' \
+      'R&D "skunk" works'\'' #1' \
+      'Tracks Bob'\''s market & "niche" #1 stuff' \
+      'notaurl' \
+      'https://ex.example/a?b=1&c=2' \
+      '' \
+      'pricing & "packaging", C# tools' \
+      "job postings, vendor's \"fluff\"" \
+      "Bob's Watches & Co" \
+      'Individual' \
+      'buyer & builder' \
+      "Acme \"A\" & Co, O'Brien #2" \
+      'nope' \
+      'me@example.com' \
+      'ftp://bad' \
+      'https://hooks.example.com/h?t=1' \
+      'AI Models' \
+      'n' \
+      'n' \
+    | HOME="$home" bash "$repo/bin/init.sh" 2>&1 )"; rc=$?
+  assert_eq "run exits 0" "0" "$rc"
+  cfg="$repo/monitor-config.yaml"
+  if [ ! -f "$cfg" ]; then fail "config written"; return; fi
+  assert_config_structure "init quoting" "$cfg"
+  # Exactly what was typed must read back through the readers the agents use.
+  assert_eq "subject.name round-trips (& \" ' #)" 'R&D "skunk" works'\'' #1' "$(cfg_get_text subject name "$cfg")"
+  assert_eq "anchor.name round-trips (')" "Bob's Watches & Co" "$(cfg_get_text anchor name "$cfg")"
+  assert_eq "anchor.type is normalized to lowercase" "individual" "$(cfg_get anchor type "$cfg")"
+  assert_eq "relationship_to_subject round-trips (&)" "buyer & builder" "$(cfg_get_text anchor relationship_to_subject "$cfg")"
+  assert_eq "output.email_to set (after one re-prompt)" "me@example.com" "$(cfg_get output email_to "$cfg")"
+  assert_eq "output.webhook_url set (after rejecting ftp://)" "https://hooks.example.com/h?t=1" "$(cfg_get output webhook_url "$cfg")"
+  assert_eq "deployment.instance round-trips with a space" "AI Models" "$(cfg_get_text deployment instance "$cfg")"
+  assert_contains "rejects a non-URL seed with a note" "$out" "not an http(s) URL"
+  assert_contains "the valid seed lands in the seeds list" "$(cat "$cfg")" "- https://ex.example/a?b=1&c=2"
+  case "$(cat "$cfg")" in
+    *notaurl*) fail "the rejected seed stays out of the config" ;;
+    *) pass "the rejected seed stays out of the config" ;;
+  esac
+  assert_contains "scope in is a quoted flow list" "$(cat "$cfg")" 'in: ["pricing & \"packaging\"", "C# tools"]'
+  assert_contains "scope out is a quoted flow list" "$(cat "$cfg")" 'out: ["job postings", "vendor'\''s \"fluff\""]'
+  assert_contains "competitors are quoted" "$(cat "$cfg")" 'competitors: ["Acme \"A\" & Co", "O'\''Brien #2"]'
+  assert_contains "tracking.watch placeholder retargeted to competitor 1" \
+    "$(cat "$cfg")" 'entity: "Acme \"A\" & Co"'
+  assert_contains "derived blocks still empty after substitution" "$(cat "$cfg")" "news_sources: []"
+}
+test_init_quoting
+
+echo "== init.sh: builds from a sample; skips the competitors question when absent =="
+test_init_samples() {
+  local repo="$TMP/initsample" home="$TMP/inithome4" rc cfg
+  make_fake_init_repo "$repo" "$home"
+  # Menu order: 1 example, then the samples/README.md table order (2 ai-frontier,
+  # 3 devtools, 4 oss, 5 policy). devtools has a competitors key -> 13 questions.
+  ( printf '%s\n' '3' '' '' '' '' '' '' '' '' 'X CLI, Y IDE' '' '' '' 'n' 'n' \
+    | HOME="$home" bash "$repo/bin/init.sh" >/dev/null 2>&1 ); rc=$?
+  assert_eq "devtools sample run exits 0" "0" "$rc"
+  cfg="$repo/monitor-config.yaml"
+  assert_eq "subject.name comes from the chosen sample" \
+    "AI coding assistants & developer tools" "$(cfg_get_text subject name "$cfg")"
+  assert_contains "competitors substituted" "$(cat "$cfg")" 'competitors: ["X CLI", "Y IDE"]'
+  assert_contains "watch placeholder A retargeted" "$(cat "$cfg")" 'entity: "X CLI"'
+  assert_contains "watch placeholder B retargeted" "$(cat "$cfg")" 'entity: "Y IDE"'
+  # oss-dependency-watch has NO competitors key -> 12 questions; if the wizard asked
+  # anyway, the answer stream would desync and the email would land in the wrong slot.
+  ( printf '%s\n' '4' '' '' '' '' '' '' '' '' 'me@x.example' 'https://hooks.example/h' '' 'n' 'n' \
+    | HOME="$home" bash "$repo/bin/init.sh" --force >/dev/null 2>&1 ); rc=$?
+  assert_eq "oss sample run exits 0" "0" "$rc"
+  assert_eq "competitors question skipped (email lands in its slot)" \
+    "me@x.example" "$(cfg_get output email_to "$cfg")"
+  assert_eq "webhook_url inserted into a sample that lacks the key" \
+    "https://hooks.example/h" "$(cfg_get output webhook_url "$cfg")"
+  assert_config_structure "init oss sample" "$cfg"
+}
+test_init_samples
+
+echo "== init.sh: review suggestions apply only on yes; failures never lose the draft =="
+test_init_review() {
+  local repo="$TMP/initreview" home="$TMP/inithome5" rc out args="$TMP/init_args"
+  make_fake_init_repo "$repo" "$home"
+  # Accepted: review y, apply y -> the stub's threshold bump lands in the config.
+  out="$( init_blanks y y n | CLAUDE_ARGS="$args" HOME="$home" bash "$repo/bin/init.sh" 2>&1 )"; rc=$?
+  assert_eq "accepted-review run exits 0" "0" "$rc"
+  assert_eq "approved suggestion is applied" "0.7" "$(cfg_get relevance threshold "$repo/monitor-config.yaml")"
+  assert_contains "shows the suggestions as a diff" "$out" "threshold: 0.7"
+  # Model resolution: models.init is commented in the template -> bootstrap model.
+  assert_contains "notes the models.init fallback" "$out" "models.init not set"
+  assert_contains "review runs on the bootstrap model" "$(cat "$args" 2>/dev/null)" "--model opus"
+  assert_contains "budgets.init_max_turns drives --max-turns" "$(cat "$args" 2>/dev/null)" "--max-turns 15"
+  # Rejected: review y, apply n -> the draft ships as answered.
+  ( init_blanks y n n | HOME="$home" bash "$repo/bin/init.sh" --force >/dev/null 2>&1 ); rc=$?
+  assert_eq "rejected-review run exits 0" "0" "$rc"
+  assert_eq "rejected suggestion is NOT applied" "0.6" "$(cfg_get relevance threshold "$repo/monitor-config.yaml")"
+  # Failed / empty / invalid review: warn and keep the assembled config intact.
+  local mode
+  for mode in fail empty invalid; do
+    out="$( init_blanks y n | INIT_REVIEW="$mode" HOME="$home" bash "$repo/bin/init.sh" --force 2>&1 )"; rc=$?
+    assert_eq "a $mode review still exits 0" "0" "$rc"
+    assert_contains "a $mode review warns and keeps the draft" "$out" "keeping your draft"
+    assert_eq "config still written after a $mode review" \
+      "0.6" "$(cfg_get relevance threshold "$repo/monitor-config.yaml")"
+  done
+  if ls "$repo"/.init.*.yaml >/dev/null 2>&1; then fail "no suggestion/draft files left behind"; else pass "no suggestion/draft files left behind"; fi
+}
+test_init_review
+
+echo "== init.sh: models.init drives the review model when set (else CLI default) =="
+test_init_review_model() {
+  local repo="$TMP/initmodel" home="$TMP/inithome6" out args="$TMP/init_args2"
+  make_fake_init_repo "$repo" "$home"
+  # Activate models.init in the template (portable sed: pure s///, reusing the
+  # commented deepdive line's slot inside the models block).
+  sed 's/^  # deepdive: opus.*/  init: custominit/' "$repo/monitor-config.example.yaml" \
+    > "$repo/c.tmp" && mv "$repo/c.tmp" "$repo/monitor-config.example.yaml"
+  out="$( init_blanks y n n | CLAUDE_ARGS="$args" HOME="$home" bash "$repo/bin/init.sh" 2>&1 )"
+  assert_contains "models.init drives --model" "$(cat "$args" 2>/dev/null)" "--model custominit"
+  case "$out" in
+    *"models.init not set"*) fail "no fallback note when models.init is set" ;;
+    *) pass "no fallback note when models.init is set" ;;
+  esac
+  # Neither models.init nor models.bootstrap -> CLI default, with a note.
+  local repo2="$TMP/initmodel2" home2="$TMP/inithome7" args2="$TMP/init_args3"
+  make_fake_init_repo "$repo2" "$home2"
+  sed '/^  bootstrap: opus/d' "$repo2/monitor-config.example.yaml" \
+    > "$repo2/c.tmp" && mv "$repo2/c.tmp" "$repo2/monitor-config.example.yaml"
+  out="$( init_blanks y n n | CLAUDE_ARGS="$args2" HOME="$home2" bash "$repo2/bin/init.sh" 2>&1 )"
+  assert_contains "notes the CLI-default fallback" "$out" "using CLI default model"
+  case "$(cat "$args2" 2>/dev/null)" in
+    *--model*) fail "omits --model when no model is configured" ;;
+    *) pass "omits --model when no model is configured" ;;
+  esac
+}
+test_init_review_model
+
+echo "== init.sh: offers bootstrap at the end but never auto-runs it =="
+test_init_bootstrap_offer() {
+  local repo="$TMP/initboot" home="$TMP/inithome8" out
+  make_fake_init_repo "$repo" "$home"
+  printf '#!/usr/bin/env bash\necho BOOTSTRAP_STUB_RAN\n' > "$repo/bin/bootstrap.sh"
+  chmod +x "$repo/bin/bootstrap.sh"
+  out="$( init_blanks n n | HOME="$home" bash "$repo/bin/init.sh" 2>&1 )"
+  case "$out" in
+    *BOOTSTRAP_STUB_RAN*) fail "bootstrap NOT run when declined" ;;
+    *) pass "bootstrap NOT run when declined" ;;
+  esac
+  assert_contains "prints the bootstrap next step instead" "$out" "./bin/bootstrap.sh"
+  out="$( init_blanks n y | HOME="$home" bash "$repo/bin/init.sh" --force 2>&1 )"
+  assert_contains "an explicit yes runs bootstrap" "$out" "BOOTSTRAP_STUB_RAN"
+}
+test_init_bootstrap_offer
 
 echo
 echo "tests: $PASS passed, $FAIL failed"
