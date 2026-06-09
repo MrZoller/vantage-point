@@ -65,7 +65,7 @@ fi
 
 # Leave no partial state behind, whatever happens (the final mv is the only step
 # that touches $CONFIG).
-trap 'rm -f "$DRAFT" "$DRAFT.tmp" "$SUGGEST"' EXIT
+trap 'rm -f "$DRAFT" "$DRAFT.tmp" "$DRAFT.pre-review" "$SUGGEST"' EXIT
 
 die()  { echo "[init] ERROR: $1" >&2; exit 1; }
 note() { echo "[init] $1" >&2; }
@@ -280,7 +280,7 @@ validate_config() {
 # (init runs before monitor-config.yaml exists, so the draft IS the config):
 # models.init -> models.bootstrap -> CLI default, each fallback with a stderr note.
 run_review() {
-  local model turns model_args=()
+  local model turns review_rc=0 model_args=()
   model="$(cfg_get models init "$DRAFT")"
   if [ -z "$model" ]; then
     note "models.init not set in the draft - falling back to models.bootstrap"
@@ -299,8 +299,12 @@ run_review() {
   fi
   rm -f "$SUGGEST"
   note "review pass (model=${model:-CLI default}) - suggestions only; nothing applies without your yes"
+  # The review agent has Write access, so snapshot the draft and restore it
+  # unconditionally afterwards: $SUGGEST is the ONLY channel for its output, and a
+  # direct edit to the draft can never slip past the apply-on-yes gate below.
+  cp "$DRAFT" "$DRAFT.pre-review"
   # stdin from /dev/null so the review can never swallow the interview's answers.
-  if ! claude -p "You are reviewing a freshly assembled Vantage Point monitor-config.yaml
+  claude -p "You are reviewing a freshly assembled Vantage Point monitor-config.yaml
 draft before its operator runs the bootstrap research pass. Read ./$DRAFT. Suggest
 improvements ONLY to the human-authored fields: sharper subject scope phrasing (the
 in/out lists), better or missing seed URLs, missed competitors or watch entities, and
@@ -316,7 +320,9 @@ summary of what you changed and why, for the operator to judge." \
       --permission-mode acceptEdits \
       --max-turns "$turns" \
       --output-format text \
-      < /dev/null 2> init.err; then
+      < /dev/null 2> init.err || review_rc=$?
+  mv -f "$DRAFT.pre-review" "$DRAFT"
+  if [ "$review_rc" -ne 0 ]; then
     note "WARNING: review pass failed (see init.err) - keeping your draft unchanged"
     rm -f "$SUGGEST"
     return 1

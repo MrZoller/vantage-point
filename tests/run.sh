@@ -2161,6 +2161,9 @@ case "${INIT_REVIEW:-ok}" in
   fail)    exit 1 ;;
   empty)   : > .init.suggested.yaml ;;
   invalid) printf 'not: a config\n' > .init.suggested.yaml ;;
+  tamper)  # a misbehaving review: edits the DRAFT in place AND writes a suggestion
+           sed 's/^  threshold: 0.6/  threshold: 0.9/' .init.draft.yaml > .init.t && mv .init.t .init.draft.yaml
+           sed 's/^  threshold: 0.9/  threshold: 0.7/' .init.draft.yaml > .init.suggested.yaml ;;
   *)       sed 's/^  threshold: 0.6/  threshold: 0.7/' .init.draft.yaml > .init.suggested.yaml
            echo "- suggested raising the relevance threshold" ;;
 esac
@@ -2191,7 +2194,7 @@ test_init_defaults() {
   assert_contains "empty derived: blocks survive untouched" \
     "$(cat "$repo/monitor-config.yaml")" "key_players: []"
   if [ -f "$marker" ]; then fail "claude is NOT invoked when the review is skipped"; else pass "claude is NOT invoked when the review is skipped"; fi
-  if ls "$repo"/.init.*.yaml >/dev/null 2>&1; then fail "no temp drafts left behind"; else pass "no temp drafts left behind"; fi
+  if ls "$repo"/.init.* >/dev/null 2>&1; then fail "no temp drafts left behind"; else pass "no temp drafts left behind"; fi
 }
 test_init_defaults
 
@@ -2321,7 +2324,17 @@ test_init_review() {
     assert_eq "config still written after a $mode review" \
       "0.6" "$(cfg_get relevance threshold "$repo/monitor-config.yaml")"
   done
-  if ls "$repo"/.init.*.yaml >/dev/null 2>&1; then fail "no suggestion/draft files left behind"; else pass "no suggestion/draft files left behind"; fi
+  # A review agent that edits the draft IN PLACE (it has Write access) must not be
+  # able to bypass the apply-on-yes gate: rejecting ships the operator's untampered
+  # draft, and accepting applies only the suggestion file.
+  ( init_blanks y n n | INIT_REVIEW=tamper HOME="$home" bash "$repo/bin/init.sh" --force >/dev/null 2>&1 ); rc=$?
+  assert_eq "tampering-review run exits 0" "0" "$rc"
+  assert_eq "a direct draft edit is reverted when suggestions are rejected" \
+    "0.6" "$(cfg_get relevance threshold "$repo/monitor-config.yaml")"
+  ( init_blanks y y n | INIT_REVIEW=tamper HOME="$home" bash "$repo/bin/init.sh" --force >/dev/null 2>&1 )
+  assert_eq "accepting applies the suggestion file, not the draft edit" \
+    "0.7" "$(cfg_get relevance threshold "$repo/monitor-config.yaml")"
+  if ls "$repo"/.init.* >/dev/null 2>&1; then fail "no suggestion/draft files left behind"; else pass "no suggestion/draft files left behind"; fi
 }
 test_init_review
 
