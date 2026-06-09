@@ -8,6 +8,7 @@ profile.yaml
 profile.draft.yaml
 profile.summary.md
 profile.draft.summary.md
+.init.*
 state/
 kb/
 *.err

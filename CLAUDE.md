@@ -27,7 +27,12 @@ stays consistent instead of re-deriving them.
   `email-lib.sh` (rendering + `send_email`). Each pass's `--max-turns` cap comes from
   the `budgets:` config block (defaults = the long-standing constants), which also holds
   the soft 30-day cost warning (`budgets.monthly_cost_usd`; warn-only, never skips a
-  run). Helpers: `portal.sh`/`portal.py` (unified
+  run). Helpers: `init.sh` (guided config interview — a deterministic bash wizard that
+  substitutes answers into a chosen template (samples/ or the example), preserving
+  comments + empty `derived:` blocks; one optional claude review at the end on
+  `models.init` → fallback `models.bootstrap`, cap `budgets.init_max_turns`, whose
+  suggestions apply only on explicit yes; `--force` to overwrite, atomic write),
+  `portal.sh`/`portal.py` (unified
   web portal — overview (incl. the Calibration precision card)/reports/entities
   (per-entity dossiers)/review/profile/config; grading → `state/feedback.jsonl`;
   `--export` → static `kb/index.html`), `fetch.py` (deterministic feed sweep →

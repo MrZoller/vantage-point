@@ -22,6 +22,7 @@ vantage-point/
 ├── deepdive-prompt.md            # the optional second-pass investigator prompt
 ├── editor-prompt.md              # the optional final-pass editor prompt
 ├── bin/
+│   ├── init.sh                   # guided interview -> writes monitor-config.yaml
 │   ├── bootstrap.sh
 │   ├── monitor.sh                # monitor.sh {daily|weekly}
 │   ├── config-lib.sh            # shared cfg_get/cfg_get_text (sourced by both agents)
@@ -94,6 +95,7 @@ makes the review gate a literal, diffable file promotion.
    first-run failure.
 3. Fill in `monitor-config.yaml` — the subject, the anchor, and a few good seed
    URLs for each. Seeds matter most when the anchor has a thin public footprint.
+   (Or skip the YAML editing entirely — see **Guided setup** below.)
 4. Build and approve the profile:
    ```
    ./bin/bootstrap.sh                     # writes profile.draft.yaml
@@ -105,6 +107,34 @@ makes the review gate a literal, diffable file promotion.
    ./bin/monitor.sh daily   &&  ls kb/
    ./bin/monitor.sh weekly
    ```
+
+### Guided setup (alternative to steps 1 & 3)
+
+New users shouldn't have to write YAML cold — output quality depends entirely on a
+well-written config. Instead of `cp` + hand-editing, run the interview:
+
+```
+./bin/init.sh
+```
+
+It asks which template is the closest fit (any [`samples/`](samples/) config, or the
+blank-slate `monitor-config.example.yaml`), then interviews you for the
+human-authored fields — subject name/description, seed URLs, scope in/out, anchor
+name/type/relationship, competitors, `output.email_to`/`webhook_url`, and
+`deployment.instance` for multi-instance setups. A blank answer keeps the template's
+value. Your answers are substituted into the template (comments and the empty
+`derived:` blocks are preserved — nothing is generated from scratch) and validated
+as you go: seed URLs must be http(s), and every answer must read back exactly
+through the same config readers the agents use.
+
+At the end it offers an **optional** claude review of the assembled draft — one
+bounded `claude -p` call (model: `models.init`, falling back to `models.bootstrap`,
+then the CLI default; capped by `budgets.init_max_turns`, default 15) that only
+*suggests* sharper scope phrasing, better seeds, or missed competitors. Suggestions
+are shown as a diff and applied only if you say yes; the wizard itself is plain bash
+and works fully offline. It refuses to overwrite an existing `monitor-config.yaml`
+without `--force`, writes atomically (a failure leaves no partial config), and ends
+by offering — never auto-running — `./bin/bootstrap.sh`. Then continue with step 4.
 
 ## Scheduling (launchd)
 
@@ -540,8 +570,10 @@ need the `claude` CLI — launchd plist generation (including paths with shell/X
 special characters), `monitor.sh`'s argument/review-gate behavior, email
 plain-text/HTML rendering, the single-run lock (skip + stale-lock reclaim, via a stub
 `claude`), state pruning, the profile-staleness warning, the two-pass deep-dive
-orchestration (including failure/empty-report rollback), the `usage.sh` rollup, and the
-web portal (static export + the live server's routes and grading). CI (`.github/workflows/ci.yml`) runs
+orchestration (including failure/empty-report rollback), the `usage.sh` rollup, the
+web portal (static export + the live server's routes and grading), and the `init.sh`
+wizard (driven non-interactively by piping answers: templating, quoting round-trips,
+the overwrite guard, and the optional review pass's accept/reject/fail paths). CI (`.github/workflows/ci.yml`) runs
 `shellcheck`, `bash -n`, a `py_compile` check, and this suite on every push and PR.
 
 ## Troubleshooting

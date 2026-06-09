@@ -104,7 +104,11 @@ flowchart LR
 Configuration is a single YAML file built on one idea: relevance is the *relationship*
 between a news item and a defined stakeholder — the **subject** (what to watch) crossed
 with the **anchor** (whose interests decide what matters). You write a short config; the
-research pass turns it into a full profile you then approve. An abbreviated config (a
+research pass turns it into a full profile you then approve. And you don't have to write
+it cold: `bin/init.sh` is a guided interview that asks for exactly these fields —
+starting from any ready-made [`samples/`](../samples/) config — and writes the file for
+you, with an optional review step that suggests sharper scope lines and seeds for you to
+approve or reject. An abbreviated config (a
 competitive-intelligence team, here — the full template is `monitor-config.example.yaml`):
 
 ```yaml

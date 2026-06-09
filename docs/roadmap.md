@@ -166,6 +166,26 @@ scripts always used), plus an opt-in **soft monthly cap**: when
 stopping the watch would cost more than it saves. Absent/`0`/non-numeric knobs fall
 back to the defaults; a missing `jq` skips the cost check with a note, never the run.
 
+## Phase 13 — guided config interview ✅ (shipped)
+
+Lower the biggest adoption barrier: output quality depends entirely on a well-written
+`monitor-config.yaml`, and new users shouldn't have to write YAML cold. `bin/init.sh`
+is a deterministic bash wizard (plain `read` prompts — no model in the loop, fully
+offline-capable) that collects the human-authored fields — closest-fit template
+(any `samples/` config or the blank-slate example), subject name/description, seed
+URLs, scope in/out, anchor name/type/relationship, competitors,
+`output.email_to`/`webhook_url`, `deployment.instance` — and substitutes them into
+the chosen template, preserving its comments and empty `derived:` blocks (never
+generating YAML from scratch). Validates as it goes: http(s) seed URLs, and every
+answer must round-trip exactly through the repo's `cfg_get`/`cfg_get_text` readers
+(correct YAML quoting for `&` / `'` / `"` / `#`). One optional `claude -p` review at
+the end (model `models.init`, inheriting `models.bootstrap`, then the CLI default;
+capped by `budgets.init_max_turns`, default 15) only *suggests* — sharper scope,
+better seeds, missed competitors — shown as a diff and applied only on an explicit
+yes; a failed/empty/invalid suggestion never loses the assembled draft. Refuses to
+overwrite without `--force`, assembles in a temp file and moves it into place
+atomically, and offers (never auto-runs) `bootstrap.sh` at the end.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

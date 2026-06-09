@@ -22,6 +22,7 @@ models:
   monitor:   sonnet
   # deepdive: opus    # OPTIONAL: corroborate the top items on a stronger model
   # editor:   opus    # OPTIONAL: curate + polish the report before delivery
+  # init:     opus    # OPTIONAL: bin/init.sh's one-time draft review; unset = models.bootstrap
 
 # Run budgets - per-pass turn caps (passed to claude --max-turns) plus an optional
 # soft monthly cost warning. Defaults shown; monitor-config.example.yaml has the
@@ -31,6 +32,7 @@ budgets:
   monitor_max_turns: 40     # the daily/weekly triage pass
   deepdive_max_turns: 40    # when models.deepdive is enabled
   editor_max_turns: 15      # when models.editor is enabled
+  init_max_turns: 15        # bin/init.sh's one-time draft review (opt-in)
   monthly_cost_usd: 0       # warn when 30-day estimated spend crosses this (0 = off)
 
 subject:
