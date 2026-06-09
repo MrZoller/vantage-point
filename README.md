@@ -302,13 +302,39 @@ confirm a quick `claude -p "hi" --model <value>` succeeds before committing to a
 value. Remove or blank a key and that agent falls back to the CLI's default
 model (with a one-line notice on stderr) — nothing is hardcoded.
 
+## Budgets
+
+The top-level `budgets:` block in `monitor-config.yaml` bounds what each run may
+spend. All keys are optional; absent/`0`/non-numeric falls back to the defaults
+shown (which match what the scripts always used):
+
+```yaml
+budgets:
+  bootstrap_max_turns: 80   # the deep research pass — depth lives here
+  monitor_max_turns: 40     # the daily/weekly triage pass
+  deepdive_max_turns: 40    # the corroboration pass (when models.deepdive is set)
+  editor_max_turns: 15      # the editorial pass (when models.editor is set)
+  monthly_cost_usd: 0       # warn when 30-day estimated spend crosses this (0 = off)
+```
+
+The `*_max_turns` caps are passed straight to each pass's `claude --max-turns`
+call — together with run frequency they are the levers that actually bound spend
+(see "Cost lever" below for why `--max-budget-usd` can't). `monthly_cost_usd` is
+a **soft** cap: when the rolling 30-day sum of `cost_usd` in `state/runs.log`
+crosses it, every monitor run prints a stderr warning naming the estimate and
+the cap. It deliberately never skips a run — the estimate is API-equivalent, not
+your actual subscription billing, and silently stopping the watch would cost more
+than it saves. When the warning fires, lower the run frequency or the turn caps,
+and check `./bin/usage.sh` for where the spend goes.
+
 ## Operating notes
 
 - **Cost lever.** Because Claude Code is authenticated against Max, the spend lives
   in your subscription, not API billing — so `--max-budget-usd` won't govern it.
-  The real levers are run frequency and `--max-turns` (80 for bootstrap, 40 for
-  monitor here). Daily recurring runs are exactly the use case the $200 Max tier's
-  extra headroom buys you.
+  The real levers are run frequency and the per-pass turn caps in the `budgets:`
+  block (see "Budgets" above; defaults: 80 for bootstrap, 40 for monitor). Daily
+  recurring runs are exactly the use case the $200 Max tier's extra headroom buys
+  you.
 - **Where output goes.** Reports land in `kb/YYYY-MM-DD.{daily,weekly}.md`; stderr
   for each monitor run is alongside as `.err` (bootstrap logs to `bootstrap.err` at
   the repo root). Email delivery is wired and active whenever

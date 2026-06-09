@@ -153,6 +153,19 @@ don't re-fetch — so the agent's own bounded browsing covers only feedless sour
 (the recall backstop; "feeds-first + agentic backstop"). A broken feed is a warning,
 never a failed run; with no feeds configured the monitor behaves exactly as before.
 
+## Phase 12 — run budgets ✅ (shipped)
+
+Make the cost levers explicit config instead of constants buried in the scripts. A
+top-level `budgets:` block sets the per-pass turn caps handed to each `claude
+--max-turns` call (`bootstrap_max_turns` 80, `monitor_max_turns` 40,
+`deepdive_max_turns` 40, `editor_max_turns` 15 — defaults match the values the
+scripts always used), plus an opt-in **soft monthly cap**: when
+`budgets.monthly_cost_usd` > 0 and the rolling 30-day sum of `cost_usd` in
+`state/runs.log` crosses it, every monitor run warns on stderr. Warn-only by design
+— the figure is an API-equivalent estimate, not subscription billing, and silently
+stopping the watch would cost more than it saves. Absent/`0`/non-numeric knobs fall
+back to the defaults; a missing `jq` skips the cost check with a note, never the run.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

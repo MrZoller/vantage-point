@@ -24,7 +24,10 @@ stays consistent instead of re-deriving them.
 - **editor** (`editor-prompt.md`): optional final pass (`models.editor`) that curates +
   polishes the report before delivery — non-destructive, no new facts, citations kept.
 - Both are `claude -p` calls wrapped in shell, sharing `config-lib.sh` (cfg readers) and
-  `email-lib.sh` (rendering + `send_email`). Helpers: `portal.sh`/`portal.py` (unified
+  `email-lib.sh` (rendering + `send_email`). Each pass's `--max-turns` cap comes from
+  the `budgets:` config block (defaults = the long-standing constants), which also holds
+  the soft 30-day cost warning (`budgets.monthly_cost_usd`; warn-only, never skips a
+  run). Helpers: `portal.sh`/`portal.py` (unified
   web portal — overview (incl. the Calibration precision card)/reports/entities
   (per-entity dossiers)/review/profile/config; grading → `state/feedback.jsonl`;
   `--export` → static `kb/index.html`), `fetch.py` (deterministic feed sweep →
