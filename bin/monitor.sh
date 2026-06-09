@@ -69,12 +69,21 @@ OBS_MAX_LINES="$(cfg_get tracking observations_max_lines)"
 DEEPDIVE_THRESHOLD="$(cfg_get monitoring deepdive_threshold)"
 DEEPDIVE_MAX="$(cfg_get monitoring deepdive_max_items)"
 REFRESH_DAYS="$(cfg_get governance profile_refresh_days)"
+RECENT_GRADES="$(cfg_get relevance recent_grades)"
 case "$RUN_TIMEOUT"     in ''|*[!0-9]*) RUN_TIMEOUT=1800 ;; esac
 case "$STATE_MAX_LINES" in ''|*[!0-9]*) STATE_MAX_LINES=5000 ;; esac
 case "$OBS_MAX_LINES"   in ''|*[!0-9]*) OBS_MAX_LINES=20000 ;; esac
 case "$DEEPDIVE_MAX"    in ''|*[!0-9]*) DEEPDIVE_MAX=5 ;; esac
 [ -n "$DEEPDIVE_THRESHOLD" ] || DEEPDIVE_THRESHOLD=0.85   # may be a decimal; agent applies it
 case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-numeric -> skip check
+case "$RECENT_GRADES"   in ''|*[!0-9]*) RECENT_GRADES=20 ;; esac
+
+# The approved profile's vintage. Used twice: the staleness warning below, and to
+# scope which operator grades count as "new" (recorded after this profile was built,
+# so not yet folded into its rubric by a re-bootstrap).
+LAST_BOOT="$(cfg_get subject last_bootstrapped "$PROFILE")"
+case "$LAST_BOOT" in ''|null) LAST_BOOT="$(cfg_get anchor last_bootstrapped "$PROFILE")" ;; esac
+case "$LAST_BOOT" in null) LAST_BOOT="" ;; esac
 
 # ---- single-run lock (shared across modes) ----
 # daily and weekly share state/seen.jsonl, so ONE lock guards all modes - never two
@@ -186,17 +195,45 @@ prune_state state/observations.jsonl "$OBS_MAX_LINES"
 # Anchors drift; a stale profile silently mis-scores. Warn (don't refuse) when the
 # approved profile is older than the refresh window.
 if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
-  last_boot="$(cfg_get subject last_bootstrapped "$PROFILE")"
-  case "$last_boot" in ''|null) last_boot="$(cfg_get anchor last_bootstrapped "$PROFILE")" ;; esac
   # GNU `date -d` and BSD `date -j -f` differ; try both, give up quietly if neither parses.
-  boot_epoch="$(date -d "$last_boot" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$last_boot" +%s 2>/dev/null || true)"
+  boot_epoch="$(date -d "$LAST_BOOT" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$LAST_BOOT" +%s 2>/dev/null || true)"
   if [ -n "$boot_epoch" ]; then
     age_days=$(( ( $(date +%s) - boot_epoch ) / 86400 ))
     if [ "$age_days" -gt "$REFRESH_DAYS" ]; then
       echo "[monitor:$MODE] WARNING: profile is ${age_days}d old (> profile_refresh_days=$REFRESH_DAYS) - re-run bin/bootstrap.sh to refresh" >&2
     fi
   else
-    echo "[monitor:$MODE] note: couldn't parse profile last_bootstrapped ('$last_boot') - skipping staleness check" >&2
+    echo "[monitor:$MODE] note: couldn't parse profile last_bootstrapped ('$LAST_BOOT') - skipping staleness check" >&2
+  fi
+fi
+
+# ---- live calibration: recent operator grades (relevance.recent_grades) ----
+# Grades recorded via the Review tab only reshape the rubric at the next bootstrap +
+# approval, which can lag by weeks. Bridge that lag: inject the newest POST-bootstrap
+# grades (latest verdict per item, capped) into the triage prompt as worked examples,
+# so a thumbs-down filters its lookalikes the very next run. Grades from before the
+# profile was built are excluded -- the approved rubric already absorbed them.
+# Fail-safe: any problem here skips the injection, never the run. 0 disables.
+FEEDBACK_NOTE=""
+if [ "$RECENT_GRADES" -gt 0 ] && [ -s state/feedback.jsonl ] \
+   && command -v python3 >/dev/null 2>&1 && [ -f bin/dedupe-feedback.py ]; then
+  fb_args=(state/feedback.jsonl --max "$RECENT_GRADES")
+  [ -n "$LAST_BOOT" ] && fb_args+=(--since "$LAST_BOOT")
+  FEEDBACK_DATA="$(python3 bin/dedupe-feedback.py "${fb_args[@]}" 2>/dev/null || true)"
+  if [ -n "$FEEDBACK_DATA" ]; then
+    n_fb="$(printf '%s\n' "$FEEDBACK_DATA" | grep -c . || true)"
+    echo "[monitor:$MODE] live calibration: applying $n_fb recent grade(s) (relevance.recent_grades=$RECENT_GRADES)" >&2
+    FEEDBACK_NOTE="
+
+RECENT OPERATOR GRADES - live calibration. The user graded these previously surfaced
+items AFTER the current rubric was approved (\`verdict\`: up = right to surface,
+down = should have been filtered), so the rubric does not reflect them yet. Treat
+them as ground truth layered on top of the rubric: score an item that resembles a
+'down' example below threshold, and do not drop one that resembles an 'up' example.
+For anything they don't cover, the approved rubric governs unchanged.
+\`\`\`jsonl
+$FEEDBACK_DATA
+\`\`\`"
   fi
 fi
 
@@ -241,7 +278,7 @@ also append your highest-scoring surfaced items - those with score >= $DEEPDIVE_
 at most $DEEPDIVE_MAX of them, highest first - to ./$QUEUE, one JSON object per line:
 {\"url\":...,\"title\":...,\"signal\":...,\"score\":...,\"so_what\":...}. A separate
 stronger agent will investigate these and enrich them in the report; you just queue
-them. Do not write the queue when it's disabled." \
+them. Do not write the queue when it's disabled.$FEEDBACK_NOTE" \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \

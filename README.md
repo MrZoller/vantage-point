@@ -443,11 +443,21 @@ ssh -L 8000:localhost:8000 you@mini   # reach it from your laptop (or VS Code Re
 ```
 
 A click records the grade — with the item's full context — to `state/feedback.jsonl`
-(localhost-bound, no public listener). The next
-`bin/bootstrap.sh` reads those grades as ground-truth calibration and tunes
-`relevance.rubric` (and `relevance.calibration`) to match them, then you review/approve
-the draft as usual. So the loop is: **monitor surfaces → you thumb → re-bootstrap →
-sharper rubric** — quality compounds the longer you run it, with no config editing by hand.
+(localhost-bound, no public listener). Grades then take effect on two clocks:
+
+- **Next run (live calibration).** Each monitor run injects your newest
+  *post-bootstrap* grades (latest verdict per item, capped at
+  `relevance.recent_grades`, default 20; `0` disables) into the triage prompt as
+  worked examples — so a thumbs-down filters its lookalikes the very next morning,
+  without waiting for a profile refresh. Grades older than the approved profile's
+  `last_bootstrapped` are excluded (the rubric already absorbed them).
+- **Next refresh (durable consolidation).** The next `bin/bootstrap.sh` reads *all*
+  grades as ground-truth calibration and tunes `relevance.rubric` (and
+  `relevance.calibration`) to match them, then you review/approve the draft as usual.
+
+So the loop is: **monitor surfaces → you thumb → next run already adjusts →
+re-bootstrap consolidates** — quality compounds the longer you run it, with no config
+editing by hand.
 
 ## Tests
 

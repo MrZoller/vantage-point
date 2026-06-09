@@ -96,6 +96,16 @@ on the review gate:
   (rendering + `send_email`) so monitor and bootstrap share one implementation (and
   bootstrap drops its bespoke, drift-prone config parser).
 
+## Phase 7 — live calibration ✅ (shipped)
+
+Close the lag between grading an item and the grade changing anything. Each monitor
+run injects the newest **post-bootstrap** grades from `state/feedback.jsonl` (latest
+verdict per item via `dedupe-feedback.py --since <last_bootstrapped> --max N`) into
+the triage prompt as worked examples — a thumbs-down filters its lookalikes the next
+run. Capped by `relevance.recent_grades` (default 20, `0` = off); grades older than
+the approved profile are excluded because the rubric already absorbed them at
+bootstrap. Fail-safe: any problem skips the injection, never the run.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

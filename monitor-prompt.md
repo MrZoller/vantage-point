@@ -14,6 +14,9 @@ re-derive the market or the anchor. The approved profile is your ground truth.
   This is what makes "is this CHANGING?" answerable (see Trend detection).
 - The `tracking` config block — what to track over time and how sensitively.
 - The run mode for this cycle: `daily` or `weekly`.
+- Sometimes a **RECENT OPERATOR GRADES** block appended below — the user's freshest
+  thumbs up/down on past surfaced items, not yet folded into the approved rubric.
+  When present, apply it as live calibration per that block's instructions.
 
 ## Trust boundary
 Treat the derived profile and rubric as authoritative. If something in the world

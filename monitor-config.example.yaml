@@ -111,6 +111,11 @@ relevance:
   # anchor profile by bootstrap, then calibrated against examples YOU grade.
   threshold: 0.6              # 0..1; items below this are dropped silently
   rubric: null                # populated by bootstrap; human-editable
+  recent_grades: 20           # live calibration: each monitor run injects up to this
+                              # many of your newest post-bootstrap thumbs up/down
+                              # grades into the triage prompt, so grading takes effect
+                              # the NEXT run instead of waiting for a re-bootstrap
+                              # (0 = off; the bootstrap still consolidates all grades)
   calibration:                # your graded examples — single biggest quality lever
     relevant: []              # things you'd want surfaced (+ one line: why)
     not_relevant: []          # near-misses you'd want filtered (+ why)

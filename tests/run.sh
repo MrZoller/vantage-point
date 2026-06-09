@@ -552,7 +552,8 @@ test_encode_header
 make_fake_repo() {
   local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
-  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$repo/bin/"; cp_libs "$repo/bin"
+  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" "$repo/bin/"
+  cp_libs "$repo/bin"
   cat > "$repo/monitor-config.yaml" <<YAML
 version: 1
 models:
@@ -1241,6 +1242,75 @@ test_feedback_dedupe() {
   assert_eq "the stale up verdict for abc is dropped (only xyz is up)" "1" "$(printf '%s\n' "$out" | grep -c '"verdict": "up"')"
 }
 test_feedback_dedupe
+
+echo "== dedupe-feedback.py: --since/--max scope the live-calibration window =="
+test_feedback_window() {
+  local fb="$TMP/fbwin.jsonl" out
+  printf '%s\n' \
+    '{"timestamp":"2026-05-01T00:00:00Z","id":"old","verdict":"down"}' \
+    '{"timestamp":"2026-06-02T00:00:00Z","id":"a","verdict":"up"}' \
+    '{"timestamp":"2026-06-03T00:00:00Z","id":"b","verdict":"down"}' \
+    '{"timestamp":"2026-06-04T00:00:00Z","id":"c","verdict":"up"}' > "$fb"
+  out="$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb" --since 2026-06-01)"
+  assert_eq "--since keeps only post-cutoff grades" "3" "$(printf '%s\n' "$out" | grep -c .)"
+  case "$out" in
+    *'"old"'*) fail "--since excludes the pre-cutoff grade" ;;
+    *) pass "--since excludes the pre-cutoff grade" ;;
+  esac
+  # Grades from the cutoff DAY itself are kept (ISO ts > bare date, lexically).
+  assert_contains "a grade on the cutoff day survives --since" \
+    "$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb" --since 2026-06-02)" '"a"'
+  out="$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb" --since 2026-06-01 --max 2)"
+  assert_eq "--max keeps only the newest N" "2" "$(printf '%s\n' "$out" | grep -c .)"
+  case "$out" in
+    *'"a"'*) fail "--max drops the oldest in-window grade" ;;
+    *) pass "--max drops the oldest in-window grade" ;;
+  esac
+  # Chronological output: the older in-window grade (b) precedes the newest (c).
+  assert_contains "--max output is chronological (oldest first)" \
+    "$(printf '%s' "$out" | head -1)" '"id": "b"'
+}
+test_feedback_window
+
+echo "== monitor.sh: injects post-bootstrap grades as live calibration =="
+test_live_calibration() {
+  local repo="$TMP/livecal" out args="$TMP/livecal_args"
+  make_fake_repo "$repo" "2026-01-01"          # profile vintage = the grade cutoff
+  # A stub claude that records the prompt it was handed.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  printf '%s\n' \
+    '{"timestamp":"2025-12-01T00:00:00Z","id":"pre","verdict":"down","title":"absorbed-by-bootstrap"}' \
+    '{"timestamp":"2026-02-01T00:00:00Z","id":"post","verdict":"down","title":"fresh-thumbs-down"}' \
+    > "$repo/state/feedback.jsonl"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "announces the live-calibration injection" "$out" "live calibration: applying 1 recent grade"
+  assert_contains "prompt carries the grades block" "$(cat "$args" 2>/dev/null)" "RECENT OPERATOR GRADES"
+  assert_contains "the post-bootstrap grade is injected" "$(cat "$args" 2>/dev/null)" "fresh-thumbs-down"
+  case "$(cat "$args" 2>/dev/null)" in
+    *absorbed-by-bootstrap*) fail "a pre-bootstrap grade is excluded (already in the rubric)" ;;
+    *) pass "a pre-bootstrap grade is excluded (already in the rubric)" ;;
+  esac
+
+  # relevance.recent_grades: 0 switches the injection off entirely.
+  local args2="$TMP/livecal_args2"
+  printf 'relevance:\n  recent_grades: 0\n' >> "$repo/monitor-config.yaml"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args2" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  case "$(cat "$args2" 2>/dev/null)" in
+    *"RECENT OPERATOR GRADES"*) fail "recent_grades: 0 disables the injection" ;;
+    *) pass "recent_grades: 0 disables the injection" ;;
+  esac
+}
+test_live_calibration
 
 echo "== portal.py: latest_verdicts picks the newest timestamp, not file order =="
 test_feedback_latest_verdict() {
