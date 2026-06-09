@@ -872,6 +872,136 @@ test_editor_empty() {
 }
 test_editor_empty
 
+# A stub claude that appends one line per call to $ARGS_LOG - "<pass> --max-turns <n>"
+# (the prompt itself is multi-line, so the full argv can't be line-indexed) - while
+# still driving all three passes: triage writes a report + a high-scoring deep-dive
+# queue entry; the deep-dive/editor calls just succeed.
+write_arglog_stub() {  # $1 = repo
+  cat > "$1/stub/claude" <<'SH'
+#!/usr/bin/env bash
+pass=triage
+case "$*" in *DEEPDIVE_FIXTURE*) pass=deepdive ;; *EDITOR_FIXTURE*) pass=editor ;; esac
+if [ -n "${ARGS_LOG:-}" ]; then
+  turns=""
+  args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    [ "${args[i]}" = "--max-turns" ] && turns="${args[i+1]:-}"
+  done
+  printf '%s --max-turns %s\n' "$pass" "$turns" >> "$ARGS_LOG"
+fi
+if [ "$pass" = triage ]; then
+  printf '# report\n* item\n' > "kb/.$(date +%F).daily.partial.md"
+  printf '{"url":"u","title":"t","signal":"opportunity","score":0.9,"so_what":"x"}\n' \
+    > "state/.deepdive.daily.queue.jsonl"
+  printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+else
+  printf '{"num_turns":2,"total_cost_usd":0.0}\n'
+fi
+exit 0
+SH
+  chmod +x "$1/stub/claude"
+}
+
+echo "== monitor.sh: budgets.*_max_turns drives --max-turns per pass =="
+test_budget_turns() {
+  local repo="$TMP/budgetrepo" out rc argslog="$TMP/budget_args"
+  make_fake_repo "$repo"
+  # All three passes on, each with a distinct configured turn cap.
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  monitor: sonnet
+  deepdive: opus
+  editor: opus
+budgets:
+  monitor_max_turns: 33
+  deepdive_max_turns: 22
+  editor_max_turns: 11
+YAML
+  write_arglog_stub "$repo"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( ARGS_LOG="$argslog" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "run exits 0" "0" "$rc"
+  local calls; calls="$(cat "$argslog" 2>/dev/null)"
+  assert_contains "triage gets budgets.monitor_max_turns"     "$calls" "triage --max-turns 33"
+  assert_contains "deep-dive gets budgets.deepdive_max_turns" "$calls" "deepdive --max-turns 22"
+  assert_contains "editor gets budgets.editor_max_turns"      "$calls" "editor --max-turns 11"
+}
+test_budget_turns
+
+echo "== monitor.sh: absent or invalid budgets fall back to the default turn caps =="
+test_budget_turn_defaults() {
+  local repo="$TMP/budgetdefrepo" argslog="$TMP/budget_def_args"
+  make_fake_repo "$repo"                       # fixture config has no budgets block
+  write_arglog_stub "$repo"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  ( ARGS_LOG="$argslog" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+    bash "$repo/bin/monitor.sh" daily >/dev/null 2>&1 )
+  assert_contains "no budgets block -> triage default --max-turns 40" \
+    "$(cat "$argslog" 2>/dev/null)" "triage --max-turns 40"
+  printf 'budgets:\n  monitor_max_turns: nope\n  deepdive_max_turns: 0\n' >> "$repo/monitor-config.yaml"
+  : > "$argslog"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  ( ARGS_LOG="$argslog" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+    bash "$repo/bin/monitor.sh" daily >/dev/null 2>&1 )
+  local calls; calls="$(cat "$argslog" 2>/dev/null)"
+  assert_contains "non-numeric monitor_max_turns -> default 40" "$calls" "triage --max-turns 40"
+  assert_contains "zero deepdive_max_turns -> default 40"       "$calls" "deepdive --max-turns 40"
+}
+test_budget_turn_defaults
+
+echo "== monitor.sh: budgets.monthly_cost_usd warns when crossed, never skips the run =="
+test_budget_monthly_warning() {
+  local repo="$TMP/budgetwarn" out rc
+  make_fake_repo "$repo"
+  printf 'budgets:\n  monthly_cost_usd: 1.50\n' >> "$repo/monitor-config.yaml"
+  printf '{"timestamp":"%s","mode":"daily","pass":"triage","cost_usd":2.0}\n' \
+    "$(date -u +%FT%TZ)" > "$repo/state/runs.log"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "an over-budget run still exits 0" "0" "$rc"
+  assert_contains "warns when the 30-day spend crosses the cap" "$out" "budgets.monthly_cost_usd"
+  assert_contains "the warning carries the estimate caveat" "$out" "API-equivalent estimate"
+  # Spend outside the 30-day window doesn't count toward the cap.
+  printf '{"timestamp":"2000-01-01T00:00:00Z","mode":"daily","pass":"triage","cost_usd":99}\n' \
+    > "$repo/state/runs.log"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  case "$out" in
+    *budgets.monthly_cost_usd*) fail "old spend outside the window doesn't warn" ;;
+    *) pass "old spend outside the window doesn't warn" ;;
+  esac
+}
+test_budget_monthly_warning
+
+echo "== monitor.sh: no budget warning when under the cap or the cap is off =="
+test_budget_monthly_off() {
+  local repo="$TMP/budgetoff" out
+  make_fake_repo "$repo"
+  printf '{"timestamp":"%s","mode":"daily","pass":"triage","cost_usd":2.0}\n' \
+    "$(date -u +%FT%TZ)" > "$repo/state/runs.log"
+  # Default config: no budgets block at all -> cap off.
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  case "$out" in
+    *budgets.monthly_cost_usd*) fail "no warning when the cap is unset" ;;
+    *) pass "no warning when the cap is unset" ;;
+  esac
+  printf 'budgets:\n  monthly_cost_usd: 100\n' >> "$repo/monitor-config.yaml"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  case "$out" in
+    *budgets.monthly_cost_usd*) fail "no warning while under the cap" ;;
+    *) pass "no warning while under the cap" ;;
+  esac
+}
+test_budget_monthly_off
+
 echo "== usage.sh: a deep-dive pass doesn't inflate the run count =="
 test_usage_passes() {
   local repo="$TMP/usagepass" out now
@@ -1882,6 +2012,20 @@ test_bootstrap_model() {
   esac
 }
 test_bootstrap_model
+
+echo "== bootstrap.sh: budgets.bootstrap_max_turns drives --max-turns (default 80) =="
+test_bootstrap_budget_turns() {
+  local repo="$TMP/bootbudget" home="$TMP/boothome7" args="$TMP/boot_budget_args"
+  make_fake_bootstrap_repo "$repo" "$home"
+  ( cd "$repo" && CLAUDE_ARGS="$args" HOME="$home" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  assert_contains "no budgets block -> research default --max-turns 80" \
+    "$(cat "$args" 2>/dev/null)" "--max-turns 80"
+  printf 'budgets:\n  bootstrap_max_turns: 70\n' >> "$repo/monitor-config.yaml"
+  ( cd "$repo" && CLAUDE_ARGS="$args" HOME="$home" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  assert_contains "budgets.bootstrap_max_turns drives --max-turns" \
+    "$(cat "$args" 2>/dev/null)" "--max-turns 70"
+}
+test_bootstrap_budget_turns
 
 echo "== bootstrap.sh: folds in deduped calibration grades =="
 test_bootstrap_feedback() {

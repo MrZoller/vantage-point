@@ -44,6 +44,20 @@ models:
                       # delivery (lead, order, cut, tighten) without adding facts or
                       # dropping citations. Runs only on days a report is delivered.
 
+# Run budgets — the cost levers. Runs authenticate against your subscription, not
+# API billing, so `--max-budget-usd` can't govern them; what actually bounds spend
+# is run frequency plus these per-pass turn caps (each is passed to its claude call
+# as `--max-turns`). All optional; absent/0/non-numeric falls back to the defaults
+# shown. monthly_cost_usd is a SOFT cap: when the rolling 30-day cost estimate in
+# state/runs.log crosses it, every run warns on stderr — it never skips a run (the
+# estimate is API-equivalent, not a bill; see bin/usage.sh).
+budgets:
+  bootstrap_max_turns: 80   # the deep research pass — depth lives here
+  monitor_max_turns: 40     # the daily/weekly triage pass
+  deepdive_max_turns: 40    # the corroboration pass (only when models.deepdive is set)
+  editor_max_turns: 15      # the editorial pass (only when models.editor is set)
+  monthly_cost_usd: 0       # warn when 30-day estimated spend crosses this (0 = off)
+
 subject:
   name: "Enterprise AI platforms & LLM products"
   description: >

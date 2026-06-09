@@ -32,6 +32,12 @@ MODEL="$(cfg_get models bootstrap)"
 EDITOR_MODEL="$(cfg_get models editor)"   # optional editorial polish of the summary
 EMAIL_TO="$(cfg_get output email_to)"     # optional "draft ready for review" email
 SUBJECT_NAME="$(cfg_get_text subject name)"
+# Per-pass turn caps (budgets: block) - the cost lever for these claude calls.
+# 0/absent/non-numeric -> the long-standing defaults.
+BOOTSTRAP_MAX_TURNS="$(cfg_get budgets bootstrap_max_turns)"
+EDITOR_MAX_TURNS="$(cfg_get budgets editor_max_turns)"
+case "$BOOTSTRAP_MAX_TURNS" in ''|0|*[!0-9]*) BOOTSTRAP_MAX_TURNS=80 ;; esac
+case "$EDITOR_MAX_TURNS"    in ''|0|*[!0-9]*) EDITOR_MAX_TURNS=15 ;; esac
 
 # Fall back to the CLI default by omitting --model when the key is absent/blank.
 # Print a notice so a typo'd config is visible rather than silently defaulting.
@@ -92,7 +98,7 @@ $(cat "$CONFIG")
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
   --permission-mode acceptEdits \
-  --max-turns 80 \
+  --max-turns "$BOOTSTRAP_MAX_TURNS" \
   --output-format text \
   2> bootstrap.err
 
@@ -118,7 +124,7 @@ low-confidence / uncertainty flag - faithfulness to the draft beats polish. Edit
         --allowedTools "Read,Write,Edit" \
         --disallowedTools "Bash,WebSearch,WebFetch" \
         --permission-mode acceptEdits \
-        --max-turns 15 \
+        --max-turns "$EDITOR_MAX_TURNS" \
         --output-format text \
         2>> bootstrap.err && [ -s "$SUMMARY" ]; then
       rm -f "$SUMMARY.pre-ed"

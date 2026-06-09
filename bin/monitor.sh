@@ -79,6 +79,19 @@ case "$DEEPDIVE_MAX"    in ''|*[!0-9]*) DEEPDIVE_MAX=5 ;; esac
 case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-numeric -> skip check
 case "$RECENT_GRADES"   in ''|*[!0-9]*) RECENT_GRADES=20 ;; esac
 
+# ---- run budgets (budgets: block; all optional with the long-standing defaults) ----
+# On a Max subscription the spend is subscription headroom, not API billing, so the
+# real cost levers are run frequency and these per-pass turn caps (each is passed to
+# `claude --max-turns` for its pass). 0/absent/non-numeric -> the default cap.
+MONITOR_MAX_TURNS="$(cfg_get budgets monitor_max_turns)"
+DEEPDIVE_MAX_TURNS="$(cfg_get budgets deepdive_max_turns)"
+EDITOR_MAX_TURNS="$(cfg_get budgets editor_max_turns)"
+MONTHLY_COST_USD="$(cfg_get budgets monthly_cost_usd)"
+case "$MONITOR_MAX_TURNS"  in ''|0|*[!0-9]*) MONITOR_MAX_TURNS=40 ;; esac
+case "$DEEPDIVE_MAX_TURNS" in ''|0|*[!0-9]*) DEEPDIVE_MAX_TURNS=40 ;; esac
+case "$EDITOR_MAX_TURNS"   in ''|0|*[!0-9]*) EDITOR_MAX_TURNS=15 ;; esac
+case "$MONTHLY_COST_USD"   in ''|*[!0-9.]*|*.*.*) MONTHLY_COST_USD=0 ;; esac  # decimal USD; junk -> off
+
 # The approved profile's vintage. Used twice: the staleness warning below, and to
 # scope which operator grades count as "new" (recorded after this profile was built,
 # so not yet folded into its rubric by a re-bootstrap).
@@ -208,6 +221,27 @@ if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
   fi
 fi
 
+# ---- soft monthly budget (budgets.monthly_cost_usd; 0/absent = off) ----
+# Compares the rolling 30-day API-EQUIVALENT cost estimate in state/runs.log against
+# the cap and WARNS when it's crossed. It deliberately never skips the run: the
+# estimate is not real Max-subscription billing, and silently stopping the watch
+# would cost more than it saves. To actually spend less, lower the run frequency or
+# the budgets.*_max_turns caps above.
+if awk -v b="$MONTHLY_COST_USD" 'BEGIN{exit !(b > 0)}' && [ -s state/runs.log ]; then
+  if command -v jq >/dev/null 2>&1; then
+    SPENT_30D="$(jq -rs '
+      (now - 30 * 86400) as $cutoff
+      | [ .[] | select((((.timestamp // "") | fromdateiso8601?) // 0) >= $cutoff)
+            | .cost_usd // 0 ]
+      | (add // 0) * 100 | round / 100' state/runs.log 2>/dev/null || true)"
+    if [ -n "$SPENT_30D" ] && awk -v s="$SPENT_30D" -v b="$MONTHLY_COST_USD" 'BEGIN{exit !(s >= b)}'; then
+      echo "[monitor:$MODE] WARNING: est. 30-day spend \$$SPENT_30D >= budgets.monthly_cost_usd \$$MONTHLY_COST_USD (API-equivalent estimate, not billing - see bin/usage.sh) - lower run frequency or budgets.*_max_turns to spend less" >&2
+    fi
+  else
+    echo "[monitor:$MODE] note: budgets.monthly_cost_usd set but jq not found - budget check skipped" >&2
+  fi
+fi
+
 # ---- live calibration: recent operator grades (relevance.recent_grades) ----
 # Grades recorded via the Review tab only reshape the rubric at the next bootstrap +
 # approval, which can lag by weeks. Bridge that lag: inject the newest POST-bootstrap
@@ -319,7 +353,7 @@ them. Do not write the queue when it's disabled.$CANDIDATES_NOTE$FEEDBACK_NOTE" 
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
   --permission-mode acceptEdits \
-  --max-turns 40 \
+  --max-turns "$MONITOR_MAX_TURNS" \
   --output-format json \
   2> "kb/${TODAY}.${MODE}.err")"
 
@@ -388,7 +422,7 @@ report's structure." \
       --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
       --disallowedTools "Bash" \
       --permission-mode acceptEdits \
-      --max-turns 40 \
+      --max-turns "$DEEPDIVE_MAX_TURNS" \
       --output-format json \
       2>> "kb/${TODAY}.${MODE}.err")" || dd_rc=$?
     if [ "$dd_rc" -eq 0 ] && [ -s "$RUN_REPORT" ]; then
@@ -451,7 +485,7 @@ item's source link or confidence." \
       --allowedTools "Read,Write,Edit" \
       --disallowedTools "Bash,WebSearch,WebFetch" \
       --permission-mode acceptEdits \
-      --max-turns 15 \
+      --max-turns "$EDITOR_MAX_TURNS" \
       --output-format json \
       2>> "kb/${TODAY}.${MODE}.err")" || ed_rc=$?
     if [ "$ed_rc" -eq 0 ] && [ -s "$RUN_REPORT" ]; then
