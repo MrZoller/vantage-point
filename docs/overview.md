@@ -50,7 +50,7 @@ why, or what to do about it.*
 | Point-in-time events | **Trend detection** — price moves, repeated signals, hiring spikes over time |
 | Repeats rumors | **Corroborates** across independent sources (optional deep-dive pass); flags the unconfirmed |
 | Fires on everything | **Silence beats noise** — nothing on empty days (once tuned) |
-| Static | **Learns** from 👍/👎 feedback and gets more relevant over time |
+| Static | **Learns** from 👍/👎 feedback — applied from the next run — and **shows you its measured precision** over time |
 
 ## How it works
 
@@ -69,7 +69,9 @@ flowchart LR
   M -->|score + detect what changed| ED
   M -->|top items only| DD --> ED
   ED -->|deliver| R
-  R --> G -->|re-run research, then approve| P
+  R --> G
+  G -->|next run: live calibration| M
+  G -->|next refresh: re-run research, then approve| P
 ```
 
 1. **Profile (once).** The agent does deep research to build a profile of the market,
@@ -78,17 +80,24 @@ flowchart LR
    It can email you a readable summary of that draft (what it inferred, plus its
    lowest-confidence guesses) so you can review from your inbox; approving stays a
    deliberate step you take, not something the email does for you.
-2. **Monitor (daily/weekly).** It sweeps sources, scores each item against the profile,
-   and notices what's *changed* since last time. With the optional **deep-dive** pass
-   enabled, the few highest-value items get a deeper look that **corroborates across
-   multiple sources** before surfacing.
-3. **Brief + learn.** It delivers a tight report — as a designed **HTML email** and in a
-   browsable **web portal** — with an optional **editorial** pass that first curates and
+2. **Monitor (daily/weekly).** It sweeps sources and scores each item against the
+   profile, and notices what's *changed* since last time. Sources with an RSS/Atom
+   feed (the research step finds and verifies these) are pulled **deterministically**
+   first — so for those sources, "what was swept" is a recorded fact, not whatever the
+   agent happened to browse — and the agent's own browsing covers the rest. With the
+   optional **deep-dive** pass enabled, the few highest-value items get a deeper look
+   that **corroborates across multiple sources** before surfacing.
+3. **Brief + learn.** It delivers a tight report — as a designed **HTML email**, in a
+   browsable **web portal**, and optionally into a **Slack/Discord channel or any
+   webhook** — with an optional **editorial** pass that first curates and
    polishes it into a designed brief (lead, order, cut, tighten) without adding facts or
-   dropping citations. Items are graded up/down from the portal's **one-click Review tab**, and those
-   grades feed the **next profile refresh** — a re-run of the research step that you
-   review and approve. Grading sharpens relevance at the next refresh; it doesn't change
-   scoring automatically mid-stream.
+   dropping citations. Items are graded up/down from the portal's **one-click Review
+   tab**, and grades take effect on two clocks: the newest ones are applied as **live
+   calibration on the very next run** (a thumbs-down filters its lookalikes the next
+   morning), and the **next profile refresh** — a re-run of the research step that you
+   review and approve — consolidates all of them into the rubric durably. The portal
+   also *measures* the loop: a Calibration view tracks precision week by week, so
+   "it's getting sharper" is a chart, not a feeling.
 
 ## What you set up
 
@@ -219,6 +228,12 @@ or dropping citations. The same data also feeds a **web portal** (`bin/portal.sh
 Overview with an activity heatmap (items surfaced per day) and a weekly signal-mix chart,
 watched entities with their latest metric and a sparkline, recent events, and recent runs
 — plus every report rendered in place, the grading UI, and read-only profile/config views.
+Once you start grading it adds a **Calibration** view (precision over graded items, week
+by week, with grading coverage and per-source hit rates). And because briefs are
+perishable, an **Entities** tab keeps a **dossier per tracked entity** — its metric
+history, event timeline, and every item ever surfaced about it — that compounds the
+longer the monitor runs: walking into a meeting with six sourced months on a competitor
+is where the accumulated state pays off.
 The charts are server-rendered inline SVG, so there's no JavaScript and nothing to load.
 
 ![The portal Overview](img/portal-overview.png)
@@ -227,9 +242,10 @@ A [report rendered in the portal](img/portal-reports.png) (same styling as the e
 the [Review tab](img/portal-review.png) for thumbing items up/down. A static `kb/index.html` snapshot of the Overview is written each
 run too, so there's something to read with no server and no email required.
 
-(Email is optional — reports always land in `kb/` regardless; the HTML rendering uses a
-lightweight Markdown renderer if one is installed and falls back to clean plain text
-otherwise. See the [README](../README.md) for delivery setup.)
+(Delivery is optional — reports always land in `kb/` regardless. Email renders as HTML
+when a lightweight Markdown renderer is installed and falls back to clean plain text;
+a webhook URL additionally posts each report to Slack, Discord, or any service of your
+own. See the [README](../README.md) for delivery setup.)
 
 ## What you can point it at
 
@@ -286,10 +302,10 @@ Low commitment, low cost:
 
 1. **Pick a scope** — one market + one anchor (e.g., a competitive set, or a target list).
 2. **Seed & approve** the profile (~30 minutes with someone who knows the space).
-3. **Run it for 2–3 weeks**, spending ~2 minutes a day grading items. Partway through,
-   **re-run the research step** to fold those grades into a refreshed, re-approved profile
-   — that's when relevance visibly improves (grading alone doesn't change scoring until
-   the refresh).
+3. **Run it for 2–3 weeks**, spending ~2 minutes a day grading items. Each grade is
+   applied as live calibration on the very next run, and the portal's Calibration view
+   shows precision improving (or not) week by week. Partway through, **re-run the
+   research step** to consolidate those grades into a refreshed, re-approved profile.
 4. **Review the weekly digest** and decide whether it earns a standing slot. Once the
    rubric feels right, turn off the borderline tuning aid for quieter empty days.
 

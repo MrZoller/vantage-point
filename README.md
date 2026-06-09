@@ -29,8 +29,10 @@ vantage-point/
 │   ├── install-launchd.sh        # install/remove the launchd agents (no repo edits)
 │   ├── usage.sh                  # roll up state/runs.log: cost/turns/tokens
 │   ├── portal.sh                 # launch the unified web portal (or --export kb/index.html)
-│   ├── portal.py                 # the portal app: overview, reports, review, profile, config
-│   └── dedupe-feedback.py        # collapse feedback.jsonl to latest-per-id (for bootstrap)
+│   ├── portal.py                 # the portal app: overview, reports, entities, review, profile, config
+│   ├── fetch.py                  # deterministic feed pre-sweep (profile feeds -> candidates)
+│   ├── webhook.py                # POST a report as JSON to output.webhook_url (Slack/Discord/generic)
+│   └── dedupe-feedback.py        # collapse feedback.jsonl to latest-per-id (bootstrap + live calibration)
 └── launchd/
     ├── ai.zoller.vantagepoint.daily.plist    # templates; __VP_ROOT__ filled in at install
     └── ai.zoller.vantagepoint.weekly.plist

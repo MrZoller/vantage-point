@@ -15,16 +15,22 @@ stays consistent instead of re-deriving them.
   `profile.yaml` (the review gate). Optionally editor-polishes + emails the summary as a
   "draft ready for review" — a review aid, not the approval (that stays the local `cp`).
 - **monitor** (`bin/monitor.sh` + `monitor-prompt.md`): scheduled daily/weekly run —
-  sweep → dedup → score → trends → optional deep-dive → optional edit → report → deliver.
+  deterministic feed pre-sweep (`bin/fetch.py`, from `subject.derived.feeds`) + live
+  calibration injection (recent post-bootstrap grades, `relevance.recent_grades`) →
+  sweep → dedup → score → trends → optional deep-dive → optional edit → report →
+  deliver (email and/or `output.webhook_url` via `bin/webhook.py`).
 - **deep-dive** (`deepdive-prompt.md`): optional 2nd pass (`models.deepdive`) that
   corroborates the top items on a stronger model.
 - **editor** (`editor-prompt.md`): optional final pass (`models.editor`) that curates +
   polishes the report before delivery — non-destructive, no new facts, citations kept.
 - Both are `claude -p` calls wrapped in shell, sharing `config-lib.sh` (cfg readers) and
   `email-lib.sh` (rendering + `send_email`). Helpers: `portal.sh`/`portal.py` (unified
-  web portal — overview/reports/review/profile/config; grading → `state/feedback.jsonl`;
-  `--export` → static `kb/index.html`), `usage.sh`,
-  `install-launchd.sh`, `dedupe-feedback.py`.
+  web portal — overview (incl. the Calibration precision card)/reports/entities
+  (per-entity dossiers)/review/profile/config; grading → `state/feedback.jsonl`;
+  `--export` → static `kb/index.html`), `fetch.py` (deterministic feed sweep →
+  candidates JSONL), `webhook.py` (JSON report delivery), `usage.sh`,
+  `install-launchd.sh`, `dedupe-feedback.py` (latest-per-id grades; `--since/--max`
+  scope the monitor's live-calibration window).
 - **State** (gitignored): `state/seen.jsonl` (dedup), `state/observations.jsonl`
   (trends), `state/feedback.jsonl` (grades), `state/runs.log` (per-run usage);
   `kb/` (reports + dashboard).
