@@ -36,6 +36,7 @@ from urllib.parse import urlparse, parse_qs, quote
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(ROOT, "monitor-config.yaml")
 FEEDBACK = os.path.join(ROOT, "state", "feedback.jsonl")
+FEEDHEALTH = os.path.join(ROOT, "state", "feedhealth.json")
 OBS = os.path.join(ROOT, "state", "observations.jsonl")
 RUNS = os.path.join(ROOT, "state", "runs.log")
 KB = os.path.join(ROOT, "kb")
@@ -88,6 +89,8 @@ th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;verti
 th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
 .spark{font-size:1.15em;letter-spacing:1px;color:var(--accent);
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.feedurl{font-size:12px;word-break:break-all}
+.st-bad{color:#d6455d;font-weight:600}.st-warn{color:#b45309;font-weight:600}
 .num{font-variant-numeric:tabular-nums}.muted{color:var(--muted)}
 .viz{max-width:100%;height:auto;display:block}
 .viz text.cal-m{fill:#9aa3af;font-size:9px;font-family:inherit}
@@ -750,6 +753,79 @@ def calibration_card(static=False):
     return "".join(parts)
 
 
+# ------------------------------------------------------------------ feed health
+# Coverage integrity for the deterministic sweep (Phase 11): bin/fetch.py records
+# per-feed health to state/feedhealth.json each run, and this card makes rot
+# visible -- a feed that 404s for weeks (failing) or returns 200 but stopped
+# publishing (stale) silently shrinks recall until someone notices.
+
+STALE_FEED_DAYS = 14
+
+
+def feed_health_rows():
+    """Per-feed status rows from state/feedhealth.json, problems first."""
+    try:
+        with open(FEEDHEALTH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(days=STALE_FEED_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = []
+    for feed, rec in data.items():
+        if not isinstance(rec, dict) or not isinstance(feed, str):
+            continue
+        fails = rec.get("consecutive_failures")
+        fails = fails if isinstance(fails, int) and fails >= 0 else 0
+        last_ok = rec.get("last_ok")
+        last_ok = last_ok if isinstance(last_ok, str) else ""
+        last_entry = rec.get("last_entry")
+        last_entry = last_entry if isinstance(last_entry, str) else ""
+        if fails:
+            status, cls, order = ("failing (%d run%s)"
+                                  % (fails, "" if fails == 1 else "s"), "st-bad", 0)
+        elif not last_entry:
+            status, cls, order = "stale (no dated entries seen)", "st-warn", 1
+        elif last_entry < cutoff:
+            status, cls, order = ("stale (no new entries since %s)"
+                                  % last_entry[:10], "st-warn", 1)
+        else:
+            status, cls, order = "ok", "muted", 2
+        rows.append({"feed": feed, "status": status, "cls": cls, "order": order,
+                     "last_ok": last_ok[:10], "last_entry": last_entry[:10]})
+    rows.sort(key=lambda r: (r["order"], r["feed"]))
+    return rows
+
+
+def feed_health_card():
+    """The Overview's Feed health card. Omitted until a sweep has recorded health."""
+    rows = feed_health_rows()
+    if not rows:
+        return ""
+    problems = sum(1 for r in rows if r["order"] < 2)
+    label = ("all %d feeds sweeping normally" % len(rows) if not problems
+             else "%d of %d feed%s need%s attention"
+             % (problems, len(rows), "" if len(rows) == 1 else "s",
+                "s" if problems == 1 else ""))
+    parts = ['<div class="card"><h2>Feed health</h2>',
+             '<p class="sublabel">The deterministic sweep&#39;s coverage &mdash; %s. '
+             'A failing or stale feed is silent recall rot: fix the URL, or drop it '
+             'from <code>subject.derived.feeds</code> at the next refresh.</p>'
+             % esc(label),
+             '<table><tr><th>Feed</th><th>Status</th><th>Last OK</th>'
+             '<th>Newest entry</th></tr>']
+    for r in rows:
+        parts.append('<tr><td class="feedurl">%s</td><td class="%s">%s</td>'
+                     '<td class="muted">%s</td><td class="muted">%s</td></tr>'
+                     % (esc(r["feed"]), r["cls"], esc(r["status"]),
+                        esc(r["last_ok"]) or "&mdash;",
+                        esc(r["last_entry"]) or "&mdash;"))
+    parts.append('</table></div>')
+    return "".join(parts)
+
+
 def list_reports():
     """Daily/weekly report basenames, newest first (names are date-prefixed)."""
     try:
@@ -1034,6 +1110,7 @@ def overview_inner(static=False):
         parts.append('</div>')
 
     parts.append(calibration_card(static=static))
+    parts.append(feed_health_card())
 
     parts.append('<div class="card"><h2>Tracked entities</h2>')
     if rows:

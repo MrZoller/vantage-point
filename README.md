@@ -166,7 +166,10 @@ launchctl kickstart -k gui/$(id -u)/ai.zoller.vantagepoint.daily
 
 Make sure the mini doesn't sleep through the schedule (Energy settings → prevent
 sleep, or wrap the script in `caffeinate`). A missed `StartCalendarInterval` fires
-on wake, but only once — you don't want a sleeping mini eating your daily run.
+on wake, but only once — you don't want a sleeping mini eating your daily run. (If a
+run does get missed, the next one widens its sweep window to cover the gap — see
+"Catch-up after a gap" under the feed sweep section — so the signal isn't lost, just
+late.)
 
 ## Running multiple instances
 
@@ -454,6 +457,22 @@ state), runs get cheaper (turns aren't spent navigating), and two runs over the 
 day see the same candidates. Fail-safe as always: a feed that's down or unparseable
 is a stderr warning, never a failed run; no feeds at all means the monitor behaves
 exactly as before.
+
+**Feed health.** A single failed fetch is noise, but a feed that 404s for weeks — or
+returns 200 and just stopped publishing — is silent recall rot. Each sweep records
+per-feed health (last success, consecutive failures, newest entry seen) to
+`state/feedhealth.json`; a feed failing 3+ runs in a row warns loudly in
+`kb/<date>.<mode>.err`, and the portal Overview's **Feed health** card lists every
+feed with its status — *failing* and *stale* first — so a rotten feed gets fixed or
+dropped at the next refresh instead of quietly shrinking coverage.
+
+**Catch-up after a gap.** If the machine slept through a schedule or a run was
+skipped, the next run would otherwise look back only `lookback_hours` and lose the
+gap forever. When the last logged run is older than the current window, the monitor
+widens the window to cover the gap — for both the feed pre-sweep and the agent's own
+browsing — capped at `monitoring.catchup_max_hours` (default 168, `0` disables) so a
+long-dormant clone can't trigger an unbounded sweep. The widened window is announced
+in the run log.
 
 ## How findings are conveyed
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """fetch.py -- deterministic feed sweep, run by bin/monitor.sh before the agent.
 
-Usage: fetch.py [--hours N] [--max N] [--seen FILE] [--out FILE] [YAML_FILES...]
+Usage: fetch.py [--hours N] [--max N] [--seen FILE] [--out FILE] [--health FILE]
+                [YAML_FILES...]
 
 Scans the given YAML files (the approved profile and the config) for `feeds:` lists
 of RSS/Atom URLs, pulls each feed, keeps entries that are inside the lookback window
@@ -9,6 +10,10 @@ and not already in the seen file, and writes them as candidate JSONL (newest fir
 capped at --max) for the monitor to score. This turns the sweep of those sources
 into a deterministic, auditable fact -- the LLM stops being a crawler there and
 spends its browsing budget only on sources without a feed.
+
+With --health, per-feed sweep health is persisted to a JSON file (last success,
+consecutive failures, newest entry seen) so a feed that 404s for weeks or stops
+publishing is visible (the portal's Feed health card) instead of silent recall rot.
 
 Fail-safe by contract: a feed that is down or unparseable is a warning on stderr,
 never a failure -- the agentic sweep is the backstop. Exits 0 unless the arguments
@@ -180,13 +185,74 @@ def parse_entries(data):
     return entries
 
 
+FAIL_WARN_AFTER = 3   # consecutive failed runs before a feed is called out loudly
+
+
+def load_health(path):
+    """The persisted per-feed health map; anything unreadable reads as empty."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def update_health(path, outcomes):
+    """Persist per-feed sweep health. `outcomes`: feed -> (ok, detail), where detail
+    is the newest entry timestamp on success ("" if none parsed) or the error string
+    on failure. Carries forward the previous run's counters, drops feeds no longer
+    configured, and warns about a feed that has failed FAIL_WARN_AFTER runs in a row.
+    Best-effort by contract: a problem here is a warning, never a failed sweep."""
+    prev = load_health(path)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    health = {}
+    for feed, (ok, detail) in outcomes.items():
+        rec = prev.get(feed)
+        rec = rec if isinstance(rec, dict) else {}
+        prev_entry = rec.get("last_entry")
+        prev_entry = prev_entry if isinstance(prev_entry, str) else ""
+        if ok:
+            health[feed] = {
+                "last_ok": now,
+                "consecutive_failures": 0,
+                # Newest entry EVER seen on this feed (any date, in-window or not):
+                # a 200-OK feed that stopped publishing is stale, not healthy.
+                "last_entry": max(prev_entry, detail),
+            }
+        else:
+            fails = rec.get("consecutive_failures")
+            fails = (fails if isinstance(fails, int) and fails >= 0 else 0) + 1
+            last_ok = rec.get("last_ok")
+            health[feed] = {
+                "last_ok": last_ok if isinstance(last_ok, str) else "",
+                "consecutive_failures": fails,
+                "last_entry": prev_entry,
+                "last_error": now,
+                "error": detail,
+            }
+            if fails >= FAIL_WARN_AFTER:
+                print("[fetch] WARNING: %s has failed %d runs in a row - the sweep "
+                      "no longer covers it (fix or remove the feed)" % (feed, fails),
+                      file=sys.stderr)
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(health, f, ensure_ascii=False, indent=1, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp, path)
+    except OSError as exc:
+        print("[fetch] WARNING: could not write feed health to %s: %s" % (path, exc),
+              file=sys.stderr)
+
+
 def _parse_args(argv):
-    hours, cap, seen, out = 30, 200, "", ""
+    hours, cap, seen, out, health = 30, 200, "", "", ""
     files = []
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg in ("--hours", "--max", "--seen", "--out"):
+        if arg in ("--hours", "--max", "--seen", "--out", "--health"):
             i += 1
             if i >= len(argv):
                 return None
@@ -197,14 +263,16 @@ def _parse_args(argv):
                 cap = int(val)
             elif arg == "--seen":
                 seen = val
-            else:
+            elif arg == "--out":
                 out = val
+            else:
+                health = val
         elif arg in ("-h", "--help"):
             return None
         else:
             files.append(arg)
         i += 1
-    return hours, cap, seen, out, files
+    return hours, cap, seen, out, health, files
 
 
 def main():
@@ -215,7 +283,7 @@ def main():
     if parsed is None:
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    hours, cap, seen_path, out_path, files = parsed
+    hours, cap, seen_path, out_path, health_path, files = parsed
 
     feeds = []
     for path in files:
@@ -223,13 +291,15 @@ def main():
             if url not in feeds:
                 feeds.append(url)
     if not feeds:
+        if health_path:          # nothing configured -> nothing to report health on
+            update_health(health_path, {})
         print("[fetch] no feeds configured - skipping the deterministic sweep",
               file=sys.stderr)
         return 0
 
     seen = seen_urls(seen_path) if seen_path else set()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    candidates, urls_emitted, failed = [], set(), 0
+    candidates, urls_emitted, failed, outcomes = [], set(), 0, {}
     for feed in feeds:
         req = urllib.request.Request(feed, headers={"User-Agent": "vantage-point-fetch"})
         try:
@@ -237,13 +307,17 @@ def main():
                 data = resp.read()
         except (urllib.error.URLError, OSError) as exc:
             failed += 1
+            outcomes[feed] = (False, str(exc))
             print("[fetch] WARNING: %s failed: %s" % (feed, exc), file=sys.stderr)
             continue
         entries = parse_entries(data)
         if entries is None:
             failed += 1
+            outcomes[feed] = (False, "not parseable RSS/Atom")
             print("[fetch] WARNING: %s is not parseable RSS/Atom" % feed, file=sys.stderr)
             continue
+        newest = max((w for _, _, w in entries if w is not None), default=None)
+        outcomes[feed] = (True, newest.strftime("%Y-%m-%dT%H:%M:%SZ") if newest else "")
         for title, link, when in entries:
             if not title or not link:
                 continue
@@ -264,6 +338,8 @@ def main():
                 "source": urlparse(link).netloc or urlparse(feed).netloc,
                 "feed": feed,
             })
+    if health_path:
+        update_health(health_path, outcomes)
     candidates.sort(key=lambda c: c["published"], reverse=True)
     if cap > 0:
         candidates = candidates[:cap]

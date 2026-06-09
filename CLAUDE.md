@@ -17,10 +17,13 @@ stays consistent instead of re-deriving them.
   On a refresh it also writes `profile.draft.diff` (draft vs approved) and folds it into
   the email; the portal draft view shows the same diff live (difflib).
 - **monitor** (`bin/monitor.sh` + `monitor-prompt.md`): scheduled daily/weekly run —
-  deterministic feed pre-sweep (`bin/fetch.py`, from `subject.derived.feeds`) + live
-  calibration injection (recent post-bootstrap grades, `relevance.recent_grades`) →
-  sweep → dedup → score → trends → optional deep-dive → optional edit → report →
-  deliver (email and/or `output.webhook_url` via `bin/webhook.py`).
+  deterministic feed pre-sweep (`bin/fetch.py`, from `subject.derived.feeds`; records
+  per-feed health to `state/feedhealth.json` via `--health`) + catch-up lookback (gap
+  since the last logged run widens the window, capped by
+  `monitoring.catchup_max_hours`) + live calibration injection (recent post-bootstrap
+  grades, `relevance.recent_grades`) → sweep → dedup → score → trends → optional
+  deep-dive → optional edit → report → deliver (email and/or `output.webhook_url`
+  via `bin/webhook.py`).
 - **deep-dive** (`deepdive-prompt.md`): optional 2nd pass (`models.deepdive`) that
   corroborates the top items on a stronger model.
 - **editor** (`editor-prompt.md`): optional final pass (`models.editor`) that curates +
@@ -43,8 +46,8 @@ stays consistent instead of re-deriving them.
   `install-launchd.sh`, `dedupe-feedback.py` (latest-per-id grades; `--since/--max`
   scope the monitor's live-calibration window).
 - **State** (gitignored): `state/seen.jsonl` (dedup), `state/observations.jsonl`
-  (trends), `state/feedback.jsonl` (grades), `state/runs.log` (per-run usage);
-  `kb/` (reports + dashboard).
+  (trends), `state/feedback.jsonl` (grades), `state/runs.log` (per-run usage),
+  `state/feedhealth.json` (per-feed sweep health); `kb/` (reports + dashboard).
 - Deployed on a macOS mini via **launchd**, running from a local checkout — changes
   reach it by `git pull`, not by merging to GitHub. `install-launchd.sh` regenerates the
   plists (substituting `__VP_ROOT__` + `__VP_LABEL__`) and retires old agents. Multiple

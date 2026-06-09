@@ -216,6 +216,24 @@ refresh gate a 2-minute skim instead:
 - Approval stays the deliberate local `cp` — this lowers the cost of the gate, it
   doesn't move it.
 
+## Phase 16 — coverage integrity ✅ (shipped)
+
+Two small guards that keep the sweep's coverage from silently rotting:
+- **Feed health.** `bin/fetch.py --health` (passed by the monitor) persists per-feed
+  sweep health to `state/feedhealth.json`: last success, consecutive failures, and
+  the newest entry ever seen. A feed failing 3+ runs in a row warns loudly in the
+  run log, and the portal Overview gains a **Feed health** card — failing feeds
+  (with their streak), stale feeds (HTTP 200 but nothing new in 14+ days — dead by
+  another name), then healthy ones. Feeds dropped from the profile are pruned;
+  everything stays warning-only and stdlib-only.
+- **Catch-up lookback.** A slept-through or skipped run used to lose its window
+  forever — the next run still looked back only `lookback_hours`. Now, when the
+  last logged run (newest `state/runs.log` row) is older than this run's window,
+  the window widens to cover the gap — applied to both the feed pre-sweep and the
+  agent's own browsing (a `CATCH-UP WINDOW` prompt note) — capped by
+  `monitoring.catchup_max_hours` (default 168, `0` disables) so a long-dormant
+  deployment can't trigger an unbounded sweep.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:
