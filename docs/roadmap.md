@@ -106,6 +106,18 @@ run. Capped by `relevance.recent_grades` (default 20, `0` = off); grades older t
 the approved profile are excluded because the rubric already absorbed them at
 bootstrap. Fail-safe: any problem skips the injection, never the run.
 
+## Phase 8 — precision tracking ✅ (shipped)
+
+Prove (or disprove) "it gets sharper as you grade" with data the system already has.
+The portal Overview gains a **Calibration** card, built by joining
+`state/feedback.jsonl` (latest verdict per item) to `state/seen.jsonl` (surfaced
+items): 30-day **precision over graded items only** — an ungraded item is unknown,
+not an implicit positive — with **grading coverage** alongside to keep the headline
+honest, a precision-by-week SVG on the same time axis as the other Activity charts,
+and **per-source hit rates** (surfaced / graded / thumbs-up rate) to show which
+sources earn their rank before the next bootstrap re-ranks them. Stdlib-only,
+server-rendered, omitted until the first grade exists.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

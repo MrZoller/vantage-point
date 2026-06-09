@@ -1161,6 +1161,68 @@ PY
 }
 test_portal_activity_visuals
 
+echo "== portal.py: calibration card computes precision / coverage / source hit rates =="
+test_portal_calibration() {
+  local repo="$TMP/pcal" out py="$TMP/pcal.py"
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  # File-based probe (not a heredoc inside $()): bash 3.2's $() parser chokes on that.
+  cat > "$py" <<'PY'
+import importlib.util, json, os, sys
+from datetime import datetime, timezone, timedelta
+root = os.path.dirname(os.path.dirname(sys.argv[1]))
+today = datetime.now(timezone.utc).date()
+d0, d1 = today.isoformat(), (today - timedelta(days=1)).isoformat()
+old = (today - timedelta(days=60)).isoformat()
+seen = [
+    {"id": "g1", "date": d0, "signal": "opportunity", "title": "good", "source": "alpha.com", "url": "https://a"},
+    {"id": "g2", "date": d1, "signal": "threat", "title": "good2", "source": "alpha.com", "url": "https://a2"},
+    {"id": "b1", "date": d1, "signal": "shift", "title": "bad", "source": "beta.com", "url": "https://b"},
+    {"id": "u1", "date": d0, "signal": "shift", "title": "ungraded", "source": "beta.com", "url": "https://b2"},
+    {"id": "dr", "date": d0, "signal": "dropped", "title": "dropped", "source": "alpha.com"},
+    {"id": "oo", "date": old, "signal": "threat", "title": "out of window", "source": "alpha.com", "url": "https://a3"},
+]
+with open(os.path.join(root, "state", "seen.jsonl"), "w") as f:
+    for r in seen:
+        f.write(json.dumps(r) + "\n")
+now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+fb = [
+    {"timestamp": "2020-01-01T00:00:00Z", "id": "g1", "verdict": "down"},  # regraded below
+    {"timestamp": now, "id": "g1", "verdict": "up"},
+    {"timestamp": now, "id": "g2", "verdict": "up"},
+    {"timestamp": now, "id": "b1", "verdict": "down"},
+]
+with open(os.path.join(root, "state", "feedback.jsonl"), "w") as f:
+    for r in fb:
+        f.write(json.dumps(r) + "\n")
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+n, ups, downs = m.calibration_stats()
+print("N30", n)
+print("UPS", ups)
+print("DOWNS", downs)
+card = m.calibration_card()
+print("PRECISION_LINE", "67% precision" in card and "(2 up of 3 graded)" in card)
+print("COVERAGE_LINE", "75% coverage" in card)
+print("CHART_SVG", card.count("<svg"))
+print("ALPHA_RATE", "100% (2/2)" in card)
+print("BETA_RATE", "0% (0/1)" in card)
+open(os.path.join(root, "state", "feedback.jsonl"), "w").close()
+print("EMPTY_CARD", repr(m.calibration_card()))
+PY
+  out="$(python3 "$py" "$repo/bin/portal.py")"
+  assert_contains "30d denominator excludes dropped + out-of-window items" "$out" "N30 4"
+  assert_contains "a regrade counts its newest verdict (up)" "$out" "UPS 2"
+  assert_contains "downs counted" "$out" "DOWNS 1"
+  assert_contains "precision is over graded items only (2/3 = 67%)" "$out" "PRECISION_LINE True"
+  assert_contains "coverage keeps the headline honest (3/4 graded)" "$out" "COVERAGE_LINE True"
+  assert_contains "renders the weekly precision SVG" "$out" "CHART_SVG 1"
+  assert_contains "per-source hit rate: alpha.com 100%" "$out" "ALPHA_RATE True"
+  assert_contains "per-source hit rate: beta.com 0%" "$out" "BETA_RATE True"
+  assert_contains "card is omitted until the first grade exists" "$out" "EMPTY_CARD ''"
+}
+test_portal_calibration
+
 echo "== monitor.sh: an absolute state_file is named to Claude verbatim (no .// prefix) =="
 test_state_file_absolute() {
   local repo="$TMP/absrepo" out abs="$TMP/abs-seen.jsonl" args="$TMP/abs_args"

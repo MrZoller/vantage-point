@@ -465,6 +465,163 @@ def signal_mix():
     return svg + _legend([(SIG_COLORS[s], s) for s in SIG_ORDER])
 
 
+# ------------------------------------------------------------------ calibration stats
+# "Does grading actually make it sharper?" -- measured, not asserted. Precision is
+# computed over GRADED items only: an ungraded item is unknown, not an implicit
+# positive, so the grading COVERAGE is always reported alongside to keep the
+# headline honest. Items are bucketed by the date they were surfaced.
+
+def _surfaced_index():
+    """id -> {date, source} for surfaced (non-dropped) items in seen.jsonl.
+    First record per id wins (a rerun may append the same id again)."""
+    out = {}
+    for rec in read_jsonl(SEEN):
+        rid = rec.get("id")
+        if not isinstance(rid, str) or not rid or rid in out or rec.get("signal") == "dropped":
+            continue
+        d = rec.get("date")
+        src = rec.get("source")
+        out[rid] = {
+            "date": d if isinstance(d, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", d) else "",
+            "source": src if isinstance(src, str) else "",
+        }
+    return out
+
+
+def _grade_date(rid, rec, surfaced):
+    """The YYYY-MM-DD bucket for a graded item: the date it was surfaced, falling
+    back to the grade's own timestamp if the item has been pruned from seen.jsonl."""
+    return surfaced.get(rid, {}).get("date") or _ts(rec)[:10]
+
+
+def calibration_stats():
+    """(surfaced, ups, downs) over items surfaced in the last 30 days."""
+    surfaced = _surfaced_index()
+    graded = _latest_feedback()
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
+    n = ups = downs = 0
+    for rid, info in surfaced.items():
+        if not info["date"] or info["date"] < cutoff:
+            continue
+        n += 1
+        verdict = graded.get(rid, {}).get("verdict")
+        if verdict == "up":
+            ups += 1
+        elif verdict == "down":
+            downs += 1
+    return n, ups, downs
+
+
+def precision_chart():
+    """Weekly bars of precision (% thumbs-up among graded items), over the same
+    window as the other Activity charts. The faint full-height track marks weeks
+    that have grades; weeks without grades render nothing (unknown, not zero)."""
+    surfaced = _surfaced_index()
+    graded = _latest_feedback()
+    if not graded:
+        return ""
+    start, weeks, today = _week_grid()
+    wk = [[0, 0] for _ in range(weeks)]            # [ups, downs] per week
+    for rid, rec in graded.items():
+        verdict = rec.get("verdict")
+        if verdict not in ("up", "down"):
+            continue
+        try:
+            d = date.fromisoformat(_grade_date(rid, rec, surfaced))
+        except ValueError:
+            continue
+        if start <= d <= today:
+            i = (d - start).days // 7
+            wk[i][0 if verdict == "up" else 1] += 1
+    if not any(u + dn for u, dn in wk):
+        return ""
+    barw, gap, top, ph = 14, 6, 6, 90
+    step = barw + gap
+    w, h = weeks * step, top + ph + 16
+    bars, last_month = [], None
+    for i, (ups, downs) in enumerate(wk):
+        x = i * step
+        total = ups + downs
+        if total:
+            frac = ups / total
+            seg = max(2, round(frac * ph))
+            bars.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2" fill="%s" '
+                        'fill-opacity=".15"/>' % (x, top, barw, ph, ACCENT))
+            bars.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2" fill="%s">'
+                        '<title>week of %s: %d%% up (%d of %d graded)</title></rect>'
+                        % (x, top + ph - seg, barw, seg, ACCENT,
+                           (start + timedelta(days=i * 7)).isoformat(),
+                           round(frac * 100), ups, total))
+        m = (start + timedelta(days=i * 7)).strftime("%b")
+        if m != last_month:
+            bars.append('<text x="%d" y="%d" class="cal-m">%s</text>' % (x, h - 3, esc(m)))
+            last_month = m
+    return ('<svg class="viz" viewBox="0 0 %d %d" width="%d" height="%d" '
+            'role="img" aria-label="Precision by week">%s</svg>'
+            % (w, h, w, h, "".join(bars)))
+
+
+def source_stats():
+    """Per-source value attribution: surfaced / graded / thumbs-up counts, busiest
+    sources first (capped). Tells you which sources earn their rank -- and feeds
+    the judgement call of pruning or promoting them at the next bootstrap."""
+    surfaced = _surfaced_index()
+    graded = _latest_feedback()
+    agg = {}
+    for rid, info in surfaced.items():
+        src = info["source"] or "(unknown)"
+        row = agg.setdefault(src, [0, 0, 0])       # surfaced, graded, ups
+        row[0] += 1
+        verdict = graded.get(rid, {}).get("verdict")
+        if verdict in ("up", "down"):
+            row[1] += 1
+            if verdict == "up":
+                row[2] += 1
+    rows = [{"source": s, "surfaced": a[0], "graded": a[1], "ups": a[2]}
+            for s, a in agg.items()]
+    rows.sort(key=lambda r: (-r["surfaced"], r["source"]))
+    return rows[:12]
+
+
+def calibration_card(static=False):
+    """The Overview's Calibration card. Omitted until the first grade exists."""
+    if not _latest_feedback():
+        return ""
+    surfaced30, ups30, downs30 = calibration_stats()
+    graded30 = ups30 + downs30
+    chart = precision_chart()
+    parts = ['<div class="card"><h2>Calibration</h2>']
+    if graded30:
+        precision = round(100 * ups30 / graded30)
+        coverage = round(100 * graded30 / surfaced30) if surfaced30 else 0
+        parts.append('<p class="sublabel">Last 30 days: <strong>%d%% precision</strong> '
+                     '(%d up of %d graded) &middot; %d%% coverage (%d of %d surfaced '
+                     'items graded)</p>' % (precision, ups30, graded30, coverage,
+                                            graded30, surfaced30))
+    else:
+        where = "the Review tab" if static else '<a href="/review">Review</a>'
+        parts.append('<p class="sublabel">No grades on the last 30 days of items '
+                     '&mdash; thumb items in %s to track precision.</p>' % where)
+    if chart:
+        parts.append('<p class="sublabel" style="margin-top:14px">Precision by week '
+                     '(graded items only)</p>%s' % chart)
+    rows = [r for r in source_stats() if r["graded"]]
+    if rows:
+        parts.append('<p class="sublabel" style="margin-top:14px">Source hit rates '
+                     '(graded items, all time)</p>')
+        parts.append('<table><tr><th>Source</th><th>Surfaced</th><th>Graded</th>'
+                     '<th>Thumbs-up rate</th></tr>')
+        for r in rows:
+            rate = '%d%% (%d/%d)' % (round(100 * r["ups"] / r["graded"]),
+                                     r["ups"], r["graded"])
+            parts.append('<tr><td>%s</td><td class="num">%d</td><td class="num">%d</td>'
+                         '<td class="num">%s</td></tr>'
+                         % (esc(r["source"]), r["surfaced"], r["graded"], rate))
+        parts.append('</table>')
+    parts.append('</div>')
+    return "".join(parts)
+
+
 def list_reports():
     """Daily/weekly report basenames, newest first (names are date-prefixed)."""
     try:
@@ -515,17 +672,24 @@ def _ts(rec):
     return t if isinstance(t, str) else ""
 
 
-def latest_verdicts():
-    """id -> newest verdict (by timestamp) from the feedback log."""
+def _latest_feedback():
+    """id -> newest feedback record (by timestamp). Non-string ids are skipped --
+    the log is agent-adjacent and hand-editable, and a non-scalar id would be an
+    unhashable dict key."""
     latest = {}
     for rec in read_jsonl(FEEDBACK):
         rid = rec.get("id")
-        if not rid:
+        if not isinstance(rid, str) or not rid:
             continue
         prev = latest.get(rid)
         if prev is None or _ts(rec) >= _ts(prev):
             latest[rid] = rec
-    return {rid: rec.get("verdict") for rid, rec in latest.items()}
+    return latest
+
+
+def latest_verdicts():
+    """id -> newest verdict (by timestamp) from the feedback log."""
+    return {rid: rec.get("verdict") for rid, rec in _latest_feedback().items()}
 
 
 def record_grade(item, verdict):
@@ -702,6 +866,8 @@ def overview_inner(static=False):
         if mix:
             parts.append('<p class="sublabel" style="margin-top:18px">Signal mix by week</p>%s' % mix)
         parts.append('</div>')
+
+    parts.append(calibration_card(static=static))
 
     parts.append('<div class="card"><h2>Tracked entities</h2>')
     if rows:

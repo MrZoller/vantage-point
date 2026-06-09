@@ -362,7 +362,10 @@ Reports are built to be *read and acted on*, not skimmed:
 - The **web portal** (`bin/portal.sh`) ties the operator surfaces together in one
   clean page: an **Overview** (an activity heatmap of items surfaced per day and a
   weekly opportunity/threat/shift signal-mix chart, plus tracked entities + sparklines,
-  recent events, and recent runs), **Reports** (every daily/weekly briefing rendered
+  recent events, and recent runs — and once you start grading, a **Calibration** card:
+  30-day precision over graded items with grading coverage alongside, a
+  precision-by-week chart, and per-source hit rates, so "it gets sharper as you grade"
+  is measured rather than asserted), **Reports** (every daily/weekly briefing rendered
   with the same styling as its email — any report prints cleanly to PDF via your
   browser's **Print → Save as PDF**, and *Save all as PDF* renders every report into one
   printable document), **Review** (the grading UI, below), and read-only
