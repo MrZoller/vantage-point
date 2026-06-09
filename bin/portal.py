@@ -360,8 +360,11 @@ def all_entities():
 
 def entity_items(name):
     """Surfaced items about an entity, newest first: tagged with it via `entities`,
-    or -- for items recorded before tagging existed -- naming it in title/so_what."""
+    or -- for items recorded before tagging existed -- naming it in title/so_what.
+    The legacy name match requires whole tokens (lookarounds, not bare substring), so
+    a short entity like "AI" can't pull in every item containing "paid"."""
     needle = str(name).lower()
+    word = re.compile(r"(?<!\w)" + re.escape(needle) + r"(?!\w)")
     items, ids = [], set()
     for rec in reversed(read_jsonl(SEEN)):
         rid = rec.get("id")
@@ -369,7 +372,7 @@ def entity_items(name):
             continue
         tagged = any(e.lower() == needle for e in _item_entities(rec))
         blob = "%s %s" % (rec.get("title", ""), rec.get("so_what", ""))
-        if tagged or needle in blob.lower():
+        if tagged or word.search(blob.lower()):
             ids.add(rid)
             items.append(rec)
         if len(items) >= MAX_ITEMS:

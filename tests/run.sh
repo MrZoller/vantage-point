@@ -1234,6 +1234,7 @@ test_portal_entities() {
     printf '{"timestamp":"2026-06-01T07:00:00Z","entity":"Tudor BB58","metric":"secondary_price_usd","value":3200,"unit":"USD","source":"u"}\n'
     printf '{"timestamp":"2026-06-06T07:00:00Z","entity":"Tudor BB58","metric":"event","event_type":"leak","value":"new GMT teased","source":"u"}\n'
     printf '{"timestamp":"2026-06-02T07:00:00Z","entity":"Pelagos 39","metric":"new_listings","value":4,"source":"u"}\n'
+    printf '{"timestamp":"2026-06-02T07:00:00Z","entity":"AI","metric":"mention_count","value":5,"source":"u"}\n'
   } > "$repo/state/observations.jsonl"
   {
     # Tagged with the entity (the new `entities` field)...
@@ -1243,6 +1244,9 @@ test_portal_entities() {
     # ...an unrelated item and a dropped-but-tagged item: both excluded.
     printf '{"id":"x1","date":"2026-06-06","signal":"shift","title":"Other news","url":"https://c","source":"c.com"}\n'
     printf '{"id":"x2","date":"2026-06-06","signal":"dropped","title":"noise","entities":["Tudor BB58"],"score":0.2}\n'
+    # Short-entity ("AI") fallback: whole-token match only -- "Prepaid" must not hit.
+    printf '{"id":"a1","date":"2026-06-06","signal":"shift","title":"AI regulation looms","url":"https://d","source":"d.com"}\n'
+    printf '{"id":"a2","date":"2026-06-06","signal":"shift","title":"Prepaid plans rejigged","url":"https://e","source":"e.com"}\n'
   } > "$repo/state/seen.jsonl"
   cat > "$py" <<'PY'
 import importlib.util, sys
@@ -1256,14 +1260,16 @@ print("LAST", ents["Tudor BB58"]["last"])
 ids = [i["id"] for i in m.entity_items("Tudor BB58")]
 print("MATCHED", "|".join(sorted(ids)))             # t1 (tagged) + t2 (named), no x1/x2
 print("EVENTS", len(m.entity_events("Tudor BB58")))
+print("MATCHED_AI", "|".join(sorted(i["id"] for i in m.entity_items("AI"))))
 PY
   out="$(python3 "$py" "$repo/bin/portal.py")"
-  assert_contains "entities come from observations AND item tags" "$out" "NAMES Pelagos 39|Tudor BB58"
+  assert_contains "entities come from observations AND item tags" "$out" "NAMES AI|Pelagos 39|Tudor BB58"
   assert_contains "observation count" "$out" "OBS 3"
   assert_contains "item count excludes dropped" "$out" "ITEMS 1"
   assert_contains "last activity is the newest of obs/items" "$out" "LAST 2026-06-06"
   assert_contains "dossier matches tagged + legacy named items only" "$out" "MATCHED t1|t2"
   assert_contains "event timeline is entity-scoped" "$out" "EVENTS 1"
+  assert_contains "a short entity matches whole tokens only (no 'Prepaid' for 'AI')" "$out" "MATCHED_AI a1"
 
   if ! command -v curl >/dev/null 2>&1; then pass "entity pages (skipped: no curl)"; return; fi
   ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
@@ -1613,15 +1619,23 @@ from email.utils import format_datetime
 d = sys.argv[1]
 now = datetime.now(timezone.utc)
 fresh, old = format_datetime(now - timedelta(hours=2)), format_datetime(now - timedelta(hours=200))
+# The NEWEST entry (30 min ago) carries a -10:00 offset: if fetch.py formatted its
+# wall-clock time with a Z suffix it would sort ~10h old instead of first.
+offset = format_datetime((now - timedelta(minutes=30)).astimezone(timezone(timedelta(hours=-10))))
+rel = format_datetime(now - timedelta(hours=3))
 rss = ('<?xml version="1.0"?>\n<rss version="2.0"><channel><title>R</title>\n'
        '<item><title>Fresh RSS story</title><link>https://ex.com/fresh</link>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Offset story</title><link>https://ex.com/offset</link>'
+       '<pubDate>%s</pubDate></item>\n'
+       '<item><title>Relative link story</title><link>/rel/post</link>'
        '<pubDate>%s</pubDate></item>\n'
        '<item><title>Stale RSS story</title><link>https://ex.com/stale</link>'
        '<pubDate>%s</pubDate></item>\n'
        '<item><title>Already seen story</title><link>https://ex.com/seen</link>'
        '<pubDate>%s</pubDate></item>\n'
        '<item><title>Undated story</title><link>https://ex.com/undated</link></item>\n'
-       '</channel></rss>\n') % (fresh, old, fresh)
+       '</channel></rss>\n') % (fresh, offset, rel, old, fresh)
 atom = ('<?xml version="1.0"?>\n<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title>\n'
         '<entry><title>Fresh Atom entry</title>'
         '<link rel="alternate" href="https://ax.com/entry"/>'
@@ -1665,14 +1679,21 @@ YAML
   assert_contains "keeps an undated item (can't be proven stale)" "$out" "Undated story"
   case "$out" in *"Stale RSS story"*) fail "drops an item older than the window" ;; *) pass "drops an item older than the window" ;; esac
   case "$out" in *"/seen"*) fail "drops an item already in the seen file" ;; *) pass "drops an item already in the seen file" ;; esac
-  assert_contains "newest candidate first" "$(head -1 "$TMP/cand.jsonl")" "Fresh Atom entry"
+  # The -10:00-offset entry is the newest item: only a UTC-normalized published
+  # value sorts it first (wall-clock-with-Z would bury it ~10h down the list).
+  assert_contains "newest candidate first despite a timezone offset" \
+    "$(head -1 "$TMP/cand.jsonl")" "Offset story"
+  assert_contains "a relative entry link is resolved against the feed URL" \
+    "$out" "\"url\": \"http://127.0.0.1:$port/rel/post\""
   assert_contains "candidates carry the link host as source" "$out" '"source": "ex.com"'
-  assert_contains "stats line counts candidates and feeds" "$(cat "$err")" "3 candidate(s) from 4 feed(s)"
+  assert_contains "stats line counts candidates and feeds" "$(cat "$err")" "5 candidate(s) from 4 feed(s)"
   assert_contains "stats line counts failed feeds" "$(cat "$err")" "2 feed(s) failed"
-  # --max caps to the newest N.
+  # --max caps to the newest N (again: only correct under UTC normalization).
   python3 "$ROOT/bin/fetch.py" --hours 30 --max 1 --out "$TMP/cand1.jsonl" \
     "$TMP/feeds-profile.yaml" 2>/dev/null
   assert_eq "--max 1 keeps one candidate" "1" "$(wc -l < "$TMP/cand1.jsonl" | tr -d ' ')"
+  assert_contains "--max keeps the newest (offset-normalized) candidate" \
+    "$(cat "$TMP/cand1.jsonl")" "Offset story"
   kill "$srv" 2>/dev/null || true
   # No feeds configured: exit 0, no output file, a clear note.
   printf 'subject:\n  derived:\n    feeds: []\n' > "$TMP/nofeeds.yaml"

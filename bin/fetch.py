@@ -25,7 +25,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 FEED_ITEM_RE = re.compile(r"^(\s*)-\s*['\"]?(https?://\S+?)['\"]?\s*(?:#.*)?$")
 FEEDS_KEY_RE = re.compile(r"^(\s*)feeds:\s*(\[\s*\])?\s*(?:#.*)?$")
@@ -106,7 +106,12 @@ def _atom_link(el):
 
 
 def _parse_when(text):
-    """RFC 822 (RSS) or ISO 8601 (Atom) -> aware datetime, else None."""
+    """RFC 822 (RSS) or ISO 8601 (Atom) -> aware UTC datetime, else None.
+
+    Normalized to UTC here so the formatted `published` string (and therefore the
+    newest-first sort and the --max cap) is correct across feeds in different
+    timezones -- an offset timestamp formatted as wall-clock-with-Z would sort a
+    newer item behind older ones."""
     if not text:
         return None
     try:
@@ -120,7 +125,7 @@ def _parse_when(text):
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+    return dt.astimezone(timezone.utc)
 
 
 def parse_entries(data):
@@ -210,7 +215,13 @@ def main():
             print("[fetch] WARNING: %s is not parseable RSS/Atom" % feed, file=sys.stderr)
             continue
         for title, link, when in entries:
-            if not title or not link or link in seen or link in urls_emitted:
+            if not title or not link:
+                continue
+            # Resolve a relative entry link (e.g. "/posts/123") against the feed URL
+            # BEFORE dedup, so the stored url is fetchable and matches the absolute
+            # urls already in the seen file. Absolute links pass through unchanged.
+            link = urljoin(feed, link)
+            if link in seen or link in urls_emitted:
                 continue
             if when is not None and when < cutoff:
                 continue
