@@ -964,6 +964,8 @@ test_budget_monthly_warning() {
   assert_eq "an over-budget run still exits 0" "0" "$rc"
   assert_contains "warns when the 30-day spend crosses the cap" "$out" "budgets.monthly_cost_usd"
   assert_contains "the warning carries the estimate caveat" "$out" "API-equivalent estimate"
+  local n; n="$(printf '%s\n' "$out" | grep -c 'budgets.monthly_cost_usd' || true)"
+  assert_eq "warns once per run, not on both checks" "1" "$n"
   # Spend outside the 30-day window doesn't count toward the cap.
   printf '{"timestamp":"2000-01-01T00:00:00Z","mode":"daily","pass":"triage","cost_usd":99}\n' \
     > "$repo/state/runs.log"
@@ -976,6 +978,27 @@ test_budget_monthly_warning() {
   esac
 }
 test_budget_monthly_warning
+
+echo "== monitor.sh: the run that crosses the cap warns at its own end =="
+test_budget_crossing_run() {
+  local repo="$TMP/budgetcross" out rc
+  make_fake_repo "$repo"
+  printf 'budgets:\n  monthly_cost_usd: 1.50\n' >> "$repo/monitor-config.yaml"
+  # No prior spend, so the pre-run check is quiet; this run's own logged cost
+  # crosses the cap, and the end-of-run re-check must catch it.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '{"num_turns":1,"total_cost_usd":2.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "crossing run exits 0" "0" "$rc"
+  assert_contains "the crossing run itself warns" "$out" "budgets.monthly_cost_usd"
+}
+test_budget_crossing_run
 
 echo "== monitor.sh: no budget warning when under the cap or the cap is off =="
 test_budget_monthly_off() {

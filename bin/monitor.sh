@@ -226,21 +226,33 @@ fi
 # the cap and WARNS when it's crossed. It deliberately never skips the run: the
 # estimate is not real Max-subscription billing, and silently stopping the watch
 # would cost more than it saves. To actually spend less, lower the run frequency or
-# the budgets.*_max_turns caps above.
-if awk -v b="$MONTHLY_COST_USD" 'BEGIN{exit !(b > 0)}' && [ -s state/runs.log ]; then
-  if command -v jq >/dev/null 2>&1; then
-    SPENT_30D="$(jq -rs '
-      (now - 30 * 86400) as $cutoff
-      | [ .[] | select((((.timestamp // "") | fromdateiso8601?) // 0) >= $cutoff)
-            | .cost_usd // 0 ]
-      | (add // 0) * 100 | round / 100' state/runs.log 2>/dev/null || true)"
-    if [ -n "$SPENT_30D" ] && awk -v s="$SPENT_30D" -v b="$MONTHLY_COST_USD" 'BEGIN{exit !(s >= b)}'; then
-      echo "[monitor:$MODE] WARNING: est. 30-day spend \$$SPENT_30D >= budgets.monthly_cost_usd \$$MONTHLY_COST_USD (API-equivalent estimate, not billing - see bin/usage.sh) - lower run frequency or budgets.*_max_turns to spend less" >&2
-    fi
-  else
+# the budgets.*_max_turns caps above. Checked twice - here (an already-over state
+# warns before this run spends more) and again at the end of the run, after this
+# run's own usage has been logged (so the run that CROSSES the cap warns too,
+# instead of leaving the alert to the next scheduled run) - but warns at most once
+# per invocation.
+BUDGET_WARNED=""
+check_budget() {
+  [ -z "$BUDGET_WARNED" ] || return 0
+  awk -v b="$MONTHLY_COST_USD" 'BEGIN{exit !(b > 0)}' || return 0
+  [ -s state/runs.log ] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
     echo "[monitor:$MODE] note: budgets.monthly_cost_usd set but jq not found - budget check skipped" >&2
+    BUDGET_WARNED=1
+    return 0
   fi
-fi
+  local spent
+  spent="$(jq -rs '
+    (now - 30 * 86400) as $cutoff
+    | [ .[] | select((((.timestamp // "") | fromdateiso8601?) // 0) >= $cutoff)
+          | .cost_usd // 0 ]
+    | (add // 0) * 100 | round / 100' state/runs.log 2>/dev/null || true)"
+  if [ -n "$spent" ] && awk -v s="$spent" -v b="$MONTHLY_COST_USD" 'BEGIN{exit !(s >= b)}'; then
+    echo "[monitor:$MODE] WARNING: est. 30-day spend \$$spent >= budgets.monthly_cost_usd \$$MONTHLY_COST_USD (API-equivalent estimate, not billing - see bin/usage.sh) - lower run frequency or budgets.*_max_turns to spend less" >&2
+    BUDGET_WARNED=1
+  fi
+}
+check_budget
 
 # ---- live calibration: recent operator grades (relevance.recent_grades) ----
 # Grades recorded via the Review tab only reshape the rubric at the next bootstrap +
@@ -577,6 +589,10 @@ else
   rm -f "$RUN_REPORT"
   echo "[monitor:$MODE] nothing material - no report written (silence is correct)."
 fi
+
+# Re-check the soft budget now that every pass's usage is in runs.log, so the run
+# that crossed the cap is the one that warns (no-op if the pre-run check already did).
+check_budget
 
 # ---- refresh the kb/index.html portal snapshot (best-effort; never fails the run) ----
 # Observations may have updated even on a quiet day, so regenerate every run unless
