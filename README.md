@@ -388,7 +388,10 @@ Reports are built to be *read and acted on*, not skimmed:
   is measured rather than asserted), **Reports** (every daily/weekly briefing rendered
   with the same styling as its email — any report prints cleanly to PDF via your
   browser's **Print → Save as PDF**, and *Save all as PDF* renders every report into one
-  printable document), **Review** (the grading UI, below), and read-only
+  printable document), **Entities** (a dossier per tracked entity, accumulated across
+  runs: its metric series with sparklines, its event timeline, and every surfaced item
+  that concerned it — reports are perishable, dossiers compound; entity names on the
+  Overview link straight to them), **Review** (the grading UI, below), and read-only
   **Profile** and **Config** views. The Overview charts are server-rendered inline SVG —
   no JavaScript, so they work under the portal's strict CSP and stay dependency-light. The **Profile** tab renders the human-readable digest (`profile.summary.md`, or
   `profile.draft.summary.md` for a pending draft) with the same styling as the bootstrap

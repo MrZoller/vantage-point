@@ -91,6 +91,10 @@ but dedup against what the dailies already surfaced.
   "title": "...",
   "score": 0.82,
   "signal": "opportunity",         // opportunity | threat | shift | (dropped)
+  "entities": ["Tudor Black Bay 58"], // tracked entities this item concerns ([] when
+                                   // none): use the exact names from tracking.watch +
+                                   // the profile watchlist/key players, so the item
+                                   // lands in that entity's dossier in the portal.
   "so_what": "One or two sentences in the anchor's terms.",
   "confidence": "high"             // high | medium | low
 }

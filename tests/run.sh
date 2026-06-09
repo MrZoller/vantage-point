@@ -1224,6 +1224,66 @@ PY
 }
 test_portal_calibration
 
+echo "== portal.py: entity dossiers join observations + tagged/legacy items =="
+test_portal_entities() {
+  local repo="$TMP/pent" out py="$TMP/pent.py" port=8795 page
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  {
+    printf '{"timestamp":"2026-05-01T07:00:00Z","entity":"Tudor BB58","metric":"secondary_price_usd","value":3650,"unit":"USD","source":"u"}\n'
+    printf '{"timestamp":"2026-06-01T07:00:00Z","entity":"Tudor BB58","metric":"secondary_price_usd","value":3200,"unit":"USD","source":"u"}\n'
+    printf '{"timestamp":"2026-06-06T07:00:00Z","entity":"Tudor BB58","metric":"event","event_type":"leak","value":"new GMT teased","source":"u"}\n'
+    printf '{"timestamp":"2026-06-02T07:00:00Z","entity":"Pelagos 39","metric":"new_listings","value":4,"source":"u"}\n'
+  } > "$repo/state/observations.jsonl"
+  {
+    # Tagged with the entity (the new `entities` field)...
+    printf '{"id":"t1","date":"2026-06-06","signal":"threat","title":"Price cut announced","entities":["Tudor BB58"],"so_what":"undercuts","url":"https://a","source":"alpha.com"}\n'
+    # ...a pre-tagging record that only NAMES it (case-insensitive fallback)...
+    printf '{"id":"t2","date":"2026-06-01","signal":"opportunity","title":"TUDOR bb58 supply gap","url":"https://b","source":"beta.com"}\n'
+    # ...an unrelated item and a dropped-but-tagged item: both excluded.
+    printf '{"id":"x1","date":"2026-06-06","signal":"shift","title":"Other news","url":"https://c","source":"c.com"}\n'
+    printf '{"id":"x2","date":"2026-06-06","signal":"dropped","title":"noise","entities":["Tudor BB58"],"score":0.2}\n'
+  } > "$repo/state/seen.jsonl"
+  cat > "$py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+ents = {r["name"]: r for r in m.all_entities()}
+print("NAMES", "|".join(sorted(ents)))
+print("OBS", ents["Tudor BB58"]["observations"])
+print("ITEMS", ents["Tudor BB58"]["items"])         # tagged + non-dropped only
+print("LAST", ents["Tudor BB58"]["last"])
+ids = [i["id"] for i in m.entity_items("Tudor BB58")]
+print("MATCHED", "|".join(sorted(ids)))             # t1 (tagged) + t2 (named), no x1/x2
+print("EVENTS", len(m.entity_events("Tudor BB58")))
+PY
+  out="$(python3 "$py" "$repo/bin/portal.py")"
+  assert_contains "entities come from observations AND item tags" "$out" "NAMES Pelagos 39|Tudor BB58"
+  assert_contains "observation count" "$out" "OBS 3"
+  assert_contains "item count excludes dropped" "$out" "ITEMS 1"
+  assert_contains "last activity is the newest of obs/items" "$out" "LAST 2026-06-06"
+  assert_contains "dossier matches tagged + legacy named items only" "$out" "MATCHED t1|t2"
+  assert_contains "event timeline is entity-scoped" "$out" "EVENTS 1"
+
+  if ! command -v curl >/dev/null 2>&1; then pass "entity pages (skipped: no curl)"; return; fi
+  ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
+  local srv=$!
+  page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/entities" || true)"
+  assert_contains "entities index lists the entity" "$page" "Tudor BB58"
+  assert_contains "entities index links the dossier" "$page" '/entity?e=Tudor%20BB58'
+  page="$(curl -s "http://127.0.0.1:$port/entity?e=Tudor%20BB58" || true)"
+  assert_contains "dossier shows the metric series" "$page" "secondary_price_usd"
+  assert_contains "dossier shows the event timeline" "$page" "new GMT teased"
+  assert_contains "dossier lists a tagged surfaced item" "$page" "Price cut announced"
+  assert_contains "dossier lists a legacy item that names the entity" "$page" "supply gap"
+  page="$(curl -s "http://127.0.0.1:$port/entity?e=Nope" || true)"
+  assert_contains "an unknown entity 404s gracefully" "$page" "Entity not found"
+  page="$(curl -s "http://127.0.0.1:$port/" || true)"
+  assert_contains "overview links a tracked entity to its dossier" "$page" '/entity?e=Tudor%20BB58'
+  kill "$srv" 2>/dev/null || true
+}
+test_portal_entities
+
 echo "== monitor.sh: an absolute state_file is named to Claude verbatim (no .// prefix) =="
 test_state_file_absolute() {
   local repo="$TMP/absrepo" out abs="$TMP/abs-seen.jsonl" args="$TMP/abs_args"

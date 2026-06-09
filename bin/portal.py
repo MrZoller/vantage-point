@@ -29,7 +29,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone, timedelta, date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(ROOT, "monitor-config.yaml")
@@ -144,8 +144,8 @@ pre.yaml .k{color:#7cc5ff}pre.yaml .c{color:#64748b;font-style:italic}
 }
 """
 
-NAV = [("/", "Overview"), ("/reports", "Reports"), ("/review", "Review"),
-       ("/profile", "Profile"), ("/config", "Config")]
+NAV = [("/", "Overview"), ("/reports", "Reports"), ("/entities", "Entities"),
+       ("/review", "Review"), ("/profile", "Profile"), ("/config", "Config")]
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -315,6 +315,73 @@ def recent_events():
     events = [r for r in read_jsonl(OBS) if r.get("metric") == "event"]
     events.sort(key=_ts, reverse=True)
     return events[:MAX_EVENTS]
+
+
+# ----------------------------------------------------------------- entity dossiers
+# Reports are perishable; what's KNOWN about an entity should compound. These views
+# assemble everything on file per tracked entity -- metric series, the event
+# timeline, and the surfaced items that concerned it -- into one accumulating page.
+
+def _item_entities(rec):
+    """The tracked entities an item record was tagged with (newer records carry an
+    `entities` list; anything malformed reads as untagged)."""
+    ents = rec.get("entities")
+    if not isinstance(ents, list):
+        return []
+    return [e for e in ents if isinstance(e, str) and e]
+
+
+def all_entities():
+    """Every entity on file -- observed in observations.jsonl or tagged on a surfaced
+    item -- with item/observation counts and the latest activity date."""
+    agg = {}
+
+    def row(name):
+        return agg.setdefault(name, {"name": name, "items": 0, "observations": 0, "last": ""})
+
+    for rec in read_jsonl(OBS):
+        ent = rec.get("entity")
+        if not isinstance(ent, str) or not ent:
+            continue
+        r = row(ent)
+        r["observations"] += 1
+        r["last"] = max(r["last"], _ts(rec)[:10])
+    for rec in read_jsonl(SEEN):
+        if rec.get("signal") == "dropped":
+            continue
+        d = rec.get("date")
+        d = d if isinstance(d, str) else ""
+        for ent in _item_entities(rec):
+            r = row(ent)
+            r["items"] += 1
+            r["last"] = max(r["last"], d)
+    return sorted(agg.values(), key=lambda r: str(r["name"]).lower())
+
+
+def entity_items(name):
+    """Surfaced items about an entity, newest first: tagged with it via `entities`,
+    or -- for items recorded before tagging existed -- naming it in title/so_what."""
+    needle = str(name).lower()
+    items, ids = [], set()
+    for rec in reversed(read_jsonl(SEEN)):
+        rid = rec.get("id")
+        if not isinstance(rid, str) or not rid or rid in ids or rec.get("signal") == "dropped":
+            continue
+        tagged = any(e.lower() == needle for e in _item_entities(rec))
+        blob = "%s %s" % (rec.get("title", ""), rec.get("so_what", ""))
+        if tagged or needle in blob.lower():
+            ids.add(rid)
+            items.append(rec)
+        if len(items) >= MAX_ITEMS:
+            break
+    return items
+
+
+def entity_events(name):
+    events = [r for r in read_jsonl(OBS)
+              if r.get("entity") == name and r.get("metric") == "event"]
+    events.sort(key=_ts, reverse=True)
+    return events[:30]
 
 
 # ------------------------------------------------------------------ activity visuals
@@ -874,9 +941,13 @@ def overview_inner(static=False):
         parts.append('<table><tr><th>Entity</th><th>Metric</th><th>Latest</th>'
                      '<th>Recent</th><th>As of</th></tr>')
         for r in rows:
+            # In the live portal the entity opens its dossier; the static export has
+            # no /entity route, so it keeps plain text.
+            ent = esc(r["entity"]) if static else (
+                '<a href="%s">%s</a>' % (esc(entity_href(r["entity"])), esc(r["entity"])))
             parts.append('<tr><td>%s</td><td>%s</td><td class="num">%s %s</td>'
                          '<td class="spark">%s</td><td class="muted">%s</td></tr>'
-                         % (esc(r["entity"]), esc(r["metric"]), esc(r["latest"]),
+                         % (ent, esc(r["metric"]), esc(r["latest"]),
                             esc(r["unit"]), spark(r["series"]), esc(r["as_of"])))
         parts.append('</table>')
     else:
@@ -1012,6 +1083,97 @@ def review_inner(just=None):
         if v:
             parts.append('<span class="verdict">graded: %s</span>' % esc(v))
         parts.append('</div></div>')
+    parts.append('</div>')
+    return "".join(parts)
+
+
+def entity_href(name):
+    return "/entity?e=" + quote(str(name), safe="")
+
+
+def entities_inner():
+    rows = all_entities()
+    parts = ['<h1>Entities</h1>',
+             '<p class="meta">A dossier per tracked entity, accumulated across runs '
+             '&mdash; metrics, events, and the items surfaced about it.</p>',
+             '<div class="card">']
+    if rows:
+        parts.append('<table><tr><th>Entity</th><th>Items</th><th>Observations</th>'
+                     '<th>Last activity</th></tr>')
+        for r in rows:
+            last = esc(r["last"]) if r["last"] else "&mdash;"
+            parts.append('<tr><td><a href="%s">%s</a></td><td class="num">%d</td>'
+                         '<td class="num">%d</td><td class="muted">%s</td></tr>'
+                         % (esc(entity_href(r["name"])), esc(r["name"]),
+                            r["items"], r["observations"], last))
+        parts.append('</table>')
+    else:
+        parts.append('<p class="muted">No entities yet &mdash; they accumulate as the '
+                     'monitor records observations and tags surfaced items.</p>')
+    parts.append('</div>')
+    return "".join(parts)
+
+
+def entity_inner(query):
+    name = (query.get("e") or [""])[0]
+    known = {r["name"] for r in all_entities()}
+    if name not in known:
+        return ('<div class="card"><h1>Entity not found</h1>'
+                '<p class="muted"><a href="/entities">Back to entities</a></p></div>')
+    parts = ['<p class="meta noprint"><a href="/entities">&larr; All entities</a></p>',
+             '<h1>%s</h1>' % esc(name),
+             '<p class="meta">Everything on file for this entity, oldest state to '
+             'newest report.</p>']
+
+    metrics = [r for r in tracked_entities() if r["entity"] == name]
+    if metrics:
+        parts.append('<div class="card"><h2>Metrics</h2>'
+                     '<table><tr><th>Metric</th><th>Latest</th><th>Recent</th>'
+                     '<th>As of</th></tr>')
+        for r in metrics:
+            parts.append('<tr><td>%s</td><td class="num">%s %s</td>'
+                         '<td class="spark">%s</td><td class="muted">%s</td></tr>'
+                         % (esc(r["metric"]), esc(r["latest"]), esc(r["unit"]),
+                            spark(r["series"]), esc(r["as_of"])))
+        parts.append('</table></div>')
+
+    events = entity_events(name)
+    if events:
+        parts.append('<div class="card"><h2>Event timeline</h2><ul class="events">')
+        for e in events:
+            note = e.get("note")
+            if not note:
+                v = e.get("value")
+                note = v if isinstance(v, str) else ""
+            parts.append('<li class="muted">%s | %s: %s</li>'
+                         % (esc(_ts(e)[:10]), esc(e.get("event_type", "event")), esc(note)))
+        parts.append('</ul></div>')
+
+    items = entity_items(name)
+    parts.append('<div class="card"><h2>Surfaced items</h2>')
+    if items:
+        verdicts = latest_verdicts()
+        for it in items:
+            parts.append('<div class="item"><div class="sig">%s &middot; %s &middot; '
+                         'score %s</div>'
+                         % (esc(it.get("date", "")), esc(it.get("signal", "?")),
+                            esc(it.get("score", "?"))))
+            parts.append('<div><strong>%s</strong></div>' % esc(it.get("title", "")))
+            if it.get("so_what"):
+                parts.append('<div class="muted">%s</div>' % esc(it["so_what"]))
+            link = safe_url(it.get("url"))
+            tail = []
+            if link:
+                tail.append('<a href="%s" target="_blank" rel="noopener noreferrer">'
+                            'source</a>' % esc(link))
+            v = verdicts.get(it.get("id"))
+            if v:
+                tail.append('<span class="verdict">graded: %s</span>' % esc(v))
+            if tail:
+                parts.append('<div class="grade">%s</div>' % " ".join(tail))
+            parts.append('</div>')
+    else:
+        parts.append('<p class="muted">No surfaced items mention this entity yet.</p>')
     parts.append('</div>')
     return "".join(parts)
 
@@ -1164,6 +1326,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, shell("/", overview_inner()))
         elif path == "/reports":
             self._send(200, shell("/reports", reports_inner(q), title=report_title(q)))
+        elif path == "/entities":
+            self._send(200, shell("/entities", entities_inner(), title="Entities"))
+        elif path == "/entity":
+            name = (q.get("e") or [""])[0]
+            self._send(200, shell("/entities", entity_inner(q), title=name or "Entity"))
         elif path == "/review":
             self._send(200, shell("/review", review_inner(), title="Review"))
         elif path == "/profile":

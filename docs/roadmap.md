@@ -128,6 +128,18 @@ webhooks, `content` (2000-char-truncated) for Discord, `title`/`mode`/`date`/
 the email path exactly: opt-in via config, fail-safe (a failed post warns; the run
 succeeds and the report is already in `kb/`), same report content.
 
+## Phase 10 — entity dossiers ✅ (shipped)
+
+Reports are perishable; what's *known* about an entity should compound. The portal
+gains an **Entities** tab: an index of every entity on file (observed in
+`observations.jsonl` or tagged on a surfaced item) and a dossier page per entity —
+its metric series with sparklines, its event timeline, and every surfaced item that
+concerned it (with grade verdicts where given). Surfaced item records now carry an
+`entities: [...]` tag (exact names from `tracking.watch` + the profile watchlist, see
+`monitor-prompt.md`); pre-tagging records still land in dossiers via a
+case-insensitive title/so_what name match. Entity names on the Overview link to their
+dossiers; the static export keeps plain text (it has no `/entity` route).
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:
