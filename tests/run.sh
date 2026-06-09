@@ -552,7 +552,8 @@ test_encode_header
 make_fake_repo() {
   local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
-  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" "$repo/bin/"
+  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" \
+     "$ROOT/bin/webhook.py" "$repo/bin/"
   cp_libs "$repo/bin"
   cat > "$repo/monitor-config.yaml" <<YAML
 version: 1
@@ -1420,6 +1421,128 @@ SH
   fi
 }
 test_email_subject
+
+# A capturing webhook server: appends each POST body to the file in $2 and responds
+# 200. serve_forever (killed by the test) so a port-open probe connection can't
+# consume the one real request.
+write_capture_httpd() {  # <script-path>
+  cat > "$1" <<'PY'
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        with open(sys.argv[2], "ab") as f:
+            f.write(self.rfile.read(n) + b"\n")
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *args):
+        pass
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+}
+
+wait_port() {  # <port> -- wait (max ~5s) for something to listen on 127.0.0.1:<port>
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+    : "$i"
+    if python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(0.2); sys.exit(s.connect_ex(("127.0.0.1", int(sys.argv[1]))))' "$1" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+echo "== webhook.py: posts one polyglot JSON payload (Slack text / Discord content) =="
+test_webhook_py() {
+  local srv="$TMP/caphttpd.py" body="$TMP/wh_body.json" probe="$TMP/wh_probe.py" out rc port=8793
+  write_capture_httpd "$srv"
+  python3 "$srv" "$port" "$body" >/dev/null 2>&1 &
+  local pid=$!
+  if ! wait_port "$port"; then fail "capture server came up"; kill "$pid" 2>/dev/null; return; fi
+  printf '# Daily\n\n- **Item** matters\n' | \
+    python3 "$ROOT/bin/webhook.py" "http://127.0.0.1:$port/hook" "[VP: Test] daily 2026-06-09" daily 2026-06-09
+  rc=$?
+  kill "$pid" 2>/dev/null || true
+  assert_eq "exits 0 on a 2xx response" "0" "$rc"
+  cat > "$probe" <<'PY'
+import json, sys
+payload = json.loads(open(sys.argv[1]).read().strip())
+print("HEADING_LEADS_TEXT", payload["text"].startswith("[VP: Test] daily 2026-06-09"))
+print("MD_INTACT", payload["report_markdown"].startswith("# Daily"))
+print("MODE", payload["mode"], "DATE", payload["date"])
+print("CONTENT_EQ_TEXT", payload["content"] == payload["text"])  # short report: no truncation
+PY
+  out="$(python3 "$probe" "$body")"
+  assert_contains "Slack text leads with the heading" "$out" "HEADING_LEADS_TEXT True"
+  assert_contains "report_markdown carries the untouched body" "$out" "MD_INTACT True"
+  assert_contains "metadata keys are present" "$out" "MODE daily DATE 2026-06-09"
+  assert_contains "short reports are not truncated" "$out" "CONTENT_EQ_TEXT True"
+
+  # Discord-limit truncation, computed without a server.
+  cat > "$probe" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("wh", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+p = m.build_payload("h", "daily", "2026-06-09", "x" * 5000)
+print("CONTENT_FITS_DISCORD", len(p["content"]) <= 2000)
+print("CONTENT_MARKED", p["content"].endswith("... (truncated)"))
+print("TEXT_FULL", len(p["text"]) > 5000 - 1)
+PY
+  out="$(python3 "$probe" "$ROOT/bin/webhook.py")"
+  assert_contains "content fits Discord's 2000-char limit" "$out" "CONTENT_FITS_DISCORD True"
+  assert_contains "truncation is marked" "$out" "CONTENT_MARKED True"
+  assert_contains "text/report_markdown stay untruncated" "$out" "TEXT_FULL True"
+
+  # Failure modes: unreachable URL -> 1; non-http scheme -> 2. Both print to stderr.
+  printf 'r\n' | python3 "$ROOT/bin/webhook.py" "http://127.0.0.1:1/hook" h daily 2026-06-09 2>/dev/null
+  assert_eq "an unreachable webhook exits 1" "1" "$?"
+  printf 'r\n' | python3 "$ROOT/bin/webhook.py" "file:///etc/passwd" h daily 2026-06-09 2>/dev/null
+  assert_eq "a non-http(s) scheme is rejected with exit 2" "2" "$?"
+}
+test_webhook_py
+
+echo "== monitor.sh: posts the report to output.webhook_url; a failed post can't fail the run =="
+test_monitor_webhook() {
+  local repo="$TMP/whrepo" out rc srv="$TMP/caphttpd2.py" body="$TMP/wh_mon.json" port=8794
+  make_fake_repo "$repo"
+  # cfg_get re-enters a repeated top-level block, so appending a second output:
+  # block is a valid way to set webhook_url on the fixture config.
+  printf 'output:\n  webhook_url: "http://127.0.0.1:%s/hook"\n' "$port" >> "$repo/monitor-config.yaml"
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'webhook report body\n' > "kb/.$(date +%F).daily.partial.md"
+printf '{"num_turns":1}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  write_capture_httpd "$srv"
+  python3 "$srv" "$port" "$body" >/dev/null 2>&1 &
+  local pid=$!
+  if ! wait_port "$port"; then fail "capture server came up"; kill "$pid" 2>/dev/null; return; fi
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  kill "$pid" 2>/dev/null || true
+  assert_eq "run exits 0" "0" "$rc"
+  assert_contains "announces the webhook post" "$out" "posted report to webhook"
+  assert_contains "the posted payload carries the report" "$(cat "$body" 2>/dev/null)" "webhook report body"
+  assert_contains "the heading names the monitored subject" "$(cat "$body" 2>/dev/null)" "[Vantage Point: Test Market & Co] daily"
+
+  # Unreachable webhook: the run must still succeed and keep the report.
+  local repo2="$TMP/whrepo2"
+  make_fake_repo "$repo2"
+  printf 'output:\n  webhook_url: "http://127.0.0.1:1/hook"\n' >> "$repo2/monitor-config.yaml"
+  cp "$repo/stub/claude" "$repo2/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" bash "$repo2/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "a failed webhook post still exits 0" "0" "$rc"
+  assert_contains "warns that the webhook post failed" "$out" "webhook post failed"
+  if [ -s "$repo2/kb/$(date +%F).daily.md" ]; then pass "report survives a failed webhook post"; else fail "report survives a failed webhook post"; fi
+}
+test_monitor_webhook
 
 echo "== usage.sh: rolls up runs.log within the window =="
 test_usage() {

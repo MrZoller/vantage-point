@@ -118,14 +118,20 @@ and **per-source hit rates** (surfaced / graded / thumbs-up rate) to show which
 sources earn their rank before the next bootstrap re-ranks them. Stdlib-only,
 server-rendered, omitted until the first grade exists.
 
+## Phase 9 — webhook delivery ✅ (shipped)
+
+A second delivery channel so reports can land where a team sees them. Set
+`output.webhook_url` and each delivered report is POSTed there as one JSON object
+(`bin/webhook.py`, stdlib only). The payload is polyglot — `text` for Slack incoming
+webhooks, `content` (2000-char-truncated) for Discord, `title`/`mode`/`date`/
+`report_markdown` for generic receivers — so one URL works across services. Parallels
+the email path exactly: opt-in via config, fail-safe (a failed post warns; the run
+succeeds and the report is already in `kb/`), same report content.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:
 
-- **Second delivery channel.** A Slack / Discord / Telegram (or generic webhook)
-  delivery option, so `output.distribution` becomes real instead of documentation.
-  Would parallel the email path: opt-in via config, fail-safe (never breaks the run),
-  same report content.
 - **Thread-friendly email subject.** Gmail collapses daily reports into one
   conversation because the subject prefix is stable. Option to lead the subject with
   the date or market (e.g. `<market> — daily <date>`) or add a per-run token so each

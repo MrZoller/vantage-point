@@ -236,7 +236,27 @@ deliberate local step (`cp profile.draft.yaml profile.yaml`); the email even spe
 that out. Same fail-safe rules: a send failure never loses the on-disk draft.
 
 (The `output.distribution` list in the config is documentation only — it sketches the
-intended multi-channel shape. Only `email_to` is wired today.)
+intended multi-channel shape. Only `email_to` and `webhook_url` are wired today.)
+
+## Webhook delivery (optional)
+
+To land each report somewhere a *team* sees it — a Slack or Discord channel, or any
+service of your own — set `output.webhook_url`:
+
+```yaml
+output:
+  webhook_url: "https://hooks.slack.com/services/T000/B000/XXXX"   # blank = off
+```
+
+Each delivered report is POSTed there as one JSON object (`bin/webhook.py`, Python
+stdlib, no new dependency). The payload is deliberately polyglot so one URL "just
+works" across receivers: `text` (heading + full report Markdown — what Slack
+incoming webhooks render), `content` (the same, truncated to Discord's 2000-char
+limit), and `title`/`mode`/`date`/`report_markdown` for generic receivers; each
+service reads its key and ignores the rest. It runs alongside email (set either or
+both) and follows the same fail-safe contract: a failed post logs a warning and the
+run still succeeds — the report is already in `kb/`. Webhook URLs are credentials;
+keep them in your gitignored `monitor-config.yaml`, not in anything committed.
 
 ## Running on Linux (cron) instead
 

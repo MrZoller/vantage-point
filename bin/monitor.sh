@@ -51,6 +51,7 @@ MODEL="$(cfg_get models monitor)"
 DEEPDIVE_MODEL="$(cfg_get models deepdive)"   # unset -> no deep-dive pass (triage only)
 EDITOR_MODEL="$(cfg_get models editor)"       # unset -> no editorial pass (deliver as-written)
 EMAIL_TO="$(cfg_get output email_to)"
+WEBHOOK_URL="$(cfg_get output webhook_url)"
 DASHBOARD="$(cfg_get output dashboard)"
 STATE_FILE="$(cfg_get monitoring state_file)"      # dedup memory; honored, not hardcoded
 [ -n "$STATE_FILE" ] || STATE_FILE="state/seen.jsonl"
@@ -481,8 +482,26 @@ if [ -s "$RUN_REPORT" ]; then
       echo "[monitor:$MODE] output.email_to set but msmtp not found - skipping email (report in $REPORT)" >&2
     fi
   fi
-  #
-  # ...or push to Claude Code Channels / Telegram / Slack, or just read it from kb/.
+  # Webhook delivery (output.webhook_url): POST the report as JSON to any URL --
+  # a generic receiver, or a Slack/Discord incoming webhook (bin/webhook.py sends
+  # a payload each understands). Same fail-safe contract as email: a failed post
+  # warns, the run succeeds, the report is already safe in $REPORT.
+  if [ -n "$WEBHOOK_URL" ]; then
+    if command -v python3 >/dev/null 2>&1 && [ -f bin/webhook.py ]; then
+      if [ -n "${SUBJECT_NAME:-}" ]; then
+        wh_heading="[Vantage Point: ${SUBJECT_NAME}] $MODE $TODAY"
+      else
+        wh_heading="[Vantage Point] $MODE $TODAY"
+      fi
+      if python3 bin/webhook.py "$WEBHOOK_URL" "$wh_heading" "$MODE" "$TODAY" < "$REPORT" 2>> "kb/${TODAY}.${MODE}.err"; then
+        echo "[monitor:$MODE] posted report to webhook"
+      else
+        echo "[monitor:$MODE] WARNING: webhook post failed - report still in $REPORT" >&2
+      fi
+    else
+      echo "[monitor:$MODE] output.webhook_url set but python3/bin/webhook.py not found - skipping webhook (report in $REPORT)" >&2
+    fi
+  fi
 else
   # Nothing material this run. Drop the empty scratch file; leave any existing
   # $REPORT from an earlier successful run today in place.
