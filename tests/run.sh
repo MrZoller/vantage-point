@@ -506,7 +506,7 @@ test_sample_configs() {
     if [ -n "$(cfg_get_text anchor name "$s")" ];    then pass "$name: anchor.name set";         else fail "$name: anchor.name set";         fi
     if [ -n "$(cfg_get relevance threshold "$s")" ]; then pass "$name: relevance.threshold set"; else fail "$name: relevance.threshold set"; fi
     missing=""
-    for blk in subject anchor relevance monitoring tracking output governance; do
+    for blk in budgets subject anchor relevance monitoring tracking output governance; do
       grep -q "^$blk:" "$s" || missing="$missing $blk"
     done
     if [ -z "$missing" ]; then pass "$name: all top-level blocks present"; else fail "$name: missing blocks:$missing"; fi

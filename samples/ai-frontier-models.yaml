@@ -22,6 +22,16 @@ models:
   # deepdive: opus    # OPTIONAL: corroborate the top items on a stronger model
   # editor:   opus    # OPTIONAL: curate + polish the report before delivery
 
+# Run budgets - per-pass turn caps (passed to claude --max-turns) plus an optional
+# soft monthly cost warning. Defaults shown; monitor-config.example.yaml has the
+# full notes on what each cap bounds.
+budgets:
+  bootstrap_max_turns: 80   # the deep research pass
+  monitor_max_turns: 40     # the daily/weekly triage pass
+  deepdive_max_turns: 40    # when models.deepdive is enabled
+  editor_max_turns: 15      # when models.editor is enabled
+  monthly_cost_usd: 0       # warn when 30-day estimated spend crosses this (0 = off)
+
 subject:
   name: "Frontier AI models & LLM providers"
   description: >
