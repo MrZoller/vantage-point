@@ -363,7 +363,9 @@ Reports are built to be *read and acted on*, not skimmed:
   clean page: an **Overview** (an activity heatmap of items surfaced per day and a
   weekly opportunity/threat/shift signal-mix chart, plus tracked entities + sparklines,
   recent events, and recent runs), **Reports** (every daily/weekly briefing rendered
-  with the same styling as its email), **Review** (the grading UI, below), and read-only
+  with the same styling as its email — any report prints cleanly to PDF via your
+  browser's **Print → Save as PDF**, and *Save all as PDF* renders every report into one
+  printable document), **Review** (the grading UI, below), and read-only
   **Profile** and **Config** views. The Overview charts are server-rendered inline SVG —
   no JavaScript, so they work under the portal's strict CSP and stay dependency-light. The **Profile** tab renders the human-readable digest (`profile.summary.md`, or
   `profile.draft.summary.md` for a pending draft) with the same styling as the bootstrap

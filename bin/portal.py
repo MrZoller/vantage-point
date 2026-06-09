@@ -131,6 +131,17 @@ pre.yaml .k{color:#7cc5ff}pre.yaml .c{color:#64748b;font-style:italic}
 .body th{background:#f7f8fa;border-bottom:2px solid var(--line)}
 .body td{border-bottom:1px solid #eef1f5}
 .body td.spark{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--accent)}
+/* Print -> "Save as PDF": drop the chrome, flatten cards, keep reports from splitting
+   mid-item, and start each report on its own page in the combined view. */
+@media print{
+  .topbar,.legend,.noprint{display:none!important}
+  body{background:#fff}
+  .wrap{max-width:none;padding:0}
+  .card{box-shadow:none;border:0;padding:0;margin:0 0 18px}
+  .item,.body table,.body tr,.body blockquote{break-inside:avoid}
+  .printreport{break-before:page}.printreport:first-of-type{break-before:auto}
+  a{color:inherit;text-decoration:none}
+}
 """
 
 NAV = [("/", "Overview"), ("/reports", "Reports"), ("/review", "Review"),
@@ -654,17 +665,19 @@ def render_markdown(md):
 
 # ----------------------------------------------------------------------------- views
 
-def shell(active, inner):
+def shell(active, inner, title=""):
     nav = "".join(
         '<a href="%s"%s>%s</a>' % (path, ' class="on"' if path == active else "", esc(label))
         for path, label in NAV)
+    page_title = "Vantage Point" + (" — " + title if title else "")
     return ("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-            "<title>Vantage Point</title><style>%s</style></head><body>"
+            "<title>%s</title><style>%s</style></head><body>"
             "<div class=\"topbar\"><div class=\"inner\">"
             "<div class=\"brand\"><span class=\"eyebrow\">Vantage Point</span>"
             "market intelligence</div><nav class=\"nav\">%s</nav></div></div>"
-            "<div class=\"wrap\">%s</div></body></html>" % (CSS, nav, inner)).encode("utf-8")
+            "<div class=\"wrap\">%s</div></body></html>"
+            % (esc(page_title), CSS, nav, inner)).encode("utf-8")
 
 
 def overview_inner(static=False):
@@ -726,7 +739,7 @@ def overview_inner(static=False):
             kind = "weekly" if name.endswith(".weekly.md") else "daily"
             href = esc(name) if static else "/reports?f=" + esc(name)
             parts.append('<li><span class="tag">%s</span><a href="%s">%s</a></li>'
-                         % (kind, href, esc(name)))
+                         % (kind, href, esc(name.split(".", 1)[0])))
         parts.append('</ul>')
     else:
         parts.append('<p class="muted">No reports yet.</p>')
@@ -734,32 +747,65 @@ def overview_inner(static=False):
     return "".join(parts)
 
 
-def reports_inner(query):
+def report_kind(name):
+    return "Weekly digest" if name.endswith(".weekly.md") else "Daily briefing"
+
+
+def report_date(name):
+    return name.split(".", 1)[0]
+
+
+def report_title(query):
+    """The <title> suffix for a /reports page (so a saved PDF gets a sensible name)."""
+    if (query.get("print") or [""])[0] == "1":
+        return "All reports"
     name = (query.get("f") or [""])[0]
+    if name and name in list_reports():
+        return "%s %s" % (report_kind(name), report_date(name))
+    return "Reports"
+
+
+def _report_card(name, printable=False):
+    """Render one report as a card with the email-style header chrome."""
+    with open(os.path.join(KB, name), encoding="utf-8") as f:
+        body = render_markdown(f.read())
+    cls = "card printreport" if printable else "card"
+    return ('<div class="%s"><div class="brand" style="margin-bottom:4px">'
+            '<span class="eyebrow">Vantage Point</span>Market intelligence</div>'
+            '<p class="meta">%s &middot; %s</p>'
+            '<hr style="border:0;border-top:1px solid var(--line);margin:14px 0">'
+            '<div class="body">%s</div></div>'
+            % (cls, esc(report_kind(name)), esc(report_date(name)), body))
+
+
+def reports_inner(query):
     available = list_reports()
+    if (query.get("print") or [""])[0] == "1":   # combined "all reports" -> one PDF
+        parts = ['<p class="meta noprint"><a href="/reports">&larr; Back</a> &middot; '
+                 'Print (Ctrl/Cmd+P) &rarr; Save as PDF.</p><h1>Reports</h1>']
+        if not available:
+            return "".join(parts) + '<p class="muted">No reports yet.</p>'
+        parts += [_report_card(n, printable=True) for n in available]
+        return "".join(parts)
+
+    name = (query.get("f") or [""])[0]
     if name:
         if name not in available:   # guard against path traversal / stale links
             return '<div class="card"><h1>Report not found</h1>' \
                    '<p class="muted"><a href="/reports">Back to reports</a></p></div>'
-        with open(os.path.join(KB, name), encoding="utf-8") as f:
-            md = f.read()
-        kind = "Weekly digest" if name.endswith(".weekly.md") else "Daily briefing"
-        date = name.split(".", 1)[0]
-        body = render_markdown(md)
-        return ('<p class="meta"><a href="/reports">&larr; All reports</a></p>'
-                '<div class="card"><div class="brand" style="margin-bottom:4px">'
-                '<span class="eyebrow">Vantage Point</span>Market intelligence</div>'
-                '<p class="meta">%s &middot; %s</p><hr style="border:0;border-top:1px solid '
-                'var(--line);margin:14px 0"><div class="body">%s</div></div>'
-                % (esc(kind), esc(date), body))
+        return ('<p class="meta noprint"><a href="/reports">&larr; All reports</a> '
+                '&middot; <span class="muted">Print (Ctrl/Cmd+P) &rarr; Save as PDF</span></p>'
+                + _report_card(name))
+
     parts = ['<h1>Reports</h1><p class="meta">The same briefings that go out by email, '
-             'rendered here.</p><div class="card">']
+             'rendered here. <a class="noprint" href="/reports?print=1">Save all as PDF</a>.'
+             '</p><div class="card">']
     if available:
         parts.append('<ul class="reportlist">')
         for n in available[:MAX_REPORTS]:
             kind = "weekly" if n.endswith(".weekly.md") else "daily"
             parts.append('<li><span class="tag">%s</span><a href="/reports?f=%s">%s</a></li>'
-                         % (kind, esc(n), esc(n)))
+                         % (kind, esc(n), esc(report_date(n))))
         parts.append('</ul>')
     else:
         parts.append('<p class="muted">No reports yet &mdash; they land here after a monitor run.</p>')
@@ -951,13 +997,15 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._send(200, shell("/", overview_inner()))
         elif path == "/reports":
-            self._send(200, shell("/reports", reports_inner(q)))
+            self._send(200, shell("/reports", reports_inner(q), title=report_title(q)))
         elif path == "/review":
-            self._send(200, shell("/review", review_inner()))
+            self._send(200, shell("/review", review_inner(), title="Review"))
         elif path == "/profile":
-            self._send(200, shell("/profile", profile_inner(q)))
+            draft = (q.get("draft") or [""])[0] == "1"
+            self._send(200, shell("/profile", profile_inner(q),
+                                  title="Profile draft" if draft else "Profile"))
         elif path == "/config":
-            self._send(200, shell("/config", config_inner()))
+            self._send(200, shell("/config", config_inner(), title="Configuration"))
         elif path == "/grade":
             rid = (q.get("id") or [""])[0]
             verdict = (q.get("v") or [""])[0]

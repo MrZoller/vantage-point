@@ -979,10 +979,17 @@ test_portal_server() {
     *'href="javascript'*) fail "drops a javascript: url instead of linking it" ;;
     *) pass "drops a javascript: url instead of linking it" ;;
   esac
-  assert_contains "reports section lists the report" \
-    "$(curl -s "http://127.0.0.1:$port/reports" || true)" "2026-06-06.daily.md"
+  local list_html; list_html="$(curl -s "http://127.0.0.1:$port/reports" || true)"
+  assert_contains "reports list links to the report file" "$list_html" "/reports?f=2026-06-06.daily.md"
+  assert_contains "reports list shows a friendly date label (not the .md filename)" "$list_html" ">2026-06-06</a>"
+  assert_contains "reports list offers a 'Save all as PDF' link" "$list_html" "/reports?print=1"
   local report_html; report_html="$(curl -s "http://127.0.0.1:$port/reports?f=2026-06-06.daily.md" || true)"
   assert_contains "a report renders its body" "$report_html" "Bottom line"
+  assert_contains "the report page sets a PDF-friendly title" "$report_html" "<title>Vantage Point — Daily briefing 2026-06-06</title>"
+  assert_contains "pages ship a print stylesheet for Save-as-PDF" "$report_html" "@media print"
+  local print_html; print_html="$(curl -s "http://127.0.0.1:$port/reports?print=1" || true)"
+  assert_contains "the print-all view renders the report body" "$print_html" "Bottom line"
+  assert_contains "the print-all view marks reports for page breaks" "$print_html" "printreport"
   case "$report_html" in
     *"<script>alert(1)</script>"*) fail "raw <script> in a report is not served as live markup" ;;
     *) pass "raw <script> in a report is not served as live markup" ;;
