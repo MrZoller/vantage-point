@@ -186,6 +186,20 @@ yes; a failed/empty/invalid suggestion never loses the assembled draft. Refuses 
 overwrite without `--force`, assembles in a temp file and moves it into place
 atomically, and offers (never auto-runs) `bootstrap.sh` at the end.
 
+## Phase 14 — missed-signal capture ✅ (shipped)
+
+The recall side of calibration. Thumbs can only grade what WAS surfaced, so the
+precision headline (Phase 8) can't see a false negative — and "silence beats noise"
+makes misses invisible by design. The portal's Review tab gains a **"Report a missed
+signal"** box: paste the URL of something the monitor should have caught (plus an
+optional why-it-mattered note) and it's recorded to `state/feedback.jsonl` with
+verdict `missed` (stable per-URL id, so a re-report collapses to one row). Missed
+reports ride the existing two calibration clocks unchanged: live calibration injects
+them on the very next run (treat lookalikes as in-scope; give that source sweep
+attention), and the next bootstrap tunes the rubric AND the source ranking/feeds so
+items like it get swept at all. The Calibration card counts reported misses beside
+the precision figure to keep the headline honest.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

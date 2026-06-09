@@ -272,11 +272,13 @@ if [ "$RECENT_GRADES" -gt 0 ] && [ -s state/feedback.jsonl ] \
     echo "[monitor:$MODE] live calibration: applying $n_fb recent grade(s) (relevance.recent_grades=$RECENT_GRADES)" >&2
     FEEDBACK_NOTE="
 
-RECENT OPERATOR GRADES - live calibration. The user graded these previously surfaced
-items AFTER the current rubric was approved (\`verdict\`: up = right to surface,
-down = should have been filtered), so the rubric does not reflect them yet. Treat
-them as ground truth layered on top of the rubric: score an item that resembles a
-'down' example below threshold, and do not drop one that resembles an 'up' example.
+RECENT OPERATOR GRADES - live calibration. The user recorded these AFTER the current
+rubric was approved (\`verdict\`: up = right to surface, down = should have been
+filtered, missed = a relevant item the sweep never surfaced - the user reported its
+URL), so the rubric does not reflect them yet. Treat them as ground truth layered on
+top of the rubric: score an item that resembles a 'down' example below threshold, do
+not drop one that resembles an 'up' example, and treat anything resembling a 'missed'
+example as in-scope and material - and give its source sweep attention this run.
 For anything they don't cover, the approved rubric governs unchanged.
 \`\`\`jsonl
 $FEEDBACK_DATA

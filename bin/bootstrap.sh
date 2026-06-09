@@ -66,10 +66,13 @@ if [ -s "$FEEDBACK" ]; then
   echo "[bootstrap] including $(printf '%s\n' "$FEEDBACK_DATA" | grep -c .) calibration grade(s) from $FEEDBACK" >&2
   FEEDBACK_NOTE="
 
-Human calibration grades - the user's thumbs up/down on past surfaced items
-(\`verdict\`: up = should have been surfaced, down = not relevant). Treat these as
-ground truth: tune \`relevance.rubric\` so it would score these correctly, and fold
-the clearest cases into \`relevance.calibration\` (relevant / not_relevant) in your draft.
+Human calibration grades - the user's verdicts on past output (\`verdict\`: up =
+should have been surfaced, down = not relevant, missed = a relevant item the monitor
+NEVER surfaced; the user reported its URL). Treat these as ground truth: tune
+\`relevance.rubric\` so it would score these correctly, and fold the clearest cases
+into \`relevance.calibration\` (relevant / not_relevant) in your draft. For \`missed\`
+items, also fix the recall side: make sure their sources are ranked appropriately in
+\`news_sources\` (with feeds where they exist) so items like them get swept at all.
 \`\`\`jsonl
 $FEEDBACK_DATA
 \`\`\`"

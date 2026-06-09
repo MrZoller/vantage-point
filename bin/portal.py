@@ -19,6 +19,7 @@ ASCII (sparkline block glyphs are built from code points at runtime) so it diffs
 cleanly and runs anywhere python3 does. Markdown reports render via the same
 pandoc/cmark-gfm/cmark chain the email uses, with a light built-in fallback.
 """
+import hashlib
 import html
 import json
 import math
@@ -109,6 +110,12 @@ ul.events li:last-child{border:0}
   border-radius:7px;line-height:1.6}
 .grade a.btn.on{background:var(--accent);border-color:var(--accent)}
 .verdict{font-size:.85em;color:var(--accent)}
+.missed{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.missed input{flex:2;min-width:220px;padding:7px 10px;border:1px solid var(--line);
+  border-radius:7px;font:inherit;font-size:14px}
+.missed input[name=note]{flex:1;min-width:160px}
+.missed button{padding:7px 16px;border:0;border-radius:7px;background:var(--accent);
+  color:#fff;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
 .banner{background:var(--soft);border:1px solid #d6e0ff;border-left:4px solid var(--accent);
   border-radius:0 8px 8px 0;padding:12px 16px;margin:0 0 18px;font-size:14px}
 .note{font-size:12px;color:var(--muted);margin-top:6px}
@@ -713,6 +720,14 @@ def calibration_card(static=False):
         where = "the Review tab" if static else '<a href="/review">Review</a>'
         parts.append('<p class="sublabel">No grades on the last 30 days of items '
                      '&mdash; thumb items in %s to track precision.</p>' % where)
+    missed30 = missed_count_30d()
+    if missed30:
+        # The recall caveat: precision over surfaced items can look great while the
+        # sweep quietly misses things, so reported misses sit right next to it.
+        parts.append('<p class="sublabel">%d missed signal%s reported (last 30 days) '
+                     '&mdash; relevant items the monitor never surfaced; the precision '
+                     'figure above does not see these.</p>'
+                     % (missed30, "" if missed30 == 1 else "s"))
     if chart:
         parts.append('<p class="sublabel" style="margin-top:14px">Precision by week '
                      '(graded items only)</p>%s' % chart)
@@ -803,17 +818,55 @@ def latest_verdicts():
     return {rid: rec.get("verdict") for rid, rec in _latest_feedback().items()}
 
 
+def _append_feedback(rec):
+    os.makedirs(os.path.dirname(FEEDBACK), exist_ok=True)
+    with open(FEEDBACK, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
 def record_grade(item, verdict):
-    rec = {
+    _append_feedback({
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "id": item.get("id"), "verdict": verdict,
         "title": item.get("title"), "url": item.get("url"),
         "signal": item.get("signal"), "score": item.get("score"),
         "so_what": item.get("so_what"),
-    }
-    os.makedirs(os.path.dirname(FEEDBACK), exist_ok=True)
-    with open(FEEDBACK, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    })
+
+
+# ------------------------------------------------------------------ missed signals
+# The recall side of calibration: thumbs can only grade what WAS surfaced, so a
+# false negative is invisible to precision. A missed-signal report names a relevant
+# URL the monitor never surfaced; it lands in the same feedback log (verdict
+# "missed") so live calibration sees it the very next run and the next bootstrap
+# folds it into the rubric and source ranking.
+
+def missed_id(url):
+    """Stable id for a missed-signal report: 8 hex chars of the URL, the same shape
+    as surfaced-item ids, so re-reporting the same URL collapses to one latest row
+    in dedupe-feedback rather than stacking duplicates."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+
+
+def record_missed(url, note):
+    _append_feedback({
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "id": missed_id(url), "verdict": "missed",
+        "url": url, "note": note,
+    })
+
+
+def recent_missed(limit=10):
+    """Latest missed-signal reports, newest first."""
+    rows = [r for r in _latest_feedback().values() if r.get("verdict") == "missed"]
+    rows.sort(key=_ts, reverse=True)
+    return rows[:limit]
+
+
+def missed_count_30d():
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
+    return sum(1 for r in _latest_feedback().values()
+               if r.get("verdict") == "missed" and _ts(r)[:10] >= cutoff)
 
 
 # ----------------------------------------------------------------------------- markdown
@@ -1103,6 +1156,33 @@ def review_inner(just=None):
     if just:
         parts.append('<div class="banner">Recorded: %s &rarr; %s</div>'
                      % (esc(just[0]), esc(just[1])))
+
+    # Missed signals: the recall half of calibration. Thumbs grade only what WAS
+    # surfaced; this box records what should have been but never appeared.
+    parts.append('<div class="card"><h2>Report a missed signal</h2>'
+                 '<p class="sublabel">Saw something relevant the monitor never '
+                 'surfaced? Paste its URL &mdash; it becomes a false-negative '
+                 'example for the next runs and the next profile refresh.</p>'
+                 '<form class="missed" method="get" action="/missed">'
+                 '<input type="url" name="url" required '
+                 'placeholder="https://&hellip; (the item it missed)">'
+                 '<input type="text" name="note" '
+                 'placeholder="why it mattered (optional)">'
+                 '<button type="submit">Report</button></form>')
+    missed = recent_missed()
+    if missed:
+        parts.append('<ul class="events">')
+        for r in missed:
+            link = safe_url(r.get("url"))
+            shown = ('<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>'
+                     % (esc(link), esc(link))) if link else esc(r.get("url", ""))
+            note = r.get("note")
+            note = " &mdash; %s" % esc(note) if isinstance(note, str) and note else ""
+            parts.append('<li class="muted">%s | missed: %s%s</li>'
+                         % (esc(_ts(r)[:10]), shown, note))
+        parts.append('</ul>')
+    parts.append('</div>')
+
     parts.append('<div class="card">')
     if not items:
         parts.append('<p class="muted">No surfaced items yet.</p>')
@@ -1392,6 +1472,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect("/review")
             else:
                 self._send(400, b"bad grade request")
+        elif path == "/missed":
+            url_v = (q.get("url") or [""])[0].strip()
+            note = (q.get("note") or [""])[0].strip()
+            if safe_url(url_v):
+                record_missed(url_v, note)
+                self._redirect("/review")
+            else:
+                self._send(400, b"bad missed-signal request: url must be http(s)")
         else:
             self._send(404, b"not found")
 

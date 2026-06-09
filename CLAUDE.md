@@ -34,7 +34,8 @@ stays consistent instead of re-deriving them.
   suggestions apply only on explicit yes; `--force` to overwrite, atomic write),
   `portal.sh`/`portal.py` (unified
   web portal — overview (incl. the Calibration precision card)/reports/entities
-  (per-entity dossiers)/review/profile/config; grading → `state/feedback.jsonl`;
+  (per-entity dossiers)/review/profile/config; grading + missed-signal reports →
+  `state/feedback.jsonl` (verdicts up/down/missed);
   `--export` → static `kb/index.html`), `fetch.py` (deterministic feed sweep →
   candidates JSONL), `webhook.py` (JSON report delivery), `usage.sh`,
   `install-launchd.sh`, `dedupe-feedback.py` (latest-per-id grades; `--since/--max`

@@ -563,6 +563,17 @@ So the loop is: **monitor surfaces → you thumb → next run already adjusts �
 re-bootstrap consolidates** — quality compounds the longer you run it, with no config
 editing by hand.
 
+**Missed signals (the recall side).** Thumbs can only grade what *was* surfaced, so a
+false negative — something relevant the monitor never showed you — is invisible to
+precision. The Review tab's **"Report a missed signal"** box closes that gap: paste
+the URL (plus an optional note on why it mattered) and it's recorded to
+`state/feedback.jsonl` with verdict `missed`. Missed reports ride the same two clocks
+as thumbs: the next runs treat items like it as in-scope (and give its source sweep
+attention), and the next bootstrap tunes the rubric *and* the source ranking/feeds so
+items like it get swept at all. The Overview's Calibration card counts reported
+misses next to the precision figure, so the headline number can't quietly flatter a
+monitor that's gone blind.
+
 ## Tests
 
 `bash tests/run.sh` runs fast, dependency-light checks for the logic that doesn't

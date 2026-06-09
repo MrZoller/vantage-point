@@ -1182,6 +1182,42 @@ test_portal_server() {
 }
 test_portal_server
 
+echo "== portal.py: missed-signal reports record a 'missed' verdict (recall loop) =="
+test_portal_missed() {
+  if ! command -v curl >/dev/null 2>&1; then pass "portal missed signals (skipped: no curl)"; return; fi
+  local repo="$TMP/pmissrepo" port=8798 page fb
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  printf 'version: 1\n' > "$repo/monitor-config.yaml"
+  ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
+  local srv=$!
+  page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
+  assert_contains "review offers the missed-signal form" "$page" 'action="/missed"'
+  curl -s -o /dev/null "http://127.0.0.1:$port/missed?url=https%3A%2F%2Fex.com%2Fmissed-item&note=big%20launch" || true
+  fb="$(cat "$repo/state/feedback.jsonl" 2>/dev/null)"
+  assert_contains "a report records verdict missed" "$fb" '"verdict": "missed"'
+  assert_contains "the report carries the url" "$fb" 'https://ex.com/missed-item'
+  assert_contains "the report carries the note" "$fb" 'big launch'
+  # Same URL re-reported -> same id, so dedupe-feedback collapses to one row.
+  curl -s -o /dev/null "http://127.0.0.1:$port/missed?url=https%3A%2F%2Fex.com%2Fmissed-item" || true
+  assert_eq "re-reporting a URL reuses its stable id" "1" \
+    "$(python3 "$ROOT/bin/dedupe-feedback.py" "$repo/state/feedback.jsonl" | grep -c .)"
+  # A non-http(s) URL is rejected, not recorded.
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/missed?url=javascript%3Aalert(1)" || true)"
+  assert_eq "a non-http(s) url is rejected with 400" "400" "$code"
+  case "$(cat "$repo/state/feedback.jsonl")" in
+    *javascript*) fail "a rejected url is not recorded" ;;
+    *) pass "a rejected url is not recorded" ;;
+  esac
+  page="$(curl -s "http://127.0.0.1:$port/review" || true)"
+  assert_contains "review lists the recorded miss" "$page" "ex.com/missed-item"
+  page="$(curl -s "http://127.0.0.1:$port/" || true)"
+  assert_contains "calibration card counts reported misses" "$page" "missed signal"
+  kill "$srv" 2>/dev/null || true
+}
+test_portal_missed
+
 echo "== portal.py: the light-markdown fallback renders a GFM table (watchlist) =="
 test_portal_light_table() {
   # Exercise the no-renderer path directly so it's deterministic regardless of whether
@@ -1586,13 +1622,16 @@ SH
   printf '%s\n' \
     '{"timestamp":"2025-12-01T00:00:00Z","id":"pre","verdict":"down","title":"absorbed-by-bootstrap"}' \
     '{"timestamp":"2026-02-01T00:00:00Z","id":"post","verdict":"down","title":"fresh-thumbs-down"}' \
+    '{"timestamp":"2026-02-02T00:00:00Z","id":"miss1","verdict":"missed","url":"https://ex.com/fresh-missed-signal"}' \
     > "$repo/state/feedback.jsonl"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"
-  assert_contains "announces the live-calibration injection" "$out" "live calibration: applying 1 recent grade"
+  assert_contains "announces the live-calibration injection" "$out" "live calibration: applying 2 recent grade"
   assert_contains "prompt carries the grades block" "$(cat "$args" 2>/dev/null)" "RECENT OPERATOR GRADES"
   assert_contains "the post-bootstrap grade is injected" "$(cat "$args" 2>/dev/null)" "fresh-thumbs-down"
+  assert_contains "a missed-signal report is injected too" "$(cat "$args" 2>/dev/null)" "fresh-missed-signal"
+  assert_contains "the block explains the missed verdict" "$(cat "$args" 2>/dev/null)" "missed = a relevant item"
   case "$(cat "$args" 2>/dev/null)" in
     *absorbed-by-bootstrap*) fail "a pre-bootstrap grade is excluded (already in the rubric)" ;;
     *) pass "a pre-bootstrap grade is excluded (already in the rubric)" ;;
@@ -2071,10 +2110,14 @@ test_bootstrap_feedback() {
   printf '%s\n' \
     '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' \
     '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
-    '{"timestamp":"2026-06-01T00:00:00Z","id":"xyz","verdict":"up"}' > "$repo/state/feedback.jsonl"
+    '{"timestamp":"2026-06-01T00:00:00Z","id":"xyz","verdict":"up"}' \
+    '{"timestamp":"2026-06-03T00:00:00Z","id":"m1","verdict":"missed","url":"https://ex.com/missed-by-monitor"}' \
+    > "$repo/state/feedback.jsonl"
   out="$( cd "$repo" && CLAUDE_ARGS="$args" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
-  assert_contains "folds in deduped calibration grades (2, not 3)" "$out" "including 2 calibration grade"
+  assert_contains "folds in deduped calibration grades (3, not 4)" "$out" "including 3 calibration grade"
   assert_contains "passes the calibration block to claude" "$(cat "$args" 2>/dev/null)" "calibration grades"
+  assert_contains "a missed-signal report rides along" "$(cat "$args" 2>/dev/null)" "missed-by-monitor"
+  assert_contains "the block explains the missed verdict" "$(cat "$args" 2>/dev/null)" "missed = a relevant item"
 }
 test_bootstrap_feedback
 
