@@ -258,6 +258,21 @@ covers the email fan-out people actually asked for, without the multi-channel ma
 
 Ideas raised but not built — captured so they aren't lost:
 
+- **Rubric backtest at the refresh gate** *(designed — see
+  [`design-rubric-backtest.md`](design-rubric-backtest.md))*. The refresh review
+  sees what changed in the draft (Phase 15) but not what *effect* it has. Replay
+  the user's graded items (`state/feedback.jsonl`) against the draft rubric —
+  blind, on the monitor model, numbers computed deterministically — and fold an
+  agreement report ("87% vs your verdicts; would now drop these 2 thumbs-ups")
+  into the review email and the portal draft view. Turns the approval gate from
+  "does this YAML read right?" into "does this rubric demonstrably agree with my
+  judgment more than the approved one?"
+- **Dog-that-didn't-bark detection.** `observations.jsonl` encodes each entity's
+  normal cadence; an entity gone quiet well past its baseline is itself a finding
+  ("no release in 8 weeks vs a 3-week norm"). Deterministic from existing state.
+- **Confidence-label resolution.** Items ship with high/medium/low confidence but
+  nothing checks whether high-confidence calls pan out more often than low ones;
+  even a crude sampled follow-up would tell us if the labels mean anything.
 - **Thread-friendly email subject.** Gmail collapses daily reports into one
   conversation because the subject prefix is stable. Option to lead the subject with
   the date or market (e.g. `<market> — daily <date>`) or add a per-run token so each
