@@ -273,13 +273,15 @@ Ideas raised but not built — captured so they aren't lost:
 - **Confidence-label resolution.** Items ship with high/medium/low confidence but
   nothing checks whether high-confidence calls pan out more often than low ones;
   even a crude sampled follow-up would tell us if the labels mean anything.
-- **Forward radar ("Coming up").** Reports look strictly backward, but swept items
-  are full of forward-dated facts — earnings dates, conference keynotes, "GA in
-  Q3", regulatory comment deadlines. Record them as dated expectations (an
-  observations-like `state/horizon.jsonl`), render a **Coming up** section in the
-  weekly digest plus a portal card, and have the monitor re-check expectations as
-  they come due — a slipped or silently-passed date is itself a signal (pairs with
-  dog-that-didn't-bark above).
+- **Forward radar ("Coming up")** *(designed — see
+  [`design-forward-radar.md`](design-forward-radar.md))*. Reports look strictly
+  backward, but swept items are full of forward-dated facts — earnings dates,
+  conference keynotes, "GA in Q3", regulatory comment deadlines. Record them as
+  dated expectations (an observations-like `state/horizon.jsonl`), render a
+  **Coming up** section in the weekly digest plus a portal card, and have the
+  monitor re-check expectations as they come due — a slipped or silently-passed
+  date is itself a signal (pairs with dog-that-didn't-bark above). No new claude
+  pass: recording rides triage, checking and rendering are deterministic.
 - **Standing questions / tasking.** Between refreshes the anchor's priorities are
   frozen; an analyst can be re-briefed on Monday, the monitor can't. A portal box
   (or `state/focus.md`) records a time-boxed tasking — "weight pricing news higher
