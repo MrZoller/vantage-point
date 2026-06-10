@@ -273,6 +273,31 @@ Ideas raised but not built — captured so they aren't lost:
 - **Confidence-label resolution.** Items ship with high/medium/low confidence but
   nothing checks whether high-confidence calls pan out more often than low ones;
   even a crude sampled follow-up would tell us if the labels mean anything.
+- **Forward radar ("Coming up").** Reports look strictly backward, but swept items
+  are full of forward-dated facts — earnings dates, conference keynotes, "GA in
+  Q3", regulatory comment deadlines. Record them as dated expectations (an
+  observations-like `state/horizon.jsonl`), render a **Coming up** section in the
+  weekly digest plus a portal card, and have the monitor re-check expectations as
+  they come due — a slipped or silently-passed date is itself a signal (pairs with
+  dog-that-didn't-bark above).
+- **Standing questions / tasking.** Between refreshes the anchor's priorities are
+  frozen; an analyst can be re-briefed on Monday, the monitor can't. A portal box
+  (or `state/focus.md`) records a time-boxed tasking — "weight pricing news higher
+  this month", "watching for anyone shipping X" — injected into triage alongside
+  live calibration and expiring after N days so stale taskings can't skew scoring
+  indefinitely. Ephemeral priority shifts without a re-bootstrap.
+- **Source promotion ("source nursery").** Feed health (Phase 16) catches dying
+  sources; nothing catches *missing* ones short of a full re-bootstrap. Track the
+  origin domain of every surfaced item; when a domain outside the ranked
+  `news_sources` earns repeated surfaced (or thumbed-up) items via the agentic
+  backstop, flag it as a promotion candidate — with feed discovery — in the weekly
+  digest and at the next refresh. The recall-side complement to Phase 8's
+  per-source hit rates.
+- **Evidence preservation.** Dossiers (Phase 10) compound for months but their
+  citations rot — pricing pages change, posts get deleted. At surfacing time,
+  store a bounded extracted-text snippet + content hash per cited URL (stdlib
+  fetch, pruned like `seen.jsonl`), so a dossier's claims stay verifiable after
+  the link dies; optionally also submit the URL to the Internet Archive.
 - **Thread-friendly email subject.** Gmail collapses daily reports into one
   conversation because the subject prefix is stable. Option to lead the subject with
   the date or market (e.g. `<market> — daily <date>`) or add a per-run token so each
