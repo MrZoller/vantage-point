@@ -166,7 +166,10 @@ launchctl kickstart -k gui/$(id -u)/ai.zoller.vantagepoint.daily
 
 Make sure the mini doesn't sleep through the schedule (Energy settings → prevent
 sleep, or wrap the script in `caffeinate`). A missed `StartCalendarInterval` fires
-on wake, but only once — you don't want a sleeping mini eating your daily run.
+on wake, but only once — you don't want a sleeping mini eating your daily run. (If a
+run does get missed, the next one widens its sweep window to cover the gap — see
+"Catch-up after a gap" under the feed sweep section — so the signal isn't lost, just
+late.)
 
 ## Running multiple instances
 
@@ -263,9 +266,12 @@ the email is converted. The startup-adjacent log line notes which form was sent
 a **"profile draft ready for review"** email: a human-readable summary of what it
 inferred (market, key players, anchor, rubric highlights, and its lowest-confidence
 guesses to check), so you can triage the draft from your inbox. With `models.editor`
-set it's polished by the editor first. This is a review *aid* — approval stays the
-deliberate local step (`cp profile.draft.yaml profile.yaml`); the email even spells
-that out. Same fail-safe rules: a send failure never loses the on-disk draft.
+set it's polished by the editor first. On a *refresh* (an approved `profile.yaml`
+already exists) the email also carries a **What changed vs the approved profile**
+section — the `profile.draft.diff` unified diff, appended after the editorial pass so
+it's never rewritten. This is a review *aid* — approval stays the deliberate local
+step (`cp profile.draft.yaml profile.yaml`); the email even spells that out. Same
+fail-safe rules: a send failure never loses the on-disk draft.
 
 (The `output.distribution` list in the config is documentation only — it sketches the
 intended multi-channel shape. Only `email_to` and `webhook_url` are wired today.)
@@ -391,11 +397,15 @@ and check `./bin/usage.sh` for where the spend goes.
   into the launchd log. `state/seen.jsonl` is pruned to `monitoring.state_max_lines`
   (default 5000, `0` to disable) each run so it can't grow without bound.
 - **Refresh.** Re-run `bootstrap.sh` on the `governance.profile_refresh_days`
-  cadence; review the new draft against the old `profile.yaml` before promoting.
-  Anchors drift — new awards, hires, capabilities — and a stale profile quietly
-  mis-scores everything. `monitor.sh` warns (it doesn't refuse) when the approved
-  profile's `last_bootstrapped` is older than `profile_refresh_days`, so a forgotten
-  refresh is visible in the run log.
+  cadence. Anchors drift — new awards, hires, capabilities — and a stale profile
+  quietly mis-scores everything. `monitor.sh` warns (it doesn't refuse) when the
+  approved profile's `last_bootstrapped` is older than `profile_refresh_days`, so a
+  forgotten refresh is visible in the run log. On a refresh the review is a skim,
+  not a re-read: bootstrap writes **`profile.draft.diff`** (the draft vs the
+  approved profile — what your grades re-ranked, which sources moved), folds it
+  into the review email as a *What changed* section, and the portal's draft view
+  leads with the same diff computed live. Approve with the usual
+  `cp profile.draft.yaml profile.yaml`.
 - **Tuning.** First week, read every daily and grade it. Move false positives into
   `relevance.calibration.not_relevant` and misses into `relevant`, then re-bootstrap
   so the rubric learns your taste. That feedback loop is the whole reason to
@@ -447,6 +457,24 @@ state), runs get cheaper (turns aren't spent navigating), and two runs over the 
 day see the same candidates. Fail-safe as always: a feed that's down or unparseable
 is a stderr warning, never a failed run; no feeds at all means the monitor behaves
 exactly as before.
+
+**Feed health.** A single failed fetch is noise, but a feed that 404s for weeks — or
+returns 200 and just stopped publishing — is silent recall rot. Each sweep records
+per-feed health (last success, consecutive failures, newest entry seen) to
+`state/feedhealth.json`; a feed failing 3+ runs in a row warns loudly in
+`kb/<date>.<mode>.err`, and the portal Overview's **Feed health** card lists every
+feed with its status — *failing* and *stale* first — so a rotten feed gets fixed or
+dropped at the next refresh instead of quietly shrinking coverage.
+
+**Catch-up after a gap.** If the machine slept through a schedule or a run was
+skipped, the next run would otherwise look back only `lookback_hours` and lose the
+gap forever. When the last logged run is older than the current window, the monitor
+widens the window to cover the gap — for both the feed pre-sweep and the agent's own
+browsing — by at most `monitoring.catchup_max_hours` *extra* hours on top of the
+normal window (default 168, `0` disables; the cap bounds the widening rather than
+the window, so weekly runs — whose normal window already exceeds 168h — can catch up
+too) so a long-dormant clone can't trigger an unbounded sweep. The widened window is
+announced in the run log.
 
 ## How findings are conveyed
 
@@ -562,6 +590,17 @@ A click records the grade — with the item's full context — to `state/feedbac
 So the loop is: **monitor surfaces → you thumb → next run already adjusts →
 re-bootstrap consolidates** — quality compounds the longer you run it, with no config
 editing by hand.
+
+**Missed signals (the recall side).** Thumbs can only grade what *was* surfaced, so a
+false negative — something relevant the monitor never showed you — is invisible to
+precision. The Review tab's **"Report a missed signal"** box closes that gap: paste
+the URL (plus an optional note on why it mattered) and it's recorded to
+`state/feedback.jsonl` with verdict `missed`. Missed reports ride the same two clocks
+as thumbs: the next runs treat items like it as in-scope (and give its source sweep
+attention), and the next bootstrap tunes the rubric *and* the source ranking/feeds so
+items like it get swept at all. The Overview's Calibration card counts reported
+misses next to the precision figure, so the headline number can't quietly flatter a
+monitor that's gone blind.
 
 ## Tests
 

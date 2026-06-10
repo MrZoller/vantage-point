@@ -19,6 +19,8 @@ ASCII (sparkline block glyphs are built from code points at runtime) so it diffs
 cleanly and runs anywhere python3 does. Markdown reports render via the same
 pandoc/cmark-gfm/cmark chain the email uses, with a light built-in fallback.
 """
+import difflib
+import hashlib
 import html
 import json
 import math
@@ -34,6 +36,7 @@ from urllib.parse import urlparse, parse_qs, quote
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG = os.path.join(ROOT, "monitor-config.yaml")
 FEEDBACK = os.path.join(ROOT, "state", "feedback.jsonl")
+FEEDHEALTH = os.path.join(ROOT, "state", "feedhealth.json")
 OBS = os.path.join(ROOT, "state", "observations.jsonl")
 RUNS = os.path.join(ROOT, "state", "runs.log")
 KB = os.path.join(ROOT, "kb")
@@ -86,6 +89,8 @@ th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;verti
 th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
 .spark{font-size:1.15em;letter-spacing:1px;color:var(--accent);
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.feedurl{font-size:12px;word-break:break-all}
+.st-bad{color:#d6455d;font-weight:600}.st-warn{color:#b45309;font-weight:600}
 .num{font-variant-numeric:tabular-nums}.muted{color:var(--muted)}
 .viz{max-width:100%;height:auto;display:block}
 .viz text.cal-m{fill:#9aa3af;font-size:9px;font-family:inherit}
@@ -109,12 +114,19 @@ ul.events li:last-child{border:0}
   border-radius:7px;line-height:1.6}
 .grade a.btn.on{background:var(--accent);border-color:var(--accent)}
 .verdict{font-size:.85em;color:var(--accent)}
+.missed{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.missed input{flex:2;min-width:220px;padding:7px 10px;border:1px solid var(--line);
+  border-radius:7px;font:inherit;font-size:14px}
+.missed input[name=note]{flex:1;min-width:160px}
+.missed button{padding:7px 16px;border:0;border-radius:7px;background:var(--accent);
+  color:#fff;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
 .banner{background:var(--soft);border:1px solid #d6e0ff;border-left:4px solid var(--accent);
   border-radius:0 8px 8px 0;padding:12px 16px;margin:0 0 18px;font-size:14px}
 .note{font-size:12px;color:var(--muted);margin-top:6px}
 pre.yaml{background:#0f172a;color:#e2e8f0;padding:18px 20px;border-radius:10px;overflow-x:auto;
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.5;margin:0}
 pre.yaml .k{color:#7cc5ff}pre.yaml .c{color:#64748b;font-style:italic}
+pre.yaml .da{color:#7ee2a8}pre.yaml .dr{color:#f8a1ae}
 /* report body: mirrors bin/email-lib.sh .body so a report reads like its email */
 .body h1{font-size:19px;margin:22px 0 8px;color:#10151f}
 .body h2{font-size:14px;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid #eceef2;
@@ -713,6 +725,14 @@ def calibration_card(static=False):
         where = "the Review tab" if static else '<a href="/review">Review</a>'
         parts.append('<p class="sublabel">No grades on the last 30 days of items '
                      '&mdash; thumb items in %s to track precision.</p>' % where)
+    missed30 = missed_count_30d()
+    if missed30:
+        # The recall caveat: precision over surfaced items can look great while the
+        # sweep quietly misses things, so reported misses sit right next to it.
+        parts.append('<p class="sublabel">%d missed signal%s reported (last 30 days) '
+                     '&mdash; relevant items the monitor never surfaced; the precision '
+                     'figure above does not see these.</p>'
+                     % (missed30, "" if missed30 == 1 else "s"))
     if chart:
         parts.append('<p class="sublabel" style="margin-top:14px">Precision by week '
                      '(graded items only)</p>%s' % chart)
@@ -730,6 +750,79 @@ def calibration_card(static=False):
                          % (esc(r["source"]), r["surfaced"], r["graded"], rate))
         parts.append('</table>')
     parts.append('</div>')
+    return "".join(parts)
+
+
+# ------------------------------------------------------------------ feed health
+# Coverage integrity for the deterministic sweep (Phase 11): bin/fetch.py records
+# per-feed health to state/feedhealth.json each run, and this card makes rot
+# visible -- a feed that 404s for weeks (failing) or returns 200 but stopped
+# publishing (stale) silently shrinks recall until someone notices.
+
+STALE_FEED_DAYS = 14
+
+
+def feed_health_rows():
+    """Per-feed status rows from state/feedhealth.json, problems first."""
+    try:
+        with open(FEEDHEALTH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(days=STALE_FEED_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = []
+    for feed, rec in data.items():
+        if not isinstance(rec, dict) or not isinstance(feed, str):
+            continue
+        fails = rec.get("consecutive_failures")
+        fails = fails if isinstance(fails, int) and fails >= 0 else 0
+        last_ok = rec.get("last_ok")
+        last_ok = last_ok if isinstance(last_ok, str) else ""
+        last_entry = rec.get("last_entry")
+        last_entry = last_entry if isinstance(last_entry, str) else ""
+        if fails:
+            status, cls, order = ("failing (%d run%s)"
+                                  % (fails, "" if fails == 1 else "s"), "st-bad", 0)
+        elif not last_entry:
+            status, cls, order = "stale (no dated entries seen)", "st-warn", 1
+        elif last_entry < cutoff:
+            status, cls, order = ("stale (no new entries since %s)"
+                                  % last_entry[:10], "st-warn", 1)
+        else:
+            status, cls, order = "ok", "muted", 2
+        rows.append({"feed": feed, "status": status, "cls": cls, "order": order,
+                     "last_ok": last_ok[:10], "last_entry": last_entry[:10]})
+    rows.sort(key=lambda r: (r["order"], r["feed"]))
+    return rows
+
+
+def feed_health_card():
+    """The Overview's Feed health card. Omitted until a sweep has recorded health."""
+    rows = feed_health_rows()
+    if not rows:
+        return ""
+    problems = sum(1 for r in rows if r["order"] < 2)
+    label = ("all %d feeds sweeping normally" % len(rows) if not problems
+             else "%d of %d feed%s need%s attention"
+             % (problems, len(rows), "" if len(rows) == 1 else "s",
+                "s" if problems == 1 else ""))
+    parts = ['<div class="card"><h2>Feed health</h2>',
+             '<p class="sublabel">The deterministic sweep&#39;s coverage &mdash; %s. '
+             'A failing or stale feed is silent recall rot: fix the URL, or drop it '
+             'from <code>subject.derived.feeds</code> at the next refresh.</p>'
+             % esc(label),
+             '<table><tr><th>Feed</th><th>Status</th><th>Last OK</th>'
+             '<th>Newest entry</th></tr>']
+    for r in rows:
+        parts.append('<tr><td class="feedurl">%s</td><td class="%s">%s</td>'
+                     '<td class="muted">%s</td><td class="muted">%s</td></tr>'
+                     % (esc(r["feed"]), r["cls"], esc(r["status"]),
+                        esc(r["last_ok"]) or "&mdash;",
+                        esc(r["last_entry"]) or "&mdash;"))
+    parts.append('</table></div>')
     return "".join(parts)
 
 
@@ -803,17 +896,55 @@ def latest_verdicts():
     return {rid: rec.get("verdict") for rid, rec in _latest_feedback().items()}
 
 
+def _append_feedback(rec):
+    os.makedirs(os.path.dirname(FEEDBACK), exist_ok=True)
+    with open(FEEDBACK, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
 def record_grade(item, verdict):
-    rec = {
+    _append_feedback({
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "id": item.get("id"), "verdict": verdict,
         "title": item.get("title"), "url": item.get("url"),
         "signal": item.get("signal"), "score": item.get("score"),
         "so_what": item.get("so_what"),
-    }
-    os.makedirs(os.path.dirname(FEEDBACK), exist_ok=True)
-    with open(FEEDBACK, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    })
+
+
+# ------------------------------------------------------------------ missed signals
+# The recall side of calibration: thumbs can only grade what WAS surfaced, so a
+# false negative is invisible to precision. A missed-signal report names a relevant
+# URL the monitor never surfaced; it lands in the same feedback log (verdict
+# "missed") so live calibration sees it the very next run and the next bootstrap
+# folds it into the rubric and source ranking.
+
+def missed_id(url):
+    """Stable id for a missed-signal report: 8 hex chars of the URL, the same shape
+    as surfaced-item ids, so re-reporting the same URL collapses to one latest row
+    in dedupe-feedback rather than stacking duplicates."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+
+
+def record_missed(url, note):
+    _append_feedback({
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "id": missed_id(url), "verdict": "missed",
+        "url": url, "note": note,
+    })
+
+
+def recent_missed(limit=10):
+    """Latest missed-signal reports, newest first."""
+    rows = [r for r in _latest_feedback().values() if r.get("verdict") == "missed"]
+    rows.sort(key=_ts, reverse=True)
+    return rows[:limit]
+
+
+def missed_count_30d():
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
+    return sum(1 for r in _latest_feedback().values()
+               if r.get("verdict") == "missed" and _ts(r)[:10] >= cutoff)
 
 
 # ----------------------------------------------------------------------------- markdown
@@ -979,6 +1110,7 @@ def overview_inner(static=False):
         parts.append('</div>')
 
     parts.append(calibration_card(static=static))
+    parts.append(feed_health_card())
 
     parts.append('<div class="card"><h2>Tracked entities</h2>')
     if rows:
@@ -1103,6 +1235,33 @@ def review_inner(just=None):
     if just:
         parts.append('<div class="banner">Recorded: %s &rarr; %s</div>'
                      % (esc(just[0]), esc(just[1])))
+
+    # Missed signals: the recall half of calibration. Thumbs grade only what WAS
+    # surfaced; this box records what should have been but never appeared.
+    parts.append('<div class="card"><h2>Report a missed signal</h2>'
+                 '<p class="sublabel">Saw something relevant the monitor never '
+                 'surfaced? Paste its URL &mdash; it becomes a false-negative '
+                 'example for the next runs and the next profile refresh.</p>'
+                 '<form class="missed" method="get" action="/missed">'
+                 '<input type="url" name="url" required '
+                 'placeholder="https://&hellip; (the item it missed)">'
+                 '<input type="text" name="note" '
+                 'placeholder="why it mattered (optional)">'
+                 '<button type="submit">Report</button></form>')
+    missed = recent_missed()
+    if missed:
+        parts.append('<ul class="events">')
+        for r in missed:
+            link = safe_url(r.get("url"))
+            shown = ('<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>'
+                     % (esc(link), esc(link))) if link else esc(r.get("url", ""))
+            note = r.get("note")
+            note = " &mdash; %s" % esc(note) if isinstance(note, str) and note else ""
+            parts.append('<li class="muted">%s | missed: %s%s</li>'
+                         % (esc(_ts(r)[:10]), shown, note))
+        parts.append('</ul>')
+    parts.append('</div>')
+
     parts.append('<div class="card">')
     if not items:
         parts.append('<p class="muted">No surfaced items yet.</p>')
@@ -1222,6 +1381,50 @@ def entity_inner(query):
     return "".join(parts)
 
 
+def draft_diff():
+    """Unified diff of the pending draft vs the approved profile, computed live
+    (stdlib difflib) so it can never go stale. Empty when either file is missing
+    or they match -- a first bootstrap has nothing to diff against."""
+    try:
+        with open(PROFILE, encoding="utf-8") as f:
+            a = f.read().splitlines()
+        with open(PROFILE_DRAFT, encoding="utf-8") as f:
+            b = f.read().splitlines()
+    except OSError:
+        return ""
+    return "\n".join(difflib.unified_diff(
+        a, b, fromfile="profile.yaml", tofile="profile.draft.yaml", lineterm=""))
+
+
+def render_diff(text):
+    """Read-only diff rendering: escape everything, then tint +/- lines."""
+    lines = []
+    for raw in text.split("\n"):
+        line = esc(raw)
+        if raw.startswith("+") and not raw.startswith("+++"):
+            lines.append('<span class="da">%s</span>' % line)
+        elif raw.startswith("-") and not raw.startswith("---"):
+            lines.append('<span class="dr">%s</span>' % line)
+        elif raw.startswith("@@"):
+            lines.append('<span class="c">%s</span>' % line)
+        else:
+            lines.append(line)
+    return '<pre class="yaml">%s</pre>' % "\n".join(lines)
+
+
+def draft_diff_card():
+    """The 'what changed' card on the draft view -- the refresh review surface:
+    skim what your grades re-ranked instead of re-reading the whole profile."""
+    d = draft_diff()
+    if not d:
+        return ""
+    return ('<div class="card"><h2>What changed vs the approved profile</h2>'
+            '<p class="sublabel">Computed live from <code>profile.yaml</code> vs '
+            '<code>profile.draft.yaml</code>. Review it, edit the draft if needed, '
+            'then approve with <code>cp profile.draft.yaml profile.yaml</code>.</p>'
+            '%s</div>' % render_diff(d))
+
+
 def render_yaml(text):
     """Read-only YAML rendering: escape everything, then lightly tint comments and keys.
     Display only -- the file is never written from here."""
@@ -1284,14 +1487,17 @@ def profile_inner(query):
     banner = ""
     if os.path.exists(PROFILE_DRAFT) and not draft:
         banner = ('<div class="banner">A <strong>profile.draft.yaml</strong> is awaiting '
-                  'review. <a href="/profile?draft=1">View the draft</a> &mdash; promote it '
-                  'with <code>cp profile.draft.yaml profile.yaml</code>.</div>')
+                  'review. <a href="/profile?draft=1">View the draft and what changed</a> '
+                  '&mdash; promote it with <code>cp profile.draft.yaml profile.yaml</code>.'
+                  '</div>')
     if draft:
         yaml_path, summary_path = PROFILE_DRAFT, PROFILE_DRAFT_SUMMARY
         title, subtitle = "Profile draft", "Profile draft - for review"
         intro = ('The bootstrap\'s proposed profile, not yet approved. '
                  '<a href="/profile">View the approved profile</a>.')
         missing = "No profile.draft.yaml present."
+        # On a refresh, lead the review with the diff against the approved profile.
+        banner += draft_diff_card()
     else:
         yaml_path, summary_path = PROFILE, PROFILE_SUMMARY
         title, subtitle = "Profile", "Approved profile"
@@ -1392,6 +1598,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect("/review")
             else:
                 self._send(400, b"bad grade request")
+        elif path == "/missed":
+            url_v = (q.get("url") or [""])[0].strip()
+            note = (q.get("note") or [""])[0].strip()
+            if safe_url(url_v):
+                record_missed(url_v, note)
+                self._redirect("/review")
+            else:
+                self._send(400, b"bad missed-signal request: url must be http(s)")
         else:
             self._send(404, b"not found")
 

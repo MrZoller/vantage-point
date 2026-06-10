@@ -1182,6 +1182,75 @@ test_portal_server() {
 }
 test_portal_server
 
+echo "== portal.py: missed-signal reports record a 'missed' verdict (recall loop) =="
+test_portal_missed() {
+  if ! command -v curl >/dev/null 2>&1; then pass "portal missed signals (skipped: no curl)"; return; fi
+  local repo="$TMP/pmissrepo" port=8798 page fb
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  printf 'version: 1\n' > "$repo/monitor-config.yaml"
+  ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
+  local srv=$!
+  page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
+  assert_contains "review offers the missed-signal form" "$page" 'action="/missed"'
+  curl -s -o /dev/null "http://127.0.0.1:$port/missed?url=https%3A%2F%2Fex.com%2Fmissed-item&note=big%20launch" || true
+  fb="$(cat "$repo/state/feedback.jsonl" 2>/dev/null)"
+  assert_contains "a report records verdict missed" "$fb" '"verdict": "missed"'
+  assert_contains "the report carries the url" "$fb" 'https://ex.com/missed-item'
+  assert_contains "the report carries the note" "$fb" 'big launch'
+  # Same URL re-reported -> same id, so dedupe-feedback collapses to one row.
+  curl -s -o /dev/null "http://127.0.0.1:$port/missed?url=https%3A%2F%2Fex.com%2Fmissed-item" || true
+  assert_eq "re-reporting a URL reuses its stable id" "1" \
+    "$(python3 "$ROOT/bin/dedupe-feedback.py" "$repo/state/feedback.jsonl" | grep -c .)"
+  # A non-http(s) URL is rejected, not recorded.
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/missed?url=javascript%3Aalert(1)" || true)"
+  assert_eq "a non-http(s) url is rejected with 400" "400" "$code"
+  case "$(cat "$repo/state/feedback.jsonl")" in
+    *javascript*) fail "a rejected url is not recorded" ;;
+    *) pass "a rejected url is not recorded" ;;
+  esac
+  page="$(curl -s "http://127.0.0.1:$port/review" || true)"
+  assert_contains "review lists the recorded miss" "$page" "ex.com/missed-item"
+  page="$(curl -s "http://127.0.0.1:$port/" || true)"
+  assert_contains "calibration card counts reported misses" "$page" "missed signal"
+  kill "$srv" 2>/dev/null || true
+}
+test_portal_missed
+
+echo "== portal.py: the draft view leads with a live diff vs the approved profile =="
+test_portal_draft_diff() {
+  local repo="$TMP/pdiff" out py="$TMP/pdiff.py"
+  mkdir -p "$repo/bin"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  printf 'relevance:\n  threshold: 0.6\n  old_line: kept\n' > "$repo/profile.yaml"
+  # The draft raises the threshold and carries a raw <script> to prove the diff
+  # rendering escapes rather than serves it.
+  printf 'relevance:\n  threshold: 0.7\n  note: "<script>alert(1)</script>"\n' > "$repo/profile.draft.yaml"
+  cat > "$py" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+page = m.profile_inner({"draft": ["1"]})
+print("CARD", "What changed vs the approved profile" in page)
+print("MINUS", '<span class="dr">-  threshold: 0.6</span>' in page)
+print("PLUS", '<span class="da">+  threshold: 0.7</span>' in page)
+print("ESCAPED", "<script>alert(1)</script>" not in page)
+approved = m.profile_inner({})
+print("BANNER", "View the draft and what changed" in approved)
+os.remove(m.PROFILE_DRAFT)
+print("NO_DRAFT_CARD", "What changed" not in m.profile_inner({}))
+PY
+  out="$(python3 "$py" "$repo/bin/portal.py")"
+  assert_contains "draft view shows the what-changed card" "$out" "CARD True"
+  assert_contains "removed lines are tinted" "$out" "MINUS True"
+  assert_contains "added lines are tinted" "$out" "PLUS True"
+  assert_contains "diff content is escaped, not served as markup" "$out" "ESCAPED True"
+  assert_contains "approved view's banner points at the diff" "$out" "BANNER True"
+  assert_contains "no card without a pending draft" "$out" "NO_DRAFT_CARD True"
+}
+test_portal_draft_diff
+
 echo "== portal.py: the light-markdown fallback renders a GFM table (watchlist) =="
 test_portal_light_table() {
   # Exercise the no-renderer path directly so it's deterministic regardless of whether
@@ -1392,6 +1461,45 @@ PY
 }
 test_portal_calibration
 
+echo "== portal.py: feed health card flags failing and stale feeds =="
+test_portal_feed_health() {
+  local repo="$TMP/pfh" out py="$TMP/pfh.py"
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  cat > "$py" <<'PY'
+import importlib.util, json, os, sys
+from datetime import datetime, timedelta, timezone
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("NO_FILE", repr(m.feed_health_card()))
+now = datetime.now(timezone.utc)
+fresh = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+old = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+health = {
+    "https://ok.example/feed":    {"last_ok": fresh, "consecutive_failures": 0, "last_entry": fresh},
+    "https://quiet.example/feed": {"last_ok": fresh, "consecutive_failures": 0, "last_entry": old},
+    "https://dead.example/feed":  {"last_ok": "", "consecutive_failures": 4,
+                                   "last_entry": "", "last_error": fresh, "error": "boom"},
+    "https://junk.example/feed":  "not-a-dict",
+}
+with open(m.FEEDHEALTH, "w") as f:
+    json.dump(health, f)
+rows = m.feed_health_rows()
+print("ORDER", "|".join(r["feed"].split("//")[1].split(".")[0] for r in rows))
+card = m.feed_health_card()
+print("FAILING", "failing (4 runs)" in card)
+print("STALE", "stale (no new entries since" in card)
+print("SUMMARY", "2 of 3 feeds need attention" in card)
+PY
+  out="$(python3 "$py" "$repo/bin/portal.py")"
+  assert_contains "card omitted with no health file" "$out" "NO_FILE ''"
+  assert_contains "problems sort first (failing, stale, ok)" "$out" "ORDER dead|quiet|ok"
+  assert_contains "a failing feed is flagged with its streak" "$out" "FAILING True"
+  assert_contains "a 200-but-silent feed is flagged stale" "$out" "STALE True"
+  assert_contains "the summary counts feeds needing attention" "$out" "SUMMARY True"
+}
+test_portal_feed_health
+
 echo "== portal.py: entity dossiers join observations + tagged/legacy items =="
 test_portal_entities() {
   local repo="$TMP/pent" out py="$TMP/pent.py" port=8795 page
@@ -1586,13 +1694,16 @@ SH
   printf '%s\n' \
     '{"timestamp":"2025-12-01T00:00:00Z","id":"pre","verdict":"down","title":"absorbed-by-bootstrap"}' \
     '{"timestamp":"2026-02-01T00:00:00Z","id":"post","verdict":"down","title":"fresh-thumbs-down"}' \
+    '{"timestamp":"2026-02-02T00:00:00Z","id":"miss1","verdict":"missed","url":"https://ex.com/fresh-missed-signal"}' \
     > "$repo/state/feedback.jsonl"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"
-  assert_contains "announces the live-calibration injection" "$out" "live calibration: applying 1 recent grade"
+  assert_contains "announces the live-calibration injection" "$out" "live calibration: applying 2 recent grade"
   assert_contains "prompt carries the grades block" "$(cat "$args" 2>/dev/null)" "RECENT OPERATOR GRADES"
   assert_contains "the post-bootstrap grade is injected" "$(cat "$args" 2>/dev/null)" "fresh-thumbs-down"
+  assert_contains "a missed-signal report is injected too" "$(cat "$args" 2>/dev/null)" "fresh-missed-signal"
+  assert_contains "the block explains the missed verdict" "$(cat "$args" 2>/dev/null)" "missed = a relevant item"
   case "$(cat "$args" 2>/dev/null)" in
     *absorbed-by-bootstrap*) fail "a pre-bootstrap grade is excluded (already in the rubric)" ;;
     *) pass "a pre-bootstrap grade is excluded (already in the rubric)" ;;
@@ -1884,6 +1995,71 @@ YAML
 }
 test_fetch_py
 
+echo "== fetch.py: --health tracks per-feed sweep health across runs =="
+test_fetch_health() {
+  local dir="$TMP/feeds-h" err rc port=8799 fh="$TMP/feedhealth.json"
+  mkdir -p "$dir"
+  write_feed_fixtures "$dir"
+  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) >/dev/null 2>&1 &
+  local srv=$!
+  if ! wait_port "$port"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
+  cat > "$TMP/health-profile.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/rss.xml
+      - http://127.0.0.1:1/dead.xml
+YAML
+  printf 'corrupt {' > "$fh"   # a corrupt health file must be survivable, not fatal
+  err="$TMP/fetch-h.err"
+  python3 "$ROOT/bin/fetch.py" --hours 30 --health "$fh" \
+    --out "$TMP/cand-h.jsonl" "$TMP/health-profile.yaml" 2> "$err"; rc=$?
+  assert_eq "exits 0 over a corrupt health file" "0" "$rc"
+  local probe="$TMP/health-probe.py"
+  cat > "$probe" <<'PY'
+import json, sys
+h = json.load(open(sys.argv[1]))
+ok = h[sys.argv[2]]
+dead = h[sys.argv[3]]
+print("OK_FAILS", ok["consecutive_failures"])
+print("OK_LASTOK", bool(ok["last_ok"]))
+print("OK_ENTRY", bool(ok["last_entry"]))
+print("DEAD_FAILS", dead["consecutive_failures"])
+print("DEAD_ERROR", bool(dead.get("error")))
+print("DEAD_LASTOK", repr(dead["last_ok"]))
+PY
+  local out
+  out="$(python3 "$probe" "$fh" "http://127.0.0.1:$port/rss.xml" "http://127.0.0.1:1/dead.xml")"
+  assert_contains "a healthy feed records zero consecutive failures" "$out" "OK_FAILS 0"
+  assert_contains "a healthy feed records last_ok" "$out" "OK_LASTOK True"
+  assert_contains "a healthy feed records its newest entry" "$out" "OK_ENTRY True"
+  assert_contains "a dead feed counts one failure" "$out" "DEAD_FAILS 1"
+  assert_contains "a dead feed records its error" "$out" "DEAD_ERROR True"
+  assert_contains "a never-ok feed has an empty last_ok" "$out" "DEAD_LASTOK ''"
+  # Two more failing runs -> the counter accumulates and the loud warning fires.
+  python3 "$ROOT/bin/fetch.py" --hours 30 --health "$fh" \
+    --out "$TMP/cand-h.jsonl" "$TMP/health-profile.yaml" 2>/dev/null
+  python3 "$ROOT/bin/fetch.py" --hours 30 --health "$fh" \
+    --out "$TMP/cand-h.jsonl" "$TMP/health-profile.yaml" 2> "$err"
+  out="$(python3 "$probe" "$fh" "http://127.0.0.1:$port/rss.xml" "http://127.0.0.1:1/dead.xml")"
+  assert_contains "consecutive failures accumulate across runs" "$out" "DEAD_FAILS 3"
+  assert_contains "a repeatedly-failing feed warns loudly" "$(cat "$err")" "failed 3 runs in a row"
+  kill "$srv" 2>/dev/null || true
+  # A feed removed from the config is dropped from the health file.
+  printf 'subject:\n  derived:\n    feeds:\n      - http://127.0.0.1:1/dead.xml\n' > "$TMP/health-profile.yaml"
+  python3 "$ROOT/bin/fetch.py" --hours 30 --health "$fh" \
+    --out "$TMP/cand-h.jsonl" "$TMP/health-profile.yaml" 2>/dev/null
+  case "$(cat "$fh")" in
+    *rss.xml*) fail "an unconfigured feed is pruned from the health file" ;;
+    *) pass "an unconfigured feed is pruned from the health file" ;;
+  esac
+  # No feeds at all -> health resets to empty (nothing to report on).
+  printf 'subject:\n  derived:\n    feeds: []\n' > "$TMP/health-profile.yaml"
+  python3 "$ROOT/bin/fetch.py" --health "$fh" "$TMP/health-profile.yaml" 2>/dev/null
+  assert_eq "no feeds -> an empty health map" "{}" "$(tr -d ' \n' < "$fh")"
+}
+test_fetch_health
+
 echo "== monitor.sh: feeds the pre-fetched candidates to triage (and cleans up) =="
 test_monitor_fetch() {
   local repo="$TMP/fetchrepo" dir="$TMP/feeds2" out args="$TMP/fetch_args" port=8797
@@ -1918,6 +2094,7 @@ SH
   assert_contains "prompt names the candidates file" "$(cat "$args" 2>/dev/null)" "PRE-FETCHED CANDIDATES"
   assert_contains "prompt points at the right path" "$(cat "$args" 2>/dev/null)" "state/.candidates.daily.jsonl"
   if [ -f "$repo/state/.candidates.daily.jsonl" ]; then fail "candidates file cleaned up after the run"; else pass "candidates file cleaned up after the run"; fi
+  if [ -s "$repo/state/feedhealth.json" ]; then pass "the sweep records feed health"; else fail "the sweep records feed health"; fi
 
   # No feeds in the profile -> no candidates note, run unchanged.
   local repo2="$TMP/fetchrepo2" args2="$TMP/fetch_args2"
@@ -1950,6 +2127,79 @@ YAML
   assert_eq "a dead feed can't fail the run" "0" "$rc"
 }
 test_monitor_fetch
+
+echo "== monitor.sh: a gap since the last run widens the sweep window (catch-up) =="
+test_monitor_catchup() {
+  local repo="$TMP/catchuprepo" out args="$TMP/catchup_args"
+  make_fake_repo "$repo"
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  # The last logged run is ~100h ago (99.5h, so the rounded-up gap is exactly 100):
+  # a 30h daily lookback would lose ~70h of signal.
+  printf '{"timestamp":"%s","mode":"daily","pass":"triage","cost_usd":0.01}\n' \
+    "$(python3 -c 'from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=99,minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))')" \
+    > "$repo/state/runs.log"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "announces the widened window" "$out" "catch-up: last run was"
+  assert_contains "the prompt carries the catch-up instruction" "$(cat "$args" 2>/dev/null)" "CATCH-UP WINDOW"
+  assert_contains "the widened window covers the gap" "$(cat "$args" 2>/dev/null)" "widened to the last 100 hours"
+
+  # The widening is capped at catchup_max_hours EXTRA hours on top of the normal
+  # window (30h daily + 48h cap = 78h) -- the cap bounds the widening, not the window.
+  printf 'monitoring:\n  catchup_max_hours: 48\n' > "$repo/monitor-config.yaml.cap"
+  cat "$repo/monitor-config.yaml" >> "$repo/monitor-config.yaml.cap"
+  mv "$repo/monitor-config.yaml.cap" "$repo/monitor-config.yaml"
+  printf '{"timestamp":"2020-01-01T00:00:00Z","mode":"daily","pass":"triage"}\n' > "$repo/state/runs.log"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "a huge gap is capped at window + catchup_max_hours" "$(cat "$args" 2>/dev/null)" "widened to the last 78 hours"
+
+  # WEEKLY can catch up even though its normal window (198h) exceeds the default
+  # cap (168) -- the regression where a flat cap made weekly catch-up impossible.
+  printf '{"timestamp":"2020-01-01T00:00:00Z","mode":"weekly","pass":"triage"}\n' > "$repo/state/runs.log"
+  sed -i.bak 's/catchup_max_hours: 48/catchup_max_hours: 168/' "$repo/monitor-config.yaml" && rm -f "$repo/monitor-config.yaml.bak"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" weekly 2>&1 )"
+  assert_contains "weekly widens past its 198h window (to 198+168)" "$(cat "$args" 2>/dev/null)" "widened to the last 366 hours"
+
+  # A recent last run (inside the window) -> no catch-up at all.
+  local repo2="$TMP/catchuprepo2" args2="$TMP/catchup_args2"
+  make_fake_repo "$repo2"
+  cp "$repo/stub/claude" "$repo2/stub/claude"
+  printf '{"timestamp":"%s","mode":"daily","pass":"triage"}\n' \
+    "$(date -u +%FT%TZ)" > "$repo2/state/runs.log"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args2" HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" \
+          bash "$repo2/bin/monitor.sh" daily 2>&1 )"
+  case "$(cat "$args2" 2>/dev/null)" in
+    *"CATCH-UP WINDOW"*) fail "no catch-up when the last run is recent" ;;
+    *) pass "no catch-up when the last run is recent" ;;
+  esac
+
+  # catchup_max_hours: 0 disables the widening entirely.
+  local repo3="$TMP/catchuprepo3" args3="$TMP/catchup_args3"
+  make_fake_repo "$repo3"
+  cp "$repo/stub/claude" "$repo3/stub/claude"
+  printf 'monitoring:\n  catchup_max_hours: 0\n' >> "$repo3/monitor-config.yaml"
+  printf '{"timestamp":"2020-01-01T00:00:00Z","mode":"daily","pass":"triage"}\n' > "$repo3/state/runs.log"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args3" HOME="$TMP/fakehome" PATH="$repo3/stub:$PATH" \
+          bash "$repo3/bin/monitor.sh" daily 2>&1 )"
+  case "$(cat "$args3" 2>/dev/null)" in
+    *"CATCH-UP WINDOW"*) fail "catchup_max_hours: 0 disables catch-up" ;;
+    *) pass "catchup_max_hours: 0 disables catch-up" ;;
+  esac
+}
+test_monitor_catchup
 
 echo "== usage.sh: rolls up runs.log within the window =="
 test_usage() {
@@ -2071,10 +2321,14 @@ test_bootstrap_feedback() {
   printf '%s\n' \
     '{"timestamp":"2026-06-01T00:00:00Z","id":"abc","verdict":"up"}' \
     '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
-    '{"timestamp":"2026-06-01T00:00:00Z","id":"xyz","verdict":"up"}' > "$repo/state/feedback.jsonl"
+    '{"timestamp":"2026-06-01T00:00:00Z","id":"xyz","verdict":"up"}' \
+    '{"timestamp":"2026-06-03T00:00:00Z","id":"m1","verdict":"missed","url":"https://ex.com/missed-by-monitor"}' \
+    > "$repo/state/feedback.jsonl"
   out="$( cd "$repo" && CLAUDE_ARGS="$args" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
-  assert_contains "folds in deduped calibration grades (2, not 3)" "$out" "including 2 calibration grade"
+  assert_contains "folds in deduped calibration grades (3, not 4)" "$out" "including 3 calibration grade"
   assert_contains "passes the calibration block to claude" "$(cat "$args" 2>/dev/null)" "calibration grades"
+  assert_contains "a missed-signal report rides along" "$(cat "$args" 2>/dev/null)" "missed-by-monitor"
+  assert_contains "the block explains the missed verdict" "$(cat "$args" 2>/dev/null)" "missed = a relevant item"
 }
 test_bootstrap_feedback
 
@@ -2103,6 +2357,51 @@ YAML
   fi
 }
 test_bootstrap_email
+
+echo "== bootstrap.sh: a refresh writes profile.draft.diff and emails what changed =="
+test_bootstrap_refresh_diff() {
+  local repo="$TMP/bootdiff" home="$TMP/boothome8" out msg="$TMP/boot_msg4.eml"
+  make_fake_bootstrap_repo "$repo" "$home"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+output:
+  email_to: "me@example.com"
+YAML
+  # An approved profile that differs from the draft the stub claude writes
+  # ("derived: {}") -> the refresh path must produce a reviewable diff.
+  printf 'derived: {}\nstale_key: to-be-dropped\n' > "$repo/profile.yaml"
+  out="$( cd "$repo" && MSG_OUT="$msg" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "announces the refresh diff" "$out" "refresh diff written to profile.draft.diff"
+  assert_contains "the diff file records the dropped line" \
+    "$(cat "$repo/profile.draft.diff" 2>/dev/null)" "-stale_key: to-be-dropped"
+  assert_contains "the review email carries the what-changed section" \
+    "$(cat "$msg" 2>/dev/null)" "What changed vs the approved profile"
+  assert_contains "the review email carries the diff body" \
+    "$(cat "$msg" 2>/dev/null)" "stale_key: to-be-dropped"
+  assert_contains "the final approval hint points at the diff" "$out" "what changed vs the approved profile: profile.draft.diff"
+
+  # First bootstrap (no approved profile): no diff file, no email section.
+  local repo2="$TMP/bootdiff2" home2="$TMP/boothome9" msg2="$TMP/boot_msg5.eml"
+  make_fake_bootstrap_repo "$repo2" "$home2"
+  cat "$repo/monitor-config.yaml" > "$repo2/monitor-config.yaml"
+  ( cd "$repo2" && MSG_OUT="$msg2" HOME="$home2" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  if [ -f "$repo2/profile.draft.diff" ]; then fail "no diff file on a first bootstrap"; else pass "no diff file on a first bootstrap"; fi
+  case "$(cat "$msg2" 2>/dev/null)" in
+    *"What changed vs the approved profile"*) fail "no what-changed section on a first bootstrap" ;;
+    *) pass "no what-changed section on a first bootstrap" ;;
+  esac
+
+  # An identical draft: note it, leave no empty diff file behind.
+  local repo3="$TMP/bootdiff3" home3="$TMP/boothome10" out3
+  make_fake_bootstrap_repo "$repo3" "$home3"
+  printf 'derived: {}\n' > "$repo3/profile.yaml"     # exactly what the stub will draft
+  out3="$( cd "$repo3" && HOME="$home3" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "notes an identical draft" "$out3" "identical to the approved"
+  if [ -f "$repo3/profile.draft.diff" ]; then fail "no diff file when draft is identical"; else pass "no diff file when draft is identical"; fi
+}
+test_bootstrap_refresh_diff
 
 echo "== bootstrap.sh: editorial pass polishes the summary when models.editor is set =="
 test_bootstrap_editor() {

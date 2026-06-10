@@ -186,6 +186,55 @@ yes; a failed/empty/invalid suggestion never loses the assembled draft. Refuses 
 overwrite without `--force`, assembles in a temp file and moves it into place
 atomically, and offers (never auto-runs) `bootstrap.sh` at the end.
 
+## Phase 14 — missed-signal capture ✅ (shipped)
+
+The recall side of calibration. Thumbs can only grade what WAS surfaced, so the
+precision headline (Phase 8) can't see a false negative — and "silence beats noise"
+makes misses invisible by design. The portal's Review tab gains a **"Report a missed
+signal"** box: paste the URL of something the monitor should have caught (plus an
+optional why-it-mattered note) and it's recorded to `state/feedback.jsonl` with
+verdict `missed` (stable per-URL id, so a re-report collapses to one row). Missed
+reports ride the existing two calibration clocks unchanged: live calibration injects
+them on the very next run (treat lookalikes as in-scope; give that source sweep
+attention), and the next bootstrap tunes the rubric AND the source ranking/feeds so
+items like it get swept at all. The Calibration card counts reported misses beside
+the precision figure to keep the headline honest.
+
+## Phase 15 — profile-refresh diff ✅ (shipped)
+
+The durable half of the learning loop ("grades consolidate at the next bootstrap")
+hinged on a review nobody is helped through: re-reading a whole profile. Make the
+refresh gate a 2-minute skim instead:
+- On a re-bootstrap (an approved `profile.yaml` exists), `bootstrap.sh` writes
+  **`profile.draft.diff`** — a unified diff of the draft vs the approved profile —
+  and folds it into the "draft ready for review" email as a *What changed vs the
+  approved profile* section (truncated past 200 lines; appended after the editorial
+  pass so the editor can never touch it). First run / identical draft / no `diff`
+  tool → a note, never a failure.
+- The portal's draft view (`/profile?draft=1`) leads with the same diff, computed
+  live via `difflib` so it can't go stale; the awaiting-review banner links to it.
+- Approval stays the deliberate local `cp` — this lowers the cost of the gate, it
+  doesn't move it.
+
+## Phase 16 — coverage integrity ✅ (shipped)
+
+Two small guards that keep the sweep's coverage from silently rotting:
+- **Feed health.** `bin/fetch.py --health` (passed by the monitor) persists per-feed
+  sweep health to `state/feedhealth.json`: last success, consecutive failures, and
+  the newest entry ever seen. A feed failing 3+ runs in a row warns loudly in the
+  run log, and the portal Overview gains a **Feed health** card — failing feeds
+  (with their streak), stale feeds (HTTP 200 but nothing new in 14+ days — dead by
+  another name), then healthy ones. Feeds dropped from the profile are pruned;
+  everything stays warning-only and stdlib-only.
+- **Catch-up lookback.** A slept-through or skipped run used to lose its window
+  forever — the next run still looked back only `lookback_hours`. Now, when the
+  last logged run (newest `state/runs.log` row) is older than this run's window,
+  the window widens to cover the gap — applied to both the feed pre-sweep and the
+  agent's own browsing (a `CATCH-UP WINDOW` prompt note) — by at most
+  `monitoring.catchup_max_hours` *extra* hours on top of the normal window (default
+  168, `0` disables; bounding the widening rather than the window lets weekly runs
+  catch up too) so a long-dormant deployment can't trigger an unbounded sweep.
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

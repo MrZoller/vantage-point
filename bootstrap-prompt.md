@@ -51,6 +51,9 @@ would score them correctly; if it wouldn't, fix the rubric, not the examples.
 If the prompt also includes **human calibration grades** (thumbs up/down the user
 gave past surfaced items), treat them as ground truth too: tune the rubric so it
 would score them correctly, and carry the clearest cases into `relevance.calibration`.
+Grades with verdict `missed` are **false negatives** — relevant items the monitor
+never surfaced. Make the rubric score them above threshold, and fix recall too: rank
+their sources appropriately in `news_sources` (with verified feeds where they exist).
 
 ## Interpretation, not just filtering
 The whole point of the anchor is to move from *monitoring* to *intelligence*.

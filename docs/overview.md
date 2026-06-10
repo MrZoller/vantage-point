@@ -50,7 +50,7 @@ why, or what to do about it.*
 | Point-in-time events | **Trend detection** — price moves, repeated signals, hiring spikes over time |
 | Repeats rumors | **Corroborates** across independent sources (optional deep-dive pass); flags the unconfirmed |
 | Fires on everything | **Silence beats noise** — nothing on empty days (once tuned) |
-| Static | **Learns** from 👍/👎 feedback — applied from the next run — and **shows you its measured precision** over time |
+| Static | **Learns** from 👍/👎 feedback and "it missed this" reports — applied from the next run — and **shows you its measured precision** over time |
 
 ## How it works
 
@@ -95,9 +95,13 @@ flowchart LR
    tab**, and grades take effect on two clocks: the newest ones are applied as **live
    calibration on the very next run** (a thumbs-down filters its lookalikes the next
    morning), and the **next profile refresh** — a re-run of the research step that you
-   review and approve — consolidates all of them into the rubric durably. The portal
-   also *measures* the loop: a Calibration view tracks precision week by week, so
-   "it's getting sharper" is a chart, not a feeling.
+   review and approve — consolidates all of them into the rubric durably (the refresh
+   review is a short *what changed* diff against the approved profile, not a re-read). Spotted
+   something relevant it *never* surfaced? Report the URL as a **missed signal** from
+   the same tab and it's treated as a false negative on both clocks. The portal
+   also *measures* the loop: a Calibration view tracks precision week by week (with
+   reported misses counted alongside), so "it's getting sharper" is a chart, not a
+   feeling.
 
 ## What you set up
 

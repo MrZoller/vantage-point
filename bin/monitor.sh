@@ -272,11 +272,13 @@ if [ "$RECENT_GRADES" -gt 0 ] && [ -s state/feedback.jsonl ] \
     echo "[monitor:$MODE] live calibration: applying $n_fb recent grade(s) (relevance.recent_grades=$RECENT_GRADES)" >&2
     FEEDBACK_NOTE="
 
-RECENT OPERATOR GRADES - live calibration. The user graded these previously surfaced
-items AFTER the current rubric was approved (\`verdict\`: up = right to surface,
-down = should have been filtered), so the rubric does not reflect them yet. Treat
-them as ground truth layered on top of the rubric: score an item that resembles a
-'down' example below threshold, and do not drop one that resembles an 'up' example.
+RECENT OPERATOR GRADES - live calibration. The user recorded these AFTER the current
+rubric was approved (\`verdict\`: up = right to surface, down = should have been
+filtered, missed = a relevant item the sweep never surfaced - the user reported its
+URL), so the rubric does not reflect them yet. Treat them as ground truth layered on
+top of the rubric: score an item that resembles a 'down' example below threshold, do
+not drop one that resembles an 'up' example, and treat anything resembling a 'missed'
+example as in-scope and material - and give its source sweep attention this run.
 For anything they don't cover, the approved rubric governs unchanged.
 \`\`\`jsonl
 $FEEDBACK_DATA
@@ -300,9 +302,55 @@ LOOKBACK_HOURS="$(cfg_get monitoring lookback_hours)"
 case "$LOOKBACK_HOURS" in ''|*[!0-9]*) LOOKBACK_HOURS=30 ;; esac
 FETCH_HOURS="$LOOKBACK_HOURS"
 [ "$MODE" = weekly ] && FETCH_HOURS=$(( 24 * 7 + LOOKBACK_HOURS ))
+
+# ---- catch-up lookback (monitoring.catchup_max_hours; 0 = off) ----
+# A slept-through or skipped run would otherwise lose its window forever: the next
+# run still looks back only lookback_hours, so anything published in the gap is
+# never swept. When the last logged run is older than this run's window, widen the
+# window to cover the gap - capped at window + catchup_max_hours EXTRA hours (the
+# cap bounds the widening, not the window, so the weekly mode - whose normal window
+# already exceeds the default cap - can catch up too), so a long-dormant deployment
+# can't trigger an unbounded sweep. The newest runs.log row of ANY mode is the right
+# baseline: both modes run the same sweep against the shared seen.jsonl, so whatever
+# ran last already covered its window. Applies to both the feed pre-sweep and the
+# agent's own browsing.
+CATCHUP_MAX="$(cfg_get monitoring catchup_max_hours)"
+case "$CATCHUP_MAX" in ''|*[!0-9]*) CATCHUP_MAX=168 ;; esac
+CATCHUP_NOTE=""
+if [ "$CATCHUP_MAX" -gt 0 ] && [ -s state/runs.log ]; then
+  # runs.log rows are written by jq with a fixed key order; pull the newest row's
+  # timestamp without requiring jq here (a hand-edited log just skips the check).
+  last_ts="$(tail -n 1 state/runs.log | sed -n 's/.*"timestamp":[[:space:]]*"\([^"]*\)".*/\1/p')"
+  last_epoch=""
+  if [ -n "$last_ts" ]; then
+    # GNU `date -d` vs BSD `date -j -u -f`; give up quietly if neither parses.
+    last_epoch="$(date -u -d "$last_ts" +%s 2>/dev/null || date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$last_ts" +%s 2>/dev/null || true)"
+  fi
+  if [ -n "$last_epoch" ]; then
+    gap_hours=$(( ( $(date +%s) - last_epoch + 3599 ) / 3600 ))   # round up
+    if [ "$gap_hours" -gt "$FETCH_HOURS" ]; then
+      catchup_hours="$gap_hours"
+      cap_hours=$(( FETCH_HOURS + CATCHUP_MAX ))
+      [ "$catchup_hours" -gt "$cap_hours" ] && catchup_hours="$cap_hours"
+      if [ "$catchup_hours" -gt "$FETCH_HOURS" ]; then
+        echo "[monitor:$MODE] catch-up: last run was ~${gap_hours}h ago - widening the sweep window to ${catchup_hours}h (cap: ${FETCH_HOURS}h window + monitoring.catchup_max_hours=$CATCHUP_MAX)" >&2
+        FETCH_HOURS="$catchup_hours"
+        CATCHUP_NOTE="
+
+CATCH-UP WINDOW: the previous run was ~${gap_hours}h ago (a missed or skipped run),
+so this run's window is widened to the last ${catchup_hours} hours. Use that window
+everywhere the procedure says to look back monitoring.lookback_hours, so the gap
+between runs is covered. Dedup as usual - nothing already in your state file is new."
+      fi
+    fi
+  fi
+fi
 if [ "$FETCH_MAX" -gt 0 ] && command -v python3 >/dev/null 2>&1 && [ -f bin/fetch.py ]; then
+  # --health keeps per-feed sweep health in state/feedhealth.json (the portal's
+  # Feed health card): a feed that 404s for weeks or stops publishing is visible
+  # coverage rot, not a silently shrinking sweep.
   python3 bin/fetch.py --hours "$FETCH_HOURS" --max "$FETCH_MAX" \
-    --seen "$STATE_FILE" --out "$CANDIDATES" \
+    --seen "$STATE_FILE" --out "$CANDIDATES" --health state/feedhealth.json \
     "$PROFILE" "$CONFIG" 2>> "kb/${TODAY}.${MODE}.err" || true
   if [ -s "$CANDIDATES" ]; then
     n_cand="$(wc -l < "$CANDIDATES" | tr -d ' ')"
@@ -360,7 +408,7 @@ also append your highest-scoring surfaced items - those with score >= $DEEPDIVE_
 at most $DEEPDIVE_MAX of them, highest first - to ./$QUEUE, one JSON object per line:
 {\"url\":...,\"title\":...,\"signal\":...,\"score\":...,\"so_what\":...}. A separate
 stronger agent will investigate these and enrich them in the report; you just queue
-them. Do not write the queue when it's disabled.$CANDIDATES_NOTE$FEEDBACK_NOTE" \
+them. Do not write the queue when it's disabled.$CATCHUP_NOTE$CANDIDATES_NOTE$FEEDBACK_NOTE" \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
