@@ -481,6 +481,91 @@ PY
 }
 test_email_helpers
 
+echo "== email: output.email_images embeds the logo as a CID inline image =="
+test_email_logo() {
+  local funcs="$TMP/emaillogofuncs.sh"
+  awk '/^# ---- email delivery ----/{f=1} /^# Promote this run.s output/{f=0} f' \
+    "$ROOT/bin/monitor.sh" > "$funcs"
+  local report="$TMP/logoreport.md"
+  printf '# Daily - 1 item\n\n* something\n' > "$report"
+  # Min PATH plus base64 (to encode the image) and an HTML renderer stub.
+  local lbin="$TMP/lbin"; make_min_bin "$lbin"
+  ln -s "$(command -v base64)" "$lbin/base64"
+  printf '#!/usr/bin/env bash\necho "<p>rendered</p>"\nexit 0\n' > "$lbin/cmark-gfm"
+  chmod +x "$lbin/cmark-gfm"
+  # The real logo asset, located via LOGO_ASSET (the monitor sets this from $ROOT).
+  local logo="$TMP/logo-email.png"
+  cp "$ROOT/assets/logo-email.png" "$logo"
+
+  # ---- images ON: multipart/related, text+html+png, header references the cid ----
+  local on_eml="$TMP/logo_on.eml"
+  ( set -e
+    # shellcheck disable=SC2030,SC2031  # subshell-local env is intentional (isolation)
+    export MODE=daily TODAY=2026-01-01 MSG_OUT="$on_eml" PATH="$lbin" LOGO_ASSET="$logo" EMAIL_IMAGES=1
+    # shellcheck source=bin/email-lib.sh
+    source "$ROOT/bin/email-lib.sh"
+    # shellcheck disable=SC1090
+    source "$funcs"
+    email_report "$report" to@example.com )
+  local struct
+  struct="$(python3 - "$on_eml" <<'PY'
+import sys, email
+m = email.message_from_file(open(sys.argv[1]))
+parts = sorted(p.get_content_type() for p in m.walk() if p.get_content_maintype() != "multipart")
+imgs = [p for p in m.walk() if p.get_content_type() == "image/png"]
+print(m.get_content_type(), ",".join(parts), imgs[0].get("Content-ID") if imgs else "")
+PY
+)"
+  assert_eq "images on -> multipart/related wrapping text+html+png with a Content-ID" \
+    "multipart/related image/png,text/html,text/plain <vp-logo@vantagepoint>" "$struct"
+  assert_contains "HTML header references the logo via cid:" "$(cat "$on_eml")" 'src="cid:vp-logo@vantagepoint"'
+
+  # ---- images OFF (default): plain multipart/alternative, no image, no cid ----
+  local off_eml="$TMP/logo_off.eml"
+  ( set -e
+    # shellcheck disable=SC2030,SC2031  # subshell-local env is intentional (isolation)
+    export MODE=daily TODAY=2026-01-01 MSG_OUT="$off_eml" PATH="$lbin" LOGO_ASSET="$logo"
+    # shellcheck source=bin/email-lib.sh
+    source "$ROOT/bin/email-lib.sh"
+    # shellcheck disable=SC1090
+    source "$funcs"
+    email_report "$report" to@example.com )
+  assert_eq "images off -> stays multipart/alternative (no image)" "multipart/alternative" \
+    "$(python3 -c 'import sys,email;print(email.message_from_file(open(sys.argv[1])).get_content_type())' "$off_eml")"
+  assert_not_contains "no cid reference when images are off" "$(cat "$off_eml")" "cid:"
+
+  # ---- fail-safe: images ON but the asset is missing -> degrade cleanly, no crash ----
+  local miss_eml="$TMP/logo_miss.eml"
+  ( set -e
+    # shellcheck disable=SC2030,SC2031  # subshell-local env is intentional (isolation)
+    export MODE=daily TODAY=2026-01-01 MSG_OUT="$miss_eml" PATH="$lbin" LOGO_ASSET="$TMP/nope.png" EMAIL_IMAGES=1
+    # shellcheck source=bin/email-lib.sh
+    source "$ROOT/bin/email-lib.sh"
+    # shellcheck disable=SC1090
+    source "$funcs"
+    email_report "$report" to@example.com )
+  assert_eq "missing asset degrades to multipart/alternative (fail-safe)" "multipart/alternative" \
+    "$(python3 -c 'import sys,email;print(email.message_from_file(open(sys.argv[1])).get_content_type())' "$miss_eml")"
+}
+test_email_logo
+
+echo "== cfg_get_bool: truthy parsing + default =="
+test_cfg_get_bool() {
+  # shellcheck source=bin/config-lib.sh
+  source "$ROOT/bin/config-lib.sh"
+  local cfg="$TMP/bool.yaml"
+  printf 'output:\n  email_images: true\n' > "$cfg"
+  assert_eq "true -> 1" "1" "$(cfg_get_bool output email_images 0 "$cfg")"
+  printf 'output:\n  email_images: FALSE\n' > "$cfg"
+  assert_eq "FALSE -> empty (even with default on)" "" "$(cfg_get_bool output email_images 1 "$cfg")"
+  printf 'output:\n  email_images: yes\n' > "$cfg"
+  assert_eq "yes -> 1" "1" "$(cfg_get_bool output email_images 0 "$cfg")"
+  printf 'output:\n  email_to: ""\n' > "$cfg"
+  assert_eq "absent -> default off" "" "$(cfg_get_bool output email_images 0 "$cfg")"
+  assert_eq "absent -> default on" "1" "$(cfg_get_bool output email_images 1 "$cfg")"
+}
+test_cfg_get_bool
+
 echo "== cfg_get_list / email: output.email_to accepts a list and reaches every recipient =="
 test_email_multi() {
   # shellcheck source=bin/config-lib.sh
@@ -1165,6 +1250,7 @@ test_portal_export() {
   assert_contains "renders a sparkline cell" "$(cat "$html")" 'class="spark"'
   assert_contains "export includes the Activity visuals" "$(cat "$html")" "Activity"
   assert_contains "export embeds an inline SVG (no JS, CSP-safe)" "$(cat "$html")" "<svg"
+  assert_contains "topbar carries the inline brand logo" "$(cat "$html")" 'class="brand-mark"'
   assert_contains "event detail falls back to value when note is absent" "$(cat "$html")" "new GMT teased"
   assert_contains "HTML-escapes injected text" "$(cat "$html")" "X &lt;b&gt;raw&lt;/b&gt; &amp; co"
   case "$(cat "$html")" in

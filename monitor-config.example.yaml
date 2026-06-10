@@ -208,6 +208,11 @@ output:
   #     - teammate@example.com
   # A comma-separated string ("a@x.com, b@x.com") works too.
   email_to: ""                # e.g. "you@example.com"; blank = no email
+  email_images: false         # embed the Vantage Point logo in the email header. It
+                              # rides along inside the message (CID inline image) - no
+                              # external fetch, so no privacy/tracking cost - and shows
+                              # in Gmail/Outlook/Apple Mail. Default off keeps email
+                              # image-free; missing asset = silently no logo (fail-safe).
   webhook_url: ""             # ALSO POST each report as JSON to this URL. Works as a
                               # generic webhook AND as a Slack/Discord incoming-webhook
                               # URL (the payload carries text/content/report_markdown,

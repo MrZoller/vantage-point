@@ -68,12 +68,14 @@ Make grading frictionless so the rubric learns your taste and quality compounds:
 ## Phase 5 — presentation + editorial polish ✅ (shipped)
 
 Make the delivered report look and read like a designed brief, not a data dump:
-- A redesigned email/HTML template (`wrap_html` in `bin/monitor.sh`): a header card
+- A redesigned email/HTML template (`wrap_html` in `bin/email-lib.sh`): a header card
   (subject + "Daily/Weekly briefing — date"), a hidden inbox preheader, a bottom-line
   callout, uppercase section dividers, a styled watchlist table with sparklines, and a
-  footer. Deterministic (no per-run LLM cost), no external assets, ASCII-only source.
-  Reports are authored as Markdown so they render as the brief and stay readable as
-  plain text.
+  footer. Table-based layout with bgcolor + inline styles so it holds up in Outlook as
+  well as Gmail/Apple Mail. Deterministic (no per-run LLM cost), ASCII-only source. No
+  external assets; an optional brand logo (`output.email_images`) rides along as a
+  CID-embedded inline image, never a remote fetch. Reports are authored as Markdown so
+  they render as the brief and stay readable as plain text.
 - An optional **editorial pass** (`models.editor`, `editor-prompt.md`): a dedicated
   editor curates + polishes the report before delivery (lead, order, cut/merge,
   tighten) — strictly editorial (no new facts, figures unchanged, citations kept; no
