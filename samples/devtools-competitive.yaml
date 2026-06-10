@@ -124,7 +124,7 @@ tracking:
   observations_max_lines: 20000
 
 output:
-  email_to: ""
+  email_to: ""                # one address, or a YAML list of them; blank = no email
   knowledge_base: ./kb/
   dashboard: true
 

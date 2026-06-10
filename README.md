@@ -248,6 +248,17 @@ via msmtp when it's set. Leave it blank to skip email and just read reports from
 If `email_to` is set but msmtp isn't installed, the run still succeeds and logs a notice;
 a send failure never loses the report (it's already written to `kb/`).
 
+**More than one recipient?** `email_to` also takes a YAML list — every address gets its
+own copy (each a separate envelope recipient; the `To:` header lists them all):
+```yaml
+output:
+  email_to:
+    - you@example.com
+    - teammate@example.com
+```
+A comma-separated string (`"a@x.com, b@x.com"`) works too, and a single bare address
+is still fine — so existing configs need no change.
+
 The email Subject names the monitored market — `[Vantage Point: <subject.name>] <mode>
 <date>` — so if you run several agents (one config each) their mail is easy to tell
 apart and filter. With no `subject.name` set it falls back to the bare `[Vantage Point]`

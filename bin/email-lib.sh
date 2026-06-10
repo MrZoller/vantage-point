@@ -146,13 +146,22 @@ HTML_HEAD
 HTML_FOOT
 }
 
-# Send a Markdown body as a polished email. Multipart/alternative (plain markdown +
-# rendered HTML) when a renderer is available; otherwise a utf-8 plain-text message.
-# The body file is unchanged on disk. The caller sets the VP_* chrome (read by
-# wrap_html via dynamic scope) and passes the raw subject. Returns msmtp's exit status.
-send_email() {  # <to> <subject> <body-markdown-file>
-  local to="$1" subject body="$3"
-  subject="$(encode_header "$2")"   # RFC 2047 if it has non-ASCII chars
+# Send a Markdown body as a polished email to one or more recipients. Multipart/
+# alternative (plain markdown + rendered HTML) when a renderer is available; otherwise
+# a utf-8 plain-text message. The body file is unchanged on disk. The caller sets the
+# VP_* chrome (read by wrap_html via dynamic scope) and passes the raw subject, then one
+# or more recipients (each becomes a separate msmtp envelope arg; the To: header is the
+# comma-joined set). Returns msmtp's exit status.
+send_email() {  # <subject> <body-markdown-file> <recipient>...
+  local subject body="$2"
+  subject="$(encode_header "$1")"   # RFC 2047 if it has non-ASCII chars
+  shift 2                           # remaining args = recipients
+  # Comma-join the recipients for the To: header (msmtp itself gets them as "$@").
+  local to="" r
+  for r in "$@"; do
+    [ -n "$to" ] && to="$to, "
+    to="$to$r"
+  done
   local html
   if html="$(render_md_to_html < "$body" 2>/dev/null)" && [ -n "$html" ]; then
     local boundary="vp-$$-${VP_BOUNDARY:-0}"
@@ -170,7 +179,7 @@ send_email() {  # <to> <subject> <body-markdown-file>
       printf 'Content-Transfer-Encoding: 8bit\n\n'
       printf '%s\n' "$html" | wrap_html
       printf '\n--%s--\n' "$boundary"
-    } | msmtp "$to"
+    } | msmtp "$@"
   else
     # No renderer (or render failed): plain text, but declare utf-8 so the
     # bullets/arrows/em-dashes don't get mangled.
@@ -181,6 +190,6 @@ send_email() {  # <to> <subject> <body-markdown-file>
       printf 'Content-Type: text/plain; charset=utf-8\n'
       printf 'Content-Transfer-Encoding: 8bit\n\n'
       cat "$body"
-    } | msmtp "$to"
+    } | msmtp "$@"
   fi
 }

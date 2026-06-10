@@ -202,6 +202,11 @@ output:
   # remove it to skip email and just read reports from kb/. The same switch makes
   # bootstrap email a "profile draft ready for review" summary (approval stays the
   # local `cp profile.draft.yaml profile.yaml`).
+  # One address, or several — a YAML list (each gets its own copy):
+  #   email_to:
+  #     - you@example.com
+  #     - teammate@example.com
+  # A comma-separated string ("a@x.com, b@x.com") works too.
   email_to: ""                # e.g. "you@example.com"; blank = no email
   webhook_url: ""             # ALSO POST each report as JSON to this URL. Works as a
                               # generic webhook AND as a Slack/Discord incoming-webhook
