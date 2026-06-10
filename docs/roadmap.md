@@ -267,6 +267,17 @@ Ideas raised but not built — captured so they aren't lost:
   into the review email and the portal draft view. Turns the approval gate from
   "does this YAML read right?" into "does this rubric demonstrably agree with my
   judgment more than the approved one?"
+- **Deep-research-grade bootstrap** *(designed — see
+  [`design-deep-research-bootstrap.md`](design-deep-research-bootstrap.md))*.
+  Bootstrap is one linear agent in one context window; Deep Research's power is
+  architectural — plan, parallel researchers with fresh contexts, synthesis over
+  compressed notes, verification. Replicate that shape with script-orchestrated
+  passes: a plan pass writes a facet list, batched parallel `claude -p` facet
+  passes write cited notes files, today's bootstrap prompt synthesizes from the
+  notes, then deterministic feed verification (`fetch.py --verify`) and an
+  optional adversarial challenge pass attack the draft before the human gate.
+  Opt-in via `models.researcher` (unset = today's single pass, byte-identical);
+  4–10× bootstrap cost, spent where quality compounds hardest.
 - **Dog-that-didn't-bark detection.** `observations.jsonl` encodes each entity's
   normal cadence; an entity gone quiet well past its baseline is itself a finding
   ("no release in 8 weeks vs a 3-week norm"). Deterministic from existing state.
