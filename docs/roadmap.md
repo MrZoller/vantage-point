@@ -235,6 +235,23 @@ Two small guards that keep the sweep's coverage from silently rotting:
   168, `0` disables; bounding the widening rather than the window lets weekly runs
   catch up too) so a long-dormant deployment can't trigger an unbounded sweep.
 
+## Phase 17 — multi-recipient email ✅ (shipped)
+
+`output.email_to` is no longer a single address. A new `cfg_get_list` reader in
+`bin/config-lib.sh` parses it as either a scalar (back-compat), a comma-joined string,
+or a YAML list:
+```yaml
+output:
+  email_to:
+    - you@example.com
+    - teammate@example.com
+```
+The monitor and bootstrap collect the addresses into an array; `send_email` comma-joins
+them for the `To:` header and passes each as its own `msmtp` envelope recipient (fixing
+the old `msmtp "$to"` that would have mishandled more than one). Existing single-address
+configs are untouched. (The `output.distribution` block stays documentation-only — this
+covers the email fan-out people actually asked for, without the multi-channel machinery.)
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:

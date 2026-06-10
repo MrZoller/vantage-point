@@ -54,3 +54,54 @@ cfg_get_text() {  # <block> <key> [file=$CONFIG]
     }
   ' "${3:-$CONFIG}"
 }
+
+# Read a `key:` under a top-level `block:` as a LIST, printing one item per line.
+# Accepts every shape a human is likely to write, so existing single-address configs
+# keep working untouched:
+#   key: one@x.com            -> a bare scalar          (one item)
+#   key: "a@x.com, b@x.com"   -> a comma-joined scalar  (split into items)
+#   key: [a@x.com, b@x.com]   -> an inline flow list
+#   key:                      -> a block list:
+#     - a@x.com
+#     - b@x.com
+# Comments/quotes/surrounding space are stripped; blank items are dropped. Always
+# returns 0, so `while read ...; done < <(cfg_get_list ...)` is safe under set -e.
+cfg_get_list() {  # <block> <key> [file=$CONFIG]
+  awk -v blk="$1" -v key="$2" '
+    # Split one raw value on commas and print each non-empty, de-quoted piece.
+    function emit(v,   n, parts, i, p) {
+      sub(/[[:space:]]+#.*$/, "", v)                  # drop a trailing "# comment"
+      n = split(v, parts, ",")
+      for (i = 1; i <= n; i++) {
+        p = parts[i]
+        sub(/^[[:space:]]+/, "", p); sub(/[[:space:]]+$/, "", p)
+        gsub(/^["\047]|["\047]$/, "", p)              # strip one wrapping quote pair
+        sub(/^[[:space:]]+/, "", p); sub(/[[:space:]]+$/, "", p)
+        if (p != "") print p
+      }
+    }
+    $0 ~ "^" blk ":[[:space:]]*(#.*)?$" { inblk=1; next }
+    # Once reading a block list, consume "- item" lines (and skip blanks/comments)
+    # until any other line ends it - we only ever collect one key.
+    inblk && inlist {
+      if ($0 ~ /^[[:space:]]*-[[:space:]]*/) {
+        item=$0; sub(/^[[:space:]]*-[[:space:]]*/, "", item); emit(item); next
+      } else if ($0 ~ /^[[:space:]]*(#.*)?$/) {
+        next
+      } else { exit }
+    }
+    inblk && /^[^[:space:]#]/ { inblk=0 }
+    inblk && $1 == key":" {
+      line=$0
+      sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)   # drop "  key: "
+      sub(/^#.*$/, "", line)                             # value is only a comment
+      sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+      if (line ~ /^\[/) {                                # inline flow list [a, b]
+        sub(/^\[/, "", line); sub(/\][[:space:]]*(#.*)?$/, "", line)
+        emit(line); exit
+      } else if (line != "") {                           # scalar (maybe comma-joined)
+        emit(line); exit
+      } else { inlist=1; next }                          # bare "key:" -> block list
+    }
+  ' "${3:-$CONFIG}"
+}
