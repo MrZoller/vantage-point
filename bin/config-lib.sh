@@ -55,6 +55,19 @@ cfg_get_text() {  # <block> <key> [file=$CONFIG]
   ' "${3:-$CONFIG}"
 }
 
+# Read a boolean `key:` under a top-level `block:`. Prints "1" for a truthy value
+# (true/yes/on/1, any case) and "" otherwise. The third arg is the default applied
+# when the key is absent/blank (pass 1 for default-on, 0/omit for default-off).
+# Always returns 0, so `x="$(cfg_get_bool ...)"` is safe under set -e.
+cfg_get_bool() {  # <block> <key> [default=0] [file=$CONFIG]
+  local v; v="$(cfg_get "$1" "$2" "${4:-$CONFIG}")"
+  [ -n "$v" ] || v="${3:-0}"
+  case "$v" in
+    1|[tT][rR][uU][eE]|[yY][eE][sS]|[oO][nN]) printf '1' ;;
+    *) printf '' ;;
+  esac
+}
+
 # Read a `key:` under a top-level `block:` as a LIST, printing one item per line.
 # Accepts every shape a human is likely to write, so existing single-address configs
 # keep working untouched:

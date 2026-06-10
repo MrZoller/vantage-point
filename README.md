@@ -274,6 +274,13 @@ renderer? It falls back to a plain-text send. Either way `kb/` stays pure markdo
 the email is converted. The startup-adjacent log line notes which form was sent
 (`HTML via cmark-gfm` vs `plain text`).
 
+**Logo in the header (opt-in).** By default the email carries no images. Set
+`output.email_images: true` to embed the Vantage Point logo in the HTML header. It's a
+**CID inline image** — the small PNG (`assets/logo-email.png`) rides *inside* the
+message, so there's no external fetch (no tracking/privacy cost) and it shows in Gmail,
+Outlook, and Apple Mail alike. Fail-safe: if the asset is missing the email simply ships
+without it. The same web portal shows the logo too, inlined as crisp SVG.
+
 **Bootstrap also emails.** The same `output.email_to` switch makes `bootstrap.sh` send
 a **"profile draft ready for review"** email: a human-readable summary of what it
 inferred (market, key players, anchor, rubric highlights, and its lowest-confidence

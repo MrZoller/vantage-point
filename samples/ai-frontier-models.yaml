@@ -127,6 +127,7 @@ tracking:
 
 output:
   email_to: ""                # e.g. "you@example.com"; blank = no email (read from kb/)
+  email_images: false        # embed the Vantage Point logo in the email header (CID inline; no external fetch)
                               # several recipients? use a YAML list (- a@x.com / - b@x.com)
   knowledge_base: ./kb/
   dashboard: true

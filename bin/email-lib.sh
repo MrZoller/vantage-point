@@ -82,12 +82,15 @@ email_preheader() {  # <markdown-file>
 # background, white card and gutters all come from the tables so it holds up in
 # Outlook too. Optional chrome is read from the environment so this stays a pure
 # filter: VP_TITLE / VP_SUBTITLE (header), VP_PREHEADER (hidden inbox preview text),
-# VP_FOOTER (footer line). Each is HTML-escaped. No external assets/images (privacy +
-# reliability) and ASCII-only source per the repo convention.
+# VP_FOOTER (footer line). Each is HTML-escaped. By default the email carries NO
+# images (privacy + reliability); a logo appears only when VP_LOGO_CID is set, in
+# which case the header references a CID-embedded inline image (set up by send_email -
+# never an external fetch). ASCII-only source per the repo convention.
 wrap_html() {
-  local title subtitle preheader footer
+  local title subtitle preheader footer logo_cid
   title="$(_esc "${VP_TITLE:-}")"; subtitle="$(_esc "${VP_SUBTITLE:-}")"
   preheader="$(_esc "${VP_PREHEADER:-}")"; footer="$(_esc "${VP_FOOTER:-}")"
+  logo_cid="$(_esc "${VP_LOGO_CID:-}")"   # non-empty -> emit the CID logo image
   # Shared font stack, kept in one place. 'Segoe UI' carries a literal single quote;
   # holding it in a variable and passing it as a printf arg avoids any escaping.
   local ff="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
@@ -154,6 +157,10 @@ HTML_HEAD
 HTML_OUTER
   if [ -n "$title" ]; then
     printf '<tr><td class="pad" style="padding:28px 32px 22px; border-bottom:1px solid #e6e9ef; font-family:%s;">' "$ff"
+    # Optional brand mark: a CID-embedded inline image (send_email attaches the bytes).
+    # width/height attributes + inline style keep Outlook honest; alt text covers the
+    # images-off case so the header never collapses.
+    [ -n "$logo_cid" ] && printf '<img src="cid:%s" width="40" height="40" alt="Vantage Point" style="display:block; border:0; width:40px; height:40px; margin:0 0 12px;">' "$logo_cid"
     printf '<div style="font-size:11px; letter-spacing:0.12em; font-weight:700; color:#2f5bea; text-transform:uppercase;">Vantage Point</div>'
     printf '<div style="margin-top:5px; font-size:22px; font-weight:700; line-height:1.2; color:#10151f;" class="title">%s</div>' "$title"
     [ -n "$subtitle" ] && printf '<div style="margin-top:5px; font-size:13px; color:#6b7280;" class="sub">%s</div>' "$subtitle"
@@ -174,15 +181,12 @@ HTML_OUTER
 HTML_FOOT
 }
 
-# Print one multipart/alternative message (plain markdown + styled HTML) to stdout.
-# Args: <encoded-subject> <body-markdown-file> <html-fragment> <recipient>.
-_emit_html() {
-  local subject="$1" body="$2" html="$3" to="$4"
-  local boundary="vp-$$-${VP_BOUNDARY:-0}"
-  printf 'To: %s\n' "$to"
-  printf 'Subject: %s\n' "$subject"
-  printf 'MIME-Version: 1.0\n'
-  printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$boundary"
+# Print the two parts of a multipart/alternative body (plain markdown, then styled
+# HTML) to stdout, using boundary $1. When a logo CID is given, it's exported to
+# wrap_html so the HTML header references the CID-embedded image.
+# Args: <alt-boundary> <body-markdown-file> <html-fragment> <logo-cid>.
+_emit_alt_parts() {
+  local boundary="$1" body="$2" html="$3" logo_cid="$4"
   printf -- '--%s\n' "$boundary"
   printf 'Content-Type: text/plain; charset=utf-8\n'
   printf 'Content-Transfer-Encoding: 8bit\n\n'
@@ -190,8 +194,38 @@ _emit_html() {
   printf -- '--%s\n' "$boundary"
   printf 'Content-Type: text/html; charset=utf-8\n'
   printf 'Content-Transfer-Encoding: 8bit\n\n'
-  printf '%s\n' "$html" | wrap_html
+  printf '%s\n' "$html" | VP_LOGO_CID="$logo_cid" wrap_html
   printf '\n--%s--\n' "$boundary"
+}
+
+# Print one HTML email (plain markdown + styled HTML) to stdout. With a readable logo
+# PNG + CID, the message is multipart/related: the alternative body plus the logo as a
+# base64 image/png part referenced by `cid:` from the header (inline, no external
+# fetch). Without one, it's a plain multipart/alternative - identical to before.
+# Args: <encoded-subject> <body-markdown-file> <html-fragment> <recipient> [logo-png] [logo-cid].
+_emit_html() {
+  local subject="$1" body="$2" html="$3" to="$4" logo="${5:-}" logo_cid="${6:-}"
+  local alt="vp-alt-$$-${VP_BOUNDARY:-0}"
+  printf 'To: %s\n' "$to"
+  printf 'Subject: %s\n' "$subject"
+  printf 'MIME-Version: 1.0\n'
+  if [ -n "$logo" ] && [ -n "$logo_cid" ] && [ -r "$logo" ]; then
+    local rel="vp-rel-$$-${VP_BOUNDARY:-0}"
+    printf 'Content-Type: multipart/related; boundary="%s"\n\n' "$rel"
+    printf -- '--%s\n' "$rel"
+    printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$alt"
+    _emit_alt_parts "$alt" "$body" "$html" "$logo_cid"
+    printf -- '--%s\n' "$rel"
+    printf 'Content-Type: image/png\n'
+    printf 'Content-Transfer-Encoding: base64\n'
+    printf 'Content-ID: <%s>\n' "$logo_cid"
+    printf 'Content-Disposition: inline; filename="vantage-point-logo.png"\n\n'
+    base64 < "$logo"; printf '\n'
+    printf -- '--%s--\n' "$rel"
+  else
+    printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$alt"
+    _emit_alt_parts "$alt" "$body" "$html" ""
+  fi
 }
 
 # Print one utf-8 plain-text message to stdout (the no-renderer fallback). Declares
@@ -209,9 +243,11 @@ _emit_plain() {
 
 # Send a Markdown body as a polished email to one or more recipients. Multipart/
 # alternative (plain markdown + rendered HTML) when a renderer is available; otherwise
-# a utf-8 plain-text message. The body file is unchanged on disk. The caller sets the
-# VP_* chrome (read by wrap_html via dynamic scope) and passes the raw subject, then one
-# or more recipients. Each recipient gets its OWN message - a separate msmtp envelope
+# a utf-8 plain-text message. When the caller sets VP_LOGO to a readable PNG (gated by
+# output.email_images), the HTML copy carries that logo as a CID-embedded inline image
+# (no external fetch). The body file is unchanged on disk. The caller sets the VP_*
+# chrome (read by wrap_html via dynamic scope) and passes the raw subject, then one or
+# more recipients. Each recipient gets its OWN message - a separate msmtp envelope
 # whose only To: header is that one address - so a recipient never sees the others (no
 # shared To:/Cc list). Returns the first nonzero msmtp status, if any.
 send_email() {  # <subject> <body-markdown-file> <recipient>...
@@ -224,10 +260,16 @@ send_email() {  # <subject> <body-markdown-file> <recipient>...
   if ! html="$(render_md_to_html < "$body" 2>/dev/null)"; then
     html=""
   fi
+  # Embed the logo only when an HTML part exists and VP_LOGO points to a readable file
+  # (fail-safe: a missing/unreadable asset silently degrades to the no-image email).
+  local logo="" logo_cid=""
+  if [ -n "$html" ] && [ -n "${VP_LOGO:-}" ] && [ -r "${VP_LOGO:-}" ]; then
+    logo="$VP_LOGO"; logo_cid="${VP_LOGO_CID:-vp-logo@vantagepoint}"
+  fi
   local rc=0 r
   for r in "$@"; do
     if [ -n "$html" ]; then
-      _emit_html "$subject" "$body" "$html" "$r" | msmtp "$r" || rc=$?
+      _emit_html "$subject" "$body" "$html" "$r" "$logo" "$logo_cid" | msmtp "$r" || rc=$?
     else
       _emit_plain "$subject" "$body" "$r" | msmtp "$r" || rc=$?
     fi

@@ -125,6 +125,7 @@ tracking:
 
 output:
   email_to: ""                # one address, or a YAML list of them; blank = no email
+  email_images: false        # embed the Vantage Point logo in the email header (CID inline; no external fetch)
   knowledge_base: ./kb/
   dashboard: true
 

@@ -53,6 +53,16 @@ MAX_REPORTS = 30
 # Visual language shared with the HTML email (bin/email-lib.sh): same accent, surfaces,
 # and type so the portal and the inbox feel like one product.
 ACCENT = "#2f5bea"
+
+# Brand mark (the same arc-over-summit logo embedded in emails), inlined as SVG so the
+# portal stays self-contained - no external asset, works offline and under --export.
+LOGO_SVG = (
+    '<svg class="brand-mark" width="30" height="30" viewBox="0 0 64 64"'
+    ' xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Vantage Point logo">'
+    '<path d="M6 36 A26 26 0 0 1 58 36 L48 36 A16 16 0 0 0 16 36 Z" fill="#2f5bea"/>'
+    '<path d="M32 23 L53 53 L11 53 Z" fill="#1f2933"/></svg>'
+)
+
 CSS = """
 :root{--accent:#2f5bea;--bg:#eef1f5;--card:#fff;--ink:#1f2933;--muted:#6b7280;
   --line:#e6e9ef;--soft:#f3f6ff}
@@ -65,7 +75,9 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
   border-top:4px solid var(--accent);position:sticky;top:0;z-index:5}
 .topbar .inner{max-width:900px;margin:0 auto;padding:14px 24px;display:flex;
   align-items:center;gap:22px;flex-wrap:wrap}
-.brand{font-weight:700;color:#10151f;font-size:17px;letter-spacing:.01em}
+.brand{display:flex;align-items:center;gap:11px;font-weight:700;color:#10151f;
+  font-size:17px;letter-spacing:.01em}
+.brand-mark{flex:none;display:block}
 .brand .eyebrow{display:block;font-size:10px;font-weight:700;letter-spacing:.12em;
   color:var(--accent);text-transform:uppercase}
 .nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
@@ -1080,10 +1092,10 @@ def shell(active, inner, title=""):
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
             "<title>%s</title><style>%s</style></head><body>"
             "<div class=\"topbar\"><div class=\"inner\">"
-            "<div class=\"brand\"><span class=\"eyebrow\">Vantage Point</span>"
-            "market intelligence</div><nav class=\"nav\">%s</nav></div></div>"
+            "<div class=\"brand\">%s<span><span class=\"eyebrow\">Vantage Point</span>"
+            "market intelligence</span></div><nav class=\"nav\">%s</nav></div></div>"
             "<div class=\"wrap\">%s</div></body></html>"
-            % (esc(page_title), CSS, nav, inner)).encode("utf-8")
+            % (esc(page_title), CSS, LOGO_SVG, nav, inner)).encode("utf-8")
 
 
 def overview_inner(static=False):
