@@ -249,7 +249,8 @@ If `email_to` is set but msmtp isn't installed, the run still succeeds and logs 
 a send failure never loses the report (it's already written to `kb/`).
 
 **More than one recipient?** `email_to` also takes a YAML list — every address gets its
-own copy (each a separate envelope recipient; the `To:` header lists them all):
+own private copy (one separate send each, whose `To:` header carries only that one
+address, so recipients never see each other):
 ```yaml
 output:
   email_to:
