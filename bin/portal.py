@@ -107,7 +107,7 @@ ul.events li:last-child{border:0}
 .reportlist .tag{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;
   letter-spacing:.05em;color:var(--accent);background:var(--soft);border-radius:5px;
   padding:1px 7px;margin-right:8px}
-.item{border-bottom:1px solid var(--line);padding:14px 0}.item:last-child{border:0}
+.item{border-bottom:1px solid var(--line);padding:14px 0;scroll-margin-top:80px}.item:last-child{border:0}
 .sig{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
 .grade{margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .grade a.btn{font-size:1.25em;text-decoration:none;padding:2px 10px;border:1px solid var(--line);
@@ -1265,13 +1265,16 @@ def review_inner(just=None):
     parts.append('<div class="card">')
     if not items:
         parts.append('<p class="muted">No surfaced items yet.</p>')
-    for it in items:
+    for idx, it in enumerate(items):
         rid = esc(it.get("id"))
         v = verdicts.get(it.get("id"))
         up = " on" if v == "up" else ""
         down = " on" if v == "down" else ""
-        parts.append('<div class="item"><div class="sig">%s &middot; score %s</div>'
-                     % (esc(it.get("signal", "?")), esc(it.get("score", "?"))))
+        # Anchor each item so a grade can redirect back to it (keeping the page
+        # scrolled to the graded row) instead of jumping to the top. The index is
+        # stable: recent_items() reads only seen.jsonl, which grading never touches.
+        parts.append('<div class="item" id="item-%d"><div class="sig">%s &middot; score %s</div>'
+                     % (idx, esc(it.get("signal", "?")), esc(it.get("score", "?"))))
         parts.append('<div><strong>%s</strong></div>' % esc(it.get("title", "")))
         if it.get("so_what"):
             parts.append('<div class="muted">%s</div>' % esc(it["so_what"]))
@@ -1592,10 +1595,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/grade":
             rid = (q.get("id") or [""])[0]
             verdict = (q.get("v") or [""])[0]
-            item = next((i for i in recent_items() if str(i.get("id")) == rid), None)
+            items = recent_items()
+            idx = next((i for i, it in enumerate(items)
+                        if str(it.get("id")) == rid), None)
+            item = items[idx] if idx is not None else None
             if item and verdict in ("up", "down"):
                 record_grade(item, verdict)
-                self._redirect("/review")
+                # Land back on the graded row, not the top of the page.
+                self._redirect("/review#item-%d" % idx)
             else:
                 self._send(400, b"bad grade request")
         elif path == "/missed":

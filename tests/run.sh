@@ -1143,6 +1143,7 @@ test_portal_server() {
   local srv=$!
   page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
   assert_contains "review lists a surfaced item (skips the malformed line)" "$page" "Tudor GMT leak"
+  assert_contains "each surfaced item carries a scroll anchor" "$page" 'class="item" id="item-0"'
   assert_contains "renders a safe http(s) source link" "$page" 'href="https://x"'
   case "$page" in
     *'href="javascript'*) fail "drops a javascript: url instead of linking it" ;;
@@ -1175,7 +1176,11 @@ test_portal_server() {
   assert_contains "the summary view links to the raw YAML" "$profile_html" "/profile?raw=1"
   assert_contains "the profile YAML is reachable at ?raw=1" \
     "$(curl -s "http://127.0.0.1:$port/profile?raw=1" || true)" "last_bootstrapped"
-  curl -s -o /dev/null "http://127.0.0.1:$port/grade?id=abc123&v=up" || true
+  # The grade redirects back to the graded row (not the page top), so the portal
+  # doesn't jump to the top after every thumb.
+  assert_contains "a grade redirects back to its row, not the page top" \
+    "$(curl -s -D - -o /dev/null "http://127.0.0.1:$port/grade?id=abc123&v=up" || true)" \
+    "Location: /review#item-1"
   kill "$srv" 2>/dev/null || true
   assert_contains "a grade is recorded to feedback.jsonl" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"verdict": "up"'
   assert_contains "the grade captures the item id" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"id": "abc123"'
