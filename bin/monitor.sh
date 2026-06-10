@@ -307,8 +307,13 @@ FETCH_HOURS="$LOOKBACK_HOURS"
 # A slept-through or skipped run would otherwise lose its window forever: the next
 # run still looks back only lookback_hours, so anything published in the gap is
 # never swept. When the last logged run is older than this run's window, widen the
-# window to cover the gap - capped, so a long-dormant deployment can't trigger an
-# unbounded sweep. Applies to both the feed pre-sweep and the agent's own browsing.
+# window to cover the gap - capped at window + catchup_max_hours EXTRA hours (the
+# cap bounds the widening, not the window, so the weekly mode - whose normal window
+# already exceeds the default cap - can catch up too), so a long-dormant deployment
+# can't trigger an unbounded sweep. The newest runs.log row of ANY mode is the right
+# baseline: both modes run the same sweep against the shared seen.jsonl, so whatever
+# ran last already covered its window. Applies to both the feed pre-sweep and the
+# agent's own browsing.
 CATCHUP_MAX="$(cfg_get monitoring catchup_max_hours)"
 case "$CATCHUP_MAX" in ''|*[!0-9]*) CATCHUP_MAX=168 ;; esac
 CATCHUP_NOTE=""
@@ -325,9 +330,10 @@ if [ "$CATCHUP_MAX" -gt 0 ] && [ -s state/runs.log ]; then
     gap_hours=$(( ( $(date +%s) - last_epoch + 3599 ) / 3600 ))   # round up
     if [ "$gap_hours" -gt "$FETCH_HOURS" ]; then
       catchup_hours="$gap_hours"
-      [ "$catchup_hours" -gt "$CATCHUP_MAX" ] && catchup_hours="$CATCHUP_MAX"
+      cap_hours=$(( FETCH_HOURS + CATCHUP_MAX ))
+      [ "$catchup_hours" -gt "$cap_hours" ] && catchup_hours="$cap_hours"
       if [ "$catchup_hours" -gt "$FETCH_HOURS" ]; then
-        echo "[monitor:$MODE] catch-up: last run was ~${gap_hours}h ago - widening the sweep window to ${catchup_hours}h (cap: monitoring.catchup_max_hours=$CATCHUP_MAX)" >&2
+        echo "[monitor:$MODE] catch-up: last run was ~${gap_hours}h ago - widening the sweep window to ${catchup_hours}h (cap: ${FETCH_HOURS}h window + monitoring.catchup_max_hours=$CATCHUP_MAX)" >&2
         FETCH_HOURS="$catchup_hours"
         CATCHUP_NOTE="
 

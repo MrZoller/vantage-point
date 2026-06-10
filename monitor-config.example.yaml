@@ -153,7 +153,8 @@ monitoring:
   lookback_hours: 30          # small overlap so runs don't leave gaps
   catchup_max_hours: 168      # if the last logged run is older than this run's window
                               # (the machine slept, a run was skipped), widen the sweep
-                              # window to cover the gap, up to this many hours (0 = off)
+                              # window to cover the gap, by at most this many EXTRA
+                              # hours on top of the normal window (0 = never widen)
   state_file: ./state/seen.jsonl    # longitudinal memory -> dedup + "is this NEW?"
   # Reliability knobs (read by bin/monitor.sh; all optional with sane defaults):
   run_timeout_seconds: 1800   # wall-clock cap on a single claude run so a stall

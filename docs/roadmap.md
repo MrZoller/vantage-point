@@ -230,9 +230,10 @@ Two small guards that keep the sweep's coverage from silently rotting:
   forever — the next run still looked back only `lookback_hours`. Now, when the
   last logged run (newest `state/runs.log` row) is older than this run's window,
   the window widens to cover the gap — applied to both the feed pre-sweep and the
-  agent's own browsing (a `CATCH-UP WINDOW` prompt note) — capped by
-  `monitoring.catchup_max_hours` (default 168, `0` disables) so a long-dormant
-  deployment can't trigger an unbounded sweep.
+  agent's own browsing (a `CATCH-UP WINDOW` prompt note) — by at most
+  `monitoring.catchup_max_hours` *extra* hours on top of the normal window (default
+  168, `0` disables; bounding the widening rather than the window lets weekly runs
+  catch up too) so a long-dormant deployment can't trigger an unbounded sweep.
 
 ## Backlog / possible next steps (not started)
 

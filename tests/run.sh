@@ -2151,7 +2151,8 @@ SH
   assert_contains "the prompt carries the catch-up instruction" "$(cat "$args" 2>/dev/null)" "CATCH-UP WINDOW"
   assert_contains "the widened window covers the gap" "$(cat "$args" 2>/dev/null)" "widened to the last 100 hours"
 
-  # The gap is capped by monitoring.catchup_max_hours.
+  # The widening is capped at catchup_max_hours EXTRA hours on top of the normal
+  # window (30h daily + 48h cap = 78h) -- the cap bounds the widening, not the window.
   printf 'monitoring:\n  catchup_max_hours: 48\n' > "$repo/monitor-config.yaml.cap"
   cat "$repo/monitor-config.yaml" >> "$repo/monitor-config.yaml.cap"
   mv "$repo/monitor-config.yaml.cap" "$repo/monitor-config.yaml"
@@ -2159,7 +2160,16 @@ SH
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"
-  assert_contains "a huge gap is capped at catchup_max_hours" "$(cat "$args" 2>/dev/null)" "widened to the last 48 hours"
+  assert_contains "a huge gap is capped at window + catchup_max_hours" "$(cat "$args" 2>/dev/null)" "widened to the last 78 hours"
+
+  # WEEKLY can catch up even though its normal window (198h) exceeds the default
+  # cap (168) -- the regression where a flat cap made weekly catch-up impossible.
+  printf '{"timestamp":"2020-01-01T00:00:00Z","mode":"weekly","pass":"triage"}\n' > "$repo/state/runs.log"
+  sed -i.bak 's/catchup_max_hours: 48/catchup_max_hours: 168/' "$repo/monitor-config.yaml" && rm -f "$repo/monitor-config.yaml.bak"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" weekly 2>&1 )"
+  assert_contains "weekly widens past its 198h window (to 198+168)" "$(cat "$args" 2>/dev/null)" "widened to the last 366 hours"
 
   # A recent last run (inside the window) -> no catch-up at all.
   local repo2="$TMP/catchuprepo2" args2="$TMP/catchup_args2"

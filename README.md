@@ -470,9 +470,11 @@ dropped at the next refresh instead of quietly shrinking coverage.
 skipped, the next run would otherwise look back only `lookback_hours` and lose the
 gap forever. When the last logged run is older than the current window, the monitor
 widens the window to cover the gap — for both the feed pre-sweep and the agent's own
-browsing — capped at `monitoring.catchup_max_hours` (default 168, `0` disables) so a
-long-dormant clone can't trigger an unbounded sweep. The widened window is announced
-in the run log.
+browsing — by at most `monitoring.catchup_max_hours` *extra* hours on top of the
+normal window (default 168, `0` disables; the cap bounds the widening rather than
+the window, so weekly runs — whose normal window already exceeds 168h — can catch up
+too) so a long-dormant clone can't trigger an unbounded sweep. The widened window is
+announced in the run log.
 
 ## How findings are conveyed
 
