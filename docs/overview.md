@@ -48,6 +48,7 @@ why, or what to do about it.*
 | Keyword matches, in the abstract | Scored against a defined stakeholder's interests (an "anchor") |
 | A link with a headline | The **so-what** + a suggested action + a confidence level |
 | Point-in-time events | **Trend detection** — price moves, repeated signals, hiring spikes over time |
+| Looks only backward | **Forward radar** — records announced dates ("GA in Q3") and flags the ones that silently slip |
 | Repeats rumors | **Corroborates** across independent sources (optional deep-dive pass); flags the unconfirmed |
 | Fires on everything | **Silence beats noise** — nothing on empty days (once tuned) |
 | Static | **Learns** from 👍/👎 feedback and "it missed this" reports — applied from the next run — and **shows you its measured precision** over time |
@@ -230,6 +231,28 @@ Watchlist status
 | Competitor A  | $30/seat (↑20%) | ▂▃▃▄    | raised pricing               |
 ```
 
+The weekly digest also closes with a **forward radar** — a deterministic *Coming up*
+table of the dated expectations the monitor has been collecting from the sweep
+(earnings dates, "GA in Q3", announced launch windows), so the brief looks ahead and
+not only back:
+
+```
+## Coming up
+| When       | Entity        | Expected                       | Status |
+|------------|---------------|--------------------------------|--------|
+| Thu Jun 18 | Competitor B  | Q2 earnings call               | due    |
+| ~Sep (Q3)  | Vendor X      | multi-agent orchestration GA   |        |
+
+Overdue / unconfirmed:
+- Competitor C's EU launch was expected "by May" -- 12 days past, unconfirmed.
+```
+
+The real payoff is the *overdue* line: an announced date that passes in silence (a
+slipped roadmap, a quiet cancellation) used to vanish unnoticed; now the monitor
+records the expectation, re-checks it as it comes due, and surfaces the slip as a
+finding. It costs nothing extra — recording rides the existing triage pass, and the
+arithmetic and rendering are plain Python.
+
 The optional **editorial pass** polishes the brief one more step before it ships (leads
 with the strongest finding, cuts the marginal, tightens the prose) without adding facts
 or dropping citations. The same data also feeds a **web portal** (`bin/portal.sh`): an
@@ -241,13 +264,17 @@ by week, with grading coverage and per-source hit rates). And because briefs are
 perishable, an **Entities** tab keeps a **dossier per tracked entity** — its metric
 history, event timeline, and every item ever surfaced about it — that compounds the
 longer the monitor runs: walking into a meeting with six sourced months on a competitor
-is where the accumulated state pays off.
+is where the accumulated state pays off. The Overview also carries a **Coming up** card
+(the forward radar's pending expectations, overdue ones flagged), and each dossier an
+**Expected** list, so a competitor's announced-and-slipped dates are visible at a glance.
 The charts are server-rendered inline SVG, so there's no JavaScript and nothing to load.
 
 ![The portal Overview](img/portal-overview.png)
 
-A [report rendered in the portal](img/portal-reports.png) (same styling as the email) and
-the [Review tab](img/portal-review.png) for thumbing items up/down. A static `kb/index.html` snapshot of the Overview is written each
+A [report rendered in the portal](img/portal-reports.png) (same styling as the email),
+the [Review tab](img/portal-review.png) for thumbing items up/down, and a
+[per-entity dossier](img/portal-entity.png) with its **Expected** list (the forward
+radar's announced-and-slipped dates). A static `kb/index.html` snapshot of the Overview is written each
 run too, so there's something to read with no server and no email required.
 
 (Delivery is optional — reports always land in `kb/` regardless. Email renders as HTML

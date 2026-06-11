@@ -254,6 +254,24 @@ the old `msmtp "$to"` that would have mishandled more than one). Existing single
 configs are untouched. (The `output.distribution` block stays documentation-only — this
 covers the email fan-out people actually asked for, without the multi-channel machinery.)
 
+## Phase 18 — forward radar ("Coming up") ✅ (shipped)
+
+Reports looked strictly backward, but the sweep is full of **forward-dated, time-bounded
+facts** — earnings dates, "GA in Q3", conference keynotes, regulatory deadlines,
+announced launch windows. The forward radar records them as dated expectations
+(`state/horizon.jsonl`, append-only, latest-row-per-id like `feedback.jsonl`) as the
+triage agent sweeps, and re-checks them as they come due — so a slipped or
+silently-passed date becomes a finding (the dog that didn't bark). No new claude pass:
+recording rides the triage prompt, and the arithmetic + rendering are deterministic in
+`bin/horizon.py` (stdlib). Each run injects the **due** expectations (overdue/past-grace
+computed by precision-scaled grace constants) for the agent to judge met / moved /
+lapsed; the weekly digest gains a deterministic **Coming up** table (appended after the
+editor pass so kb/, email, webhook, and portal all carry it); the portal Overview gains
+a **Coming up** card and each dossier an **Expected** list. On by default with
+`tracking.enabled`; `tracking.horizon: false` disables it. Empty-day ethics unchanged —
+the radar only *adds* to a report, it never *causes* one. (Design:
+[`design-forward-radar.md`](design-forward-radar.md).)
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:
@@ -281,18 +299,11 @@ Ideas raised but not built — captured so they aren't lost:
 - **Dog-that-didn't-bark detection.** `observations.jsonl` encodes each entity's
   normal cadence; an entity gone quiet well past its baseline is itself a finding
   ("no release in 8 weeks vs a 3-week norm"). Deterministic from existing state.
+  (Phase 18's forward radar covers the *stated*-date half of this; the implicit,
+  cadence-derived half is still open — see the design's v2 notes.)
 - **Confidence-label resolution.** Items ship with high/medium/low confidence but
   nothing checks whether high-confidence calls pan out more often than low ones;
   even a crude sampled follow-up would tell us if the labels mean anything.
-- **Forward radar ("Coming up")** *(designed — see
-  [`design-forward-radar.md`](design-forward-radar.md))*. Reports look strictly
-  backward, but swept items are full of forward-dated facts — earnings dates,
-  conference keynotes, "GA in Q3", regulatory comment deadlines. Record them as
-  dated expectations (an observations-like `state/horizon.jsonl`), render a
-  **Coming up** section in the weekly digest plus a portal card, and have the
-  monitor re-check expectations as they come due — a slipped or silently-passed
-  date is itself a signal (pairs with dog-that-didn't-bark above). No new claude
-  pass: recording rides triage, checking and rendering are deterministic.
 - **Standing questions / tasking.** Between refreshes the anchor's priorities are
   frozen; an analyst can be re-briefed on Monday, the monitor can't. A portal box
   (or `state/focus.md`) records a time-boxed tasking — "weight pricing news higher

@@ -32,6 +32,7 @@ vantage-point/
 │   ├── portal.sh                 # launch the unified web portal (or --export kb/index.html)
 │   ├── portal.py                 # the portal app: overview, reports, entities, review, profile, config
 │   ├── fetch.py                  # deterministic feed pre-sweep (profile feeds -> candidates)
+│   ├── horizon.py                # forward radar: due/upcoming over state/horizon.jsonl
 │   ├── webhook.py                # POST a report as JSON to output.webhook_url (Slack/Discord/generic)
 │   └── dedupe-feedback.py        # collapse feedback.jsonl to latest-per-id (bootstrap + live calibration)
 └── launchd/
@@ -46,6 +47,7 @@ Created at runtime, gitignored (a specific deployment's data):
 ├── profile.yaml                  # you promote the reviewed draft to this (ground truth)
 ├── state/seen.jsonl              # dedup memory: "is this NEW?"
 ├── state/observations.jsonl      # longitudinal metric/event memory: "is this CHANGING?"
+├── state/horizon.jsonl           # forward-radar expectations: "what's COMING, did a date slip?"
 ├── state/feedback.jsonl          # your thumbs up/down grades (calibration input)
 └── kb/                           # accumulated reports, per-run logs, and index.html
 ```
@@ -457,6 +459,40 @@ false` to turn the whole layer off. `observations.jsonl` is pruned to
 
 See `docs/roadmap.md` for the larger roadmap this is part of.
 
+## Forward radar (Coming up)
+
+Everything above looks *backward* — what happened, what moved. But the sweep is full of
+**forward-dated, time-bounded facts**: earnings dates, "GA in Q3", conference keynotes,
+regulatory deadlines, announced launch windows. The forward radar turns those into
+checkable expectations so the monitor can both *anticipate* ("Competitor B's earnings
+are Thursday") and — more valuable — catch a date that passes *silently*, which is
+itself a signal (a slipped roadmap, a quiet cancellation).
+
+As it triages, the agent records each dated expectation it reads to
+`state/horizon.jsonl` (append-only, latest-row-per-id like `feedback.jsonl`) — only
+genuinely time-bounded ones, only from items that cleared threshold or concern a
+tracked entity, always with a source. Each run, `bin/horizon.py` (Python stdlib)
+computes which expectations are **due** as of today — applying a grace period scaled by
+how precise the stated date was (a day missed over a weekend is news; a quarter-precision
+GA gets three weeks' slack) — and injects them for the agent to judge: **met** (it
+happened), **moved** (a new date announced), or **past grace with no evidence** → a
+*finding* (the silent slip), after which the expectation is marked lapsed so it never
+re-alarms.
+
+What you see: the **weekly digest** gains a deterministic **Coming up** table (appended
+after the editorial pass, so the email, webhook, `kb/`, and portal all carry the same
+thing); the **portal Overview** gains a **Coming up** card (pending expectations by due
+date, overdue ones styled as warnings), and each **entity dossier** lists its
+expectations alongside its timeline. Daily reports stay clean — a due-but-quiet date
+doesn't earn a standing section; only a real slip surfaces, as a normal finding.
+
+No new model pass — recording rides the triage prompt and the rest is deterministic, so
+this is nearly free. On by default with `tracking.enabled`; set `tracking.horizon: false`
+to turn it off, or tune `tracking.horizon_upcoming_days` (the weekly window, default 14)
+and `tracking.horizon_max_lines` (the prune bound, default 2000). The grace constants
+are deliberately not configurable. Empty-day ethics are unchanged: the radar only *adds*
+to a report that's already being sent — it never *causes* one.
+
 ## Deterministic feed sweep (auditable recall)
 
 The agentic sweep is only as complete as what the model happened to browse that run —
@@ -527,7 +563,7 @@ Reports are built to be *read and acted on*, not skimmed:
 
 ![The portal Overview — activity heatmap, weekly signal mix, tracked entities](docs/img/portal-overview.png)
 
-Other views: [Reports](docs/img/portal-reports.png) · [Review](docs/img/portal-review.png) · [Profile](docs/img/portal-profile.png) · [Config](docs/img/portal-config.png).
+Other views: [Reports](docs/img/portal-reports.png) · [Review](docs/img/portal-review.png) · [Entity dossier](docs/img/portal-entity.png) · [Profile](docs/img/portal-profile.png) · [Config](docs/img/portal-config.png).
 
 ### Viewing the portal remotely
 

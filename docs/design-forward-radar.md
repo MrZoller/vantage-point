@@ -1,8 +1,9 @@
 # Design: forward radar ("Coming up")
 
-*Status: design sketch — not started. Companion to the backlog entry in
-[`roadmap.md`](roadmap.md). Same format as
-[`design-rubric-backtest.md`](design-rubric-backtest.md).*
+*Status: ✅ shipped (Phase 18) — `bin/horizon.py` plus the recording/checking/rendering
+wired through `monitor.sh`, `monitor-prompt.md`, and `bin/portal.py`. This document is
+the design of record; it matched the implementation closely. Companion to the phase
+entry in [`roadmap.md`](roadmap.md).*
 
 ## Problem
 
