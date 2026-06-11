@@ -1427,6 +1427,37 @@ PY
 }
 test_portal_draft_diff
 
+echo "== portal.py: the draft view shows the rubric backtest card when present =="
+test_portal_backtest_card() {
+  local repo="$TMP/pbt" out py="$TMP/pbt.py"
+  mkdir -p "$repo/bin"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  printf 'relevance:\n  threshold: 0.6\n' > "$repo/profile.yaml"
+  printf 'relevance:\n  threshold: 0.6\n  rubric: refreshed\n' > "$repo/profile.draft.yaml"
+  printf '## Backtest vs your grades\n\nagrees with your verdict: 41 / 47\n\n**Would now drop** (score fell below threshold 0.60):\n\n- [a1b2c3d4] Competitor B ships orchestration  0.82 -> 0.41\n' \
+    > "$repo/profile.draft.backtest.md"
+  cat > "$py" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+page = m.profile_inner({"draft": ["1"]})
+print("CARD", "Backtest vs your grades" in page)
+print("DROP", "Would now drop" in page)
+print("MTIME", "backtested" in page)
+# Not shown on the approved view, and gone once the artifact is removed.
+print("NOT_ON_APPROVED", "Backtest vs your grades" not in m.profile_inner({}))
+os.remove(m.PROFILE_DRAFT_BACKTEST)
+print("ABSENT", "Backtest vs your grades" not in m.profile_inner({"draft": ["1"]}))
+PY
+  out="$(python3 "$py" "$repo/bin/portal.py")"
+  assert_contains "draft view renders the backtest card" "$out" "CARD True"
+  assert_contains "the would-drop regression list is shown" "$out" "DROP True"
+  assert_contains "the card stamps its backtest date" "$out" "MTIME True"
+  assert_contains "the approved view omits the backtest" "$out" "NOT_ON_APPROVED True"
+  assert_contains "no card once the artifact is gone" "$out" "ABSENT True"
+}
+test_portal_backtest_card
+
 echo "== portal.py: the light-markdown fallback renders a GFM table (watchlist) =="
 test_portal_light_table() {
   # Exercise the no-renderer path directly so it's deterministic regardless of whether
@@ -2599,7 +2630,8 @@ test_usage_empty
 make_fake_bootstrap_repo() {  # <repo> <home> [nomodel]
   local repo="$1" home="$2"
   mkdir -p "$repo/bin" "$repo/state" "$home/.npm-global/bin"
-  cp "$ROOT/bin/bootstrap.sh" "$ROOT/bin/dedupe-feedback.py" "$repo/bin/"; cp_libs "$repo/bin"
+  cp "$ROOT/bin/bootstrap.sh" "$ROOT/bin/dedupe-feedback.py" "$ROOT/bin/backtest.py" "$repo/bin/"; cp_libs "$repo/bin"
+  cp "$ROOT/backtest-prompt.md" "$repo/backtest-prompt.md"
   if [ "${3:-}" = nomodel ]; then
     printf 'version: 1\nmodels:\n  monitor: sonnet\n' > "$repo/monitor-config.yaml"
   else
@@ -2607,7 +2639,9 @@ make_fake_bootstrap_repo() {  # <repo> <home> [nomodel]
   fi
   printf 'bootstrap prompt (test fixture)\n' > "$repo/bootstrap-prompt.md"
   # Stub claude: the research call writes the draft + a summary and records its args;
-  # the editorial call (prompt names a PROFILE-DRAFT SUMMARY) edits the summary per env.
+  # the editorial call (prompt names a PROFILE-DRAFT SUMMARY) edits the summary per env;
+  # the backtest call (prompt names a Backtest prompt) records its prompt and writes a
+  # canned score file from $BT_JSONL (or garbage / nothing, to drive the failure paths).
   cat > "$home/.npm-global/bin/claude" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
@@ -2616,6 +2650,11 @@ case "$*" in
     [ -n "${ED_EMPTY:-}" ]   && : > profile.draft.summary.md
     [ -n "${ED_REWRITE:-}" ] && printf '# edited summary\nbottom line\n' > profile.draft.summary.md
     exit "${ED_EXIT:-0}" ;;
+  *"Backtest prompt"*)
+    [ -n "${BT_ARGS:-}" ] && printf '%s\n' "$*" > "$BT_ARGS"
+    [ -n "${BT_GARBAGE:-}" ] && printf 'not json at all\n@@@\n' > profile.draft.backtest.jsonl
+    [ -n "${BT_JSONL:-}" ]   && printf '%s\n' "$BT_JSONL" > profile.draft.backtest.jsonl
+    exit "${BT_EXIT:-0}" ;;
   *)
     [ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
     printf 'derived: {}\n' > profile.draft.yaml
@@ -2762,6 +2801,184 @@ YAML
   if [ -f "$repo3/profile.draft.diff" ]; then fail "no diff file when draft is identical"; else pass "no diff file when draft is identical"; fi
 }
 test_bootstrap_refresh_diff
+
+# Seed a feedback log with 12 up/down grades (+ a missed row that must be excluded):
+# id01..id05 thumbs-up, id06..id10 thumbs-down (all agree under the canned draft scores),
+# id11 a thumbs-up the draft will DROP, id12 a thumbs-down the draft will SURFACE.
+seed_backtest_feedback() {  # <file>
+  {
+    printf '{"timestamp":"2026-06-01T00:00:0%dZ","id":"id0%d","verdict":"up","title":"Up item %d","score":0.80}\n' 1 1 1
+    printf '{"timestamp":"2026-06-01T00:00:0%dZ","id":"id0%d","verdict":"up","title":"Up item %d","score":0.80}\n' 2 2 2
+    printf '{"timestamp":"2026-06-01T00:00:0%dZ","id":"id0%d","verdict":"up","title":"Up item %d","score":0.80}\n' 3 3 3
+    printf '{"timestamp":"2026-06-01T00:00:0%dZ","id":"id0%d","verdict":"up","title":"Up item %d","score":0.80}\n' 4 4 4
+    printf '{"timestamp":"2026-06-01T00:00:0%dZ","id":"id0%d","verdict":"up","title":"Up item %d","score":0.80}\n' 5 5 5
+    printf '{"timestamp":"2026-06-01T00:00:0%dZ","id":"id0%d","verdict":"down","title":"Down item %d","score":0.20}\n' 6 6 6
+    printf '{"timestamp":"2026-06-01T00:00:0%dZ","id":"id0%d","verdict":"down","title":"Down item %d","score":0.20}\n' 7 7 7
+    printf '{"timestamp":"2026-06-01T00:00:0%dZ","id":"id0%d","verdict":"down","title":"Down item %d","score":0.20}\n' 8 8 8
+    printf '{"timestamp":"2026-06-01T00:00:0%dZ","id":"id0%d","verdict":"down","title":"Down item %d","score":0.20}\n' 9 9 9
+    printf '{"timestamp":"2026-06-01T00:00:10Z","id":"id10","verdict":"down","title":"Down item 10","score":0.20}\n'
+    printf '{"timestamp":"2026-06-02T00:00:00Z","id":"id11","verdict":"up","title":"Competitor ships GA","score":0.82}\n'
+    printf '{"timestamp":"2026-06-02T00:00:00Z","id":"id12","verdict":"down","title":"Thought-leadership post","score":0.30}\n'
+    printf '{"timestamp":"2026-06-02T00:00:00Z","id":"miss1","verdict":"missed","url":"https://ex.com/never-surfaced"}\n'
+  } > "$1"
+}
+
+# Canned draft scores the backtest stub writes: id01..id10 agree with their verdict,
+# id11 (was up) falls to 0.41 -> DROP, id12 (was down) rises to 0.65 -> SURFACE.
+BT_CANNED_SCORES='{"id":"id01","draft_score":0.80}
+{"id":"id02","draft_score":0.80}
+{"id":"id03","draft_score":0.80}
+{"id":"id04","draft_score":0.80}
+{"id":"id05","draft_score":0.80}
+{"id":"id06","draft_score":0.20}
+{"id":"id07","draft_score":0.20}
+{"id":"id08","draft_score":0.20}
+{"id":"id09","draft_score":0.20}
+{"id":"id10","draft_score":0.20}
+{"id":"id11","draft_score":0.41}
+{"id":"id12","draft_score":0.65}'
+
+echo "== bootstrap.sh: a refresh backtests the draft rubric against your grades =="
+test_bootstrap_backtest() {
+  local repo="$TMP/bootbt" home="$TMP/boothome_bt" out msg="$TMP/boot_bt.eml" args="$TMP/boot_bt_args"
+  make_fake_bootstrap_repo "$repo" "$home"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+  monitor: sonnet
+output:
+  email_to: "me@example.com"
+YAML
+  # A refresh (an approved profile exists, differs from the stub's "derived: {}" draft).
+  printf 'derived: {}\nold: gone\n' > "$repo/profile.yaml"
+  seed_backtest_feedback "$repo/state/feedback.jsonl"
+  out="$( cd "$repo" && BT_JSONL="$BT_CANNED_SCORES" BT_ARGS="$args" MSG_OUT="$msg" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+
+  assert_contains "announces the backtest pass on the monitor model" "$out" "re-scoring graded items under the draft rubric (model=sonnet)"
+  assert_contains "writes the backtest report" "$out" "backtest report written to profile.draft.backtest.md"
+  local md; md="$(cat "$repo/profile.draft.backtest.md" 2>/dev/null)"
+  assert_contains "the report leads with the agreement section" "$md" "Backtest vs your grades"
+  assert_contains "the report shows the agreement count" "$md" "agrees with your verdict:"
+  assert_contains "the report shows the approved-profile baseline" "$md" "approved profile:"
+  assert_contains "the report flags one would-drop thumbs-up" "$md" "would now DROP a thumbs-up:  1"
+  assert_contains "the dropped item is listed under Would now drop" "$md" "[id11] Competitor ships GA"
+  assert_contains "the surfaced thumbs-down is listed" "$md" "[id12] Thought-leadership post"
+  assert_contains "the email folds in the backtest after the diff" "$(cat "$msg" 2>/dev/null)" "Backtest vs your grades"
+  assert_contains "the final approval hint points at the backtest" "$out" "how the draft rubric scores your graded items: profile.draft.backtest.md"
+
+  # Blindness: the prompt the scorer saw must carry the item ids but NOT the withheld
+  # verdict / recorded score JSON fields.
+  local prompt; prompt="$(cat "$args" 2>/dev/null)"
+  assert_contains "the scoring prompt carries the item ids" "$prompt" "id11"
+  case "$prompt" in
+    *'"verdict"'*) fail "the scoring prompt withholds the verdict field" ;;
+    *) pass "the scoring prompt withholds the verdict field" ;;
+  esac
+  case "$prompt" in
+    *'"score":'*) fail "the scoring prompt withholds the recorded score field" ;;
+    *) pass "the scoring prompt withholds the recorded score field" ;;
+  esac
+}
+test_bootstrap_backtest
+
+echo "== bootstrap.sh: backtest skips on too few grades / when disabled =="
+test_bootstrap_backtest_skips() {
+  # Fewer than 10 up/down grades -> a note, no backtest files, exit 0.
+  local repo="$TMP/bootbt2" home="$TMP/boothome_bt2" out
+  make_fake_bootstrap_repo "$repo" "$home"
+  printf 'derived: {}\nold: gone\n' > "$repo/profile.yaml"
+  printf '{"timestamp":"2026-06-01T00:00:01Z","id":"a","verdict":"up","title":"t","score":0.8}\n' \
+    > "$repo/state/feedback.jsonl"
+  out="$( cd "$repo" && BT_JSONL="$BT_CANNED_SCORES" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "notes too few grades to backtest" "$out" "too few up/down grades to backtest"
+  if [ -f "$repo/profile.draft.backtest.md" ]; then fail "no backtest md on too few grades"; else pass "no backtest md on too few grades"; fi
+
+  # Disabled via relevance.backtest_max_items: 0 (even with plenty of grades).
+  local repo2="$TMP/bootbt3" home2="$TMP/boothome_bt3" out2
+  make_fake_bootstrap_repo "$repo2" "$home2"
+  printf 'version: 1\nmodels:\n  bootstrap: opus\nrelevance:\n  backtest_max_items: 0\n' \
+    > "$repo2/monitor-config.yaml"
+  printf 'derived: {}\nold: gone\n' > "$repo2/profile.yaml"
+  seed_backtest_feedback "$repo2/state/feedback.jsonl"
+  out2="$( cd "$repo2" && BT_JSONL="$BT_CANNED_SCORES" HOME="$home2" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "a 0 cap disables the backtest with a note" "$out2" "too few up/down grades to backtest (or backtest disabled)"
+  if [ -f "$repo2/profile.draft.backtest.md" ]; then fail "no backtest md when disabled"; else pass "no backtest md when disabled"; fi
+}
+test_bootstrap_backtest_skips
+
+echo "== bootstrap.sh: a garbage / empty scoring pass is warn-only (draft survives) =="
+test_bootstrap_backtest_failsafe() {
+  # Stub writes invalid JSON -> render finds no scores -> WARNING, no md, exit 0, draft kept.
+  local repo="$TMP/bootbt4" home="$TMP/boothome_bt4" out rc
+  make_fake_bootstrap_repo "$repo" "$home"
+  printf 'derived: {}\nold: gone\n' > "$repo/profile.yaml"
+  seed_backtest_feedback "$repo/state/feedback.jsonl"
+  out="$( cd "$repo" && BT_GARBAGE=1 HOME="$home" bash bin/bootstrap.sh 2>&1 )"; rc=$?
+  assert_eq "bootstrap still exits 0 on a garbage backtest" "0" "$rc"
+  assert_contains "warns the backtest was skipped" "$out" "backtest render failed"
+  if [ -f "$repo/profile.draft.backtest.md" ]; then fail "no backtest md on garbage scores"; else pass "no backtest md on garbage scores"; fi
+  assert_contains "the draft survives a failed backtest" "$(cat "$repo/profile.draft.yaml" 2>/dev/null)" "derived: {}"
+
+  # Stub writes nothing (empty jsonl) -> the scoring-pass guard skips before render.
+  local repo2="$TMP/bootbt5" home2="$TMP/boothome_bt5" out2
+  make_fake_bootstrap_repo "$repo2" "$home2"
+  printf 'derived: {}\nold: gone\n' > "$repo2/profile.yaml"
+  seed_backtest_feedback "$repo2/state/feedback.jsonl"
+  out2="$( cd "$repo2" && HOME="$home2" bash bin/bootstrap.sh 2>&1 )"   # BT_JSONL unset -> no file
+  assert_contains "warns when the scoring pass writes nothing" "$out2" "backtest scoring pass failed/empty"
+  if [ -f "$repo2/profile.draft.backtest.md" ]; then fail "no backtest md when the pass writes nothing"; else pass "no backtest md when the pass writes nothing"; fi
+}
+test_bootstrap_backtest_failsafe
+
+echo "== bootstrap.sh: no backtest on a first bootstrap; stale files are cleaned =="
+test_bootstrap_backtest_firstrun() {
+  local repo="$TMP/bootbt6" home="$TMP/boothome_bt6" out
+  make_fake_bootstrap_repo "$repo" "$home"
+  seed_backtest_feedback "$repo/state/feedback.jsonl"   # grades exist but no approved profile
+  # Pre-create stale backtest artifacts: a first bootstrap must clean them out.
+  printf 'stale\n' > "$repo/profile.draft.backtest.jsonl"
+  printf 'stale report\n' > "$repo/profile.draft.backtest.md"
+  out="$( cd "$repo" && BT_JSONL="$BT_CANNED_SCORES" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  if [ -f "$repo/profile.draft.backtest.md" ]; then fail "stale backtest md cleaned on a first bootstrap"; else pass "stale backtest md cleaned on a first bootstrap"; fi
+  if [ -f "$repo/profile.draft.backtest.jsonl" ]; then fail "stale backtest jsonl cleaned on a first bootstrap"; else pass "stale backtest jsonl cleaned on a first bootstrap"; fi
+  case "$out" in
+    *backtest*scoring*|*"DROP a thumbs"*) fail "no backtest activity on a first bootstrap" ;;
+    *) pass "no backtest activity on a first bootstrap" ;;
+  esac
+}
+test_bootstrap_backtest_firstrun
+
+echo "== backtest.py: prepare blinds the eval set and render computes agreement =="
+test_backtest_py() {
+  local d="$TMP/btunit"; mkdir -p "$d"
+  seed_backtest_feedback "$d/feedback.jsonl"
+  # prepare: missed excluded (12 rows, not 13), no verdict/score fields leak.
+  local evalset; evalset="$(python3 "$ROOT/bin/dedupe-feedback.py" "$d/feedback.jsonl" \
+                      | python3 "$ROOT/bin/backtest.py" prepare --max 60)"
+  assert_eq "prepare keeps 12 up/down items (missed excluded)" "12" "$(printf '%s\n' "$evalset" | grep -c .)"
+  case "$evalset" in
+    *'"verdict"'*) fail "prepare strips the verdict" ;; *) pass "prepare strips the verdict" ;;
+  esac
+  case "$evalset" in
+    *'"score":'*) fail "prepare strips the recorded score" ;; *) pass "prepare strips the recorded score" ;;
+  esac
+  # cap honored, newest-first selection (id11/id12 are newest; emitted oldest-first).
+  local two; two="$(python3 "$ROOT/bin/dedupe-feedback.py" "$d/feedback.jsonl" \
+                    | python3 "$ROOT/bin/backtest.py" prepare --max 2)"
+  assert_eq "prepare --max keeps only the newest N" "2" "$(printf '%s\n' "$two" | grep -c .)"
+  assert_contains "the newest grade is kept" "$two" "id12"
+  # render: agreement math + the borderline tag (draft 0.57 for an up item, threshold 0.6).
+  printf 'relevance:\n  threshold: 0.6\n' > "$d/draft.yaml"
+  printf '%s\n' "$BT_CANNED_SCORES" | sed 's/"id11","draft_score":0.41/"id11","draft_score":0.57/' \
+    > "$d/scores.jsonl"
+  python3 "$ROOT/bin/backtest.py" render --draft "$d/draft.yaml" --feedback "$d/feedback.jsonl" \
+    --scores "$d/scores.jsonl" --out "$d/out.md"
+  local md; md="$(cat "$d/out.md")"
+  assert_contains "render agrees on the 10 concordant items" "$md" "10 / 12"
+  assert_contains "render tags a near-threshold flip borderline" "$md" "(borderline)"
+}
+test_backtest_py
 
 echo "== bootstrap.sh: editorial pass polishes the summary when models.editor is set =="
 test_bootstrap_editor() {

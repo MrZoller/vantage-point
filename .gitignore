@@ -9,6 +9,8 @@ profile.draft.yaml
 profile.draft.diff
 profile.summary.md
 profile.draft.summary.md
+profile.draft.backtest.jsonl
+profile.draft.backtest.md
 .init.*
 state/
 kb/

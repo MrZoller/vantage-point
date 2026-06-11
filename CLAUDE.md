@@ -15,7 +15,12 @@ stays consistent instead of re-deriving them.
   `profile.yaml` (the review gate). Optionally editor-polishes + emails the summary as a
   "draft ready for review" — a review aid, not the approval (that stays the local `cp`).
   On a refresh it also writes `profile.draft.diff` (draft vs approved) and folds it into
-  the email; the portal draft view shows the same diff live (difflib).
+  the email; the portal draft view shows the same diff live (difflib). A refresh also
+  runs a **rubric backtest** (`bin/backtest.py` + `backtest-prompt.md`): replay the
+  user's graded items (`state/feedback.jsonl`) against the DRAFT rubric — blind, on the
+  monitor model — and fold an agreement report (`profile.draft.backtest.md`) into the
+  email after the diff + a portal draft card (model only scores; the numbers are
+  deterministic). Fail-safe, opt-out via `relevance.backtest_max_items: 0`.
 - **monitor** (`bin/monitor.sh` + `monitor-prompt.md`): scheduled daily/weekly run —
   deterministic feed pre-sweep (`bin/fetch.py`, from `subject.derived.feeds`; records
   per-feed health to `state/feedhealth.json` via `--health`) + catch-up lookback (gap
@@ -50,7 +55,9 @@ stays consistent instead of re-deriving them.
   candidates JSONL), `horizon.py` (forward radar: `due`/`upcoming` over
   `state/horizon.jsonl`, latest-per-id, precision-scaled grace; stdlib), `webhook.py`
   (JSON report delivery), `usage.sh`, `install-launchd.sh`, `dedupe-feedback.py`
-  (latest-per-id grades; `--since/--max` scope the monitor's live-calibration window).
+  (latest-per-id grades; `--since/--max` scope the monitor's live-calibration window),
+  `backtest.py` (refresh-gate rubric backtest: `prepare` blinds the graded eval set,
+  `render` computes agreement vs verdicts; stdlib).
 - **State** (gitignored): `state/seen.jsonl` (dedup), `state/observations.jsonl`
   (trends), `state/feedback.jsonl` (grades), `state/horizon.jsonl` (forward-radar
   expectations; append-only, latest-per-id, `tracking.horizon_max_lines`),

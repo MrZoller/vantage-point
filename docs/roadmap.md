@@ -272,19 +272,34 @@ a **Coming up** card and each dossier an **Expected** list. On by default with
 the radar only *adds* to a report, it never *causes* one. (Design:
 [`design-forward-radar.md`](design-forward-radar.md).)
 
+## Phase 19 — rubric backtest at the refresh gate ✅ (shipped)
+
+The refresh review saw what *changed* in the draft (Phase 15) but not what *effect*
+it has — a refreshed rubric can quietly regress, dropping the kind of item the user
+has consistently thumbed up, and the regression only shows weeks later, one missed
+signal at a time. Replay the user's graded items (`state/feedback.jsonl`) against the
+DRAFT rubric — **blind** (verdicts + recorded scores stripped), on the **monitor
+model** (the production scorer), numbers computed deterministically — and fold an
+agreement report into the review email and the portal draft view:
+- `bin/backtest.py` (stdlib, two modes): `prepare` filters deduped feedback to
+  up/down, caps at `relevance.backtest_max_items` (default 60, `0` = off; `< 10`
+  usable grades → skip), and emits a blind eval set; `render` joins the agent's
+  `{id, draft_score}` scores back to the withheld verdicts + the draft's threshold and
+  writes the agreement report (agreement %, the approved-profile **baseline** computed
+  free from each row's recorded score, and the would-drop / would-surface flip lists,
+  borderline-tagged within ±0.05 of threshold).
+- `backtest-prompt.md` + a fail-safe block in `bin/bootstrap.sh` after the Phase 15
+  diff: the model only **scores** (the one job needing judgment), the helper computes
+  the numbers (no model grading its own homework). Runs only on a refresh, only with a
+  draft + enough grades; capped by `budgets.backtest_max_turns` (default 30). Every
+  failure mode warns and skips — the draft is never at risk.
+- The portal's `/profile?draft=1` view gains a backtest card beside the diff card
+  (point-in-time, stamped with the scoring-pass date so staleness is visible).
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:
 
-- **Rubric backtest at the refresh gate** *(designed — see
-  [`design-rubric-backtest.md`](design-rubric-backtest.md))*. The refresh review
-  sees what changed in the draft (Phase 15) but not what *effect* it has. Replay
-  the user's graded items (`state/feedback.jsonl`) against the draft rubric —
-  blind, on the monitor model, numbers computed deterministically — and fold an
-  agreement report ("87% vs your verdicts; would now drop these 2 thumbs-ups")
-  into the review email and the portal draft view. Turns the approval gate from
-  "does this YAML read right?" into "does this rubric demonstrably agree with my
-  judgment more than the approved one?"
 - **Deep-research-grade bootstrap** *(designed — see
   [`design-deep-research-bootstrap.md`](design-deep-research-bootstrap.md))*.
   Bootstrap is one linear agent in one context window; Deep Research's power is

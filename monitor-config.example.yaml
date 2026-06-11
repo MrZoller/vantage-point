@@ -61,6 +61,8 @@ budgets:
   deepdive_max_turns: 40    # the corroboration pass (only when models.deepdive is set)
   editor_max_turns: 15      # the editorial pass (only when models.editor is set)
   init_max_turns: 15        # bin/init.sh's one-time draft review (only if you opt in)
+  backtest_max_turns: 30    # the refresh-gate rubric backtest (only on a re-bootstrap
+                            # with enough grades; runs on the monitor model)
   monthly_cost_usd: 0       # warn when 30-day estimated spend crosses this (0 = off)
 
 subject:
@@ -141,6 +143,11 @@ relevance:
   calibration:                # your graded examples — single biggest quality lever
     relevant: []              # things you'd want surfaced (+ one line: why)
     not_relevant: []          # near-misses you'd want filtered (+ why)
+  backtest_max_items: 60      # refresh gate: re-score your newest N graded items under
+                              # the DRAFT rubric (blind, on the monitor model) and report
+                              # agreement vs your verdicts before you approve — what
+                              # EFFECT the refresh has, not just what changed (0 = off;
+                              # needs >= 10 up/down grades or it skips with a note)
 
 monitoring:
   cadence:
