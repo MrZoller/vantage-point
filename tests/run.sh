@@ -2717,7 +2717,10 @@ case "$prompt" in
     fid="$(basename "$note" .md)"
     [ -n "${FACET_CALLS:-}" ] && printf '%s\n' "$fid" >> "$FACET_CALLS"
     if [ -n "${FACET_TIMES:-}" ]; then
-      date +%s%N > "$FACET_TIMES.$fid"; sleep 0.4; date +%s%N >> "$FACET_TIMES.$fid"
+      # python3 for a portable ms timestamp: BSD `date` (the macOS CI leg) has no %N.
+      python3 -c 'import time;print(int(time.time()*1000))' > "$FACET_TIMES.$fid"
+      sleep 0.4
+      python3 -c 'import time;print(int(time.time()*1000))' >> "$FACET_TIMES.$fid"
     fi
     if [ "${FACET_FAIL:-}" = all ] || [ "${FACET_FAIL:-}" = "$fid" ]; then exit 1; fi
     printf '# Facet: %s\n\n## Findings\n- ok [x](https://e/%s)\n' "$fid" "$fid" > "$note"
@@ -2922,7 +2925,7 @@ events = []
 for path in sys.argv[1:]:
     try:
         nums = [int(x) for x in open(path).read().split()]
-    except OSError:
+    except (OSError, ValueError):
         continue
     if len(nums) >= 2:
         events.append((nums[0], 1)); events.append((nums[1], -1))
