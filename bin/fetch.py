@@ -177,13 +177,21 @@ def fetch_feed(feed, timeout=20):
 
 
 def parse_entries(data):
-    """[(title, link, when)] from RSS 2.0/RDF or Atom bytes; None if unparseable."""
+    """[(title, link, when)] from RSS 2.0/RDF or Atom bytes; None if it isn't a feed.
+
+    A document that parses as XML but whose root isn't a feed root (rss/rdf/feed) --
+    e.g. a sitemap's <urlset> or an HTML-ish page -- returns None, not an empty list,
+    so --verify flags it for removal and feed health counts it a failure instead of
+    silently blessing a non-feed URL as a working (0-entry) feed."""
     try:
         root = ET.fromstring(data)
     except ET.ParseError:
         return None
+    root_tag = _local(root.tag)
+    if root_tag not in ("feed", "rss", "rdf"):
+        return None
     entries = []
-    if _local(root.tag) == "feed":                       # Atom
+    if root_tag == "feed":                               # Atom
         for el in root:
             if _local(el.tag) != "entry":
                 continue

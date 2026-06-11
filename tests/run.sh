@@ -2351,12 +2351,18 @@ SH
   printf '{"timestamp":"%s","mode":"daily","pass":"triage","cost_usd":0.01}\n' \
     "$(python3 -c 'from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=99,minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))')" \
     > "$repo/state/runs.log"
+  # A re-bootstrap logged its passes to the SAME runs.log just now. These must NOT be
+  # mistaken for a sweep: the catch-up baseline is the last triage row (~100h ago), so
+  # the window must still widen despite this recent bootstrap row being the newest line.
+  printf '{"timestamp":"%s","mode":"bootstrap","pass":"bootstrap","cost_usd":0.5}\n' \
+    "$(python3 -c 'from datetime import datetime,timezone; print(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')" \
+    >> "$repo/state/runs.log"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"
   assert_contains "announces the widened window" "$out" "catch-up: last run was"
   assert_contains "the prompt carries the catch-up instruction" "$(cat "$args" 2>/dev/null)" "CATCH-UP WINDOW"
-  assert_contains "the widened window covers the gap" "$(cat "$args" 2>/dev/null)" "widened to the last 100 hours"
+  assert_contains "a recent bootstrap row doesn't poison the sweep baseline" "$(cat "$args" 2>/dev/null)" "widened to the last 100 hours"
 
   # The widening is capped at catchup_max_hours EXTRA hours on top of the normal
   # window (30h daily + 48h cap = 78h) -- the cap bounds the widening, not the window.
@@ -2776,6 +2782,12 @@ JSON
   assert_eq "empty facet list exits nonzero" "1" "$rc"
   python3 "$ROOT/bin/research.py" validate-plan "$d/nope.json" >/dev/null 2>&1; rc=$?
   assert_eq "missing plan file exits nonzero" "1" "$rc"
+  # A newline embedded in a goal must NOT add a stray output line (the shell protocol is
+  # one facet per line) -- it's collapsed to a space.
+  printf '{ "facets": [ {"id":"a","goal":"g a"}, {"id":"b","goal":"line1\\nline2"} ] }\n' > "$d/nl.json"
+  out="$(python3 "$ROOT/bin/research.py" validate-plan --max 6 "$d/nl.json")"
+  assert_eq "a newline in goal does not add a facet line" "2" "$(printf '%s\n' "$out" | grep -c .)"
+  assert_contains "the newline in goal is collapsed to a space" "$out" "line1 line2"
 }
 test_research_py
 
@@ -2783,6 +2795,10 @@ echo "== fetch.py --verify: flags draft feeds that don't serve a parseable feed 
 test_fetch_verify() {
   local dir="$TMP/feeds-v" port=8795 rc
   mkdir -p "$dir"; write_feed_fixtures "$dir"
+  # A well-formed XML doc that is NOT a feed (a sitemap) must be flagged, not blessed as
+  # a 0-entry feed -- the root element isn't rss/rdf/feed.
+  printf '<?xml version="1.0"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://e/x</loc></url></urlset>\n' \
+    > "$dir/sitemap.xml"
   ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) >/dev/null 2>&1 &
   local srv=$!
   if ! wait_port "$port"; then fail "verify feed server came up"; kill "$srv" 2>/dev/null; return; fi
@@ -2792,15 +2808,17 @@ subject:
     feeds:
       - http://127.0.0.1:$port/rss.xml
       - http://127.0.0.1:$port/bad.xml
+      - http://127.0.0.1:$port/sitemap.xml
       - http://127.0.0.1:1/dead.xml
 YAML
   python3 "$ROOT/bin/fetch.py" --verify --out "$TMP/verify.md" "$TMP/verify-draft.yaml" 2>/dev/null; rc=$?
   kill "$srv" 2>/dev/null || true
   assert_eq "verify exits 0 (an aid, never a gate)" "0" "$rc"
   local md; md="$(cat "$TMP/verify.md" 2>/dev/null)"
-  assert_contains "reports the failing count" "$md" "2 of 3 draft feed(s) don't serve a parseable feed"
+  assert_contains "reports the failing count" "$md" "3 of 4 draft feed(s) don't serve a parseable feed"
   assert_contains "names the unparseable feed" "$md" "bad.xml"
   assert_contains "names the unreachable feed" "$md" "dead.xml"
+  assert_contains "flags a valid-XML non-feed (sitemap), not blessed as a feed" "$md" "sitemap.xml"
   assert_contains "lists the working feed with its entry count" "$md" "rss.xml"
   # No feeds in the draft -> nothing to verify, no file, exit 0.
   printf 'subject:\n  derived:\n    feeds: []\n' > "$TMP/verify-none.yaml"
@@ -2946,16 +2964,18 @@ echo "== bootstrap.sh: --resume skips finished facets; a fresh run clears the sc
 test_bootstrap_resume() {
   local repo="$TMP/rp-rs" home="$TMP/rprshome" calls="$TMP/rp_rs_calls"
   make_research_bootstrap_repo "$repo" "$home"
-  # Seed a finished plan + one fresh notes file (newer than the plan).
+  # Seed a finished plan, one fresh GOOD notes file, and one FAILED stub (both newer
+  # than the plan): resume must keep the good one and RE-RUN the failed stub.
   mkdir -p "$repo/state/.research/notes"
   printf '{ "facets": [ { "id":"facet-1","goal":"g1" }, { "id":"facet-2","goal":"g2" } ] }\n' \
     > "$repo/state/.research/plan.json"
   sleep 1
   printf '# Facet: facet-1\n\n## Findings\n- prior [x](https://e/1)\n' > "$repo/state/.research/notes/facet-1.md"
+  printf '# Facet: facet-2\n\nFACET FAILED - prior transient failure\n' > "$repo/state/.research/notes/facet-2.md"
   out="$( cd "$repo" && FACET_CALLS="$calls" HOME="$home" bash bin/bootstrap.sh --resume 2>&1 )"
   assert_contains "reuses the existing plan on --resume" "$out" "reusing existing plan"
   assert_contains "keeps the finished facet's notes" "$out" "facet facet-1: resume - keeping existing notes"
-  assert_eq "only the unfinished facet is re-invoked" "facet-2" "$(cat "$calls" 2>/dev/null)"
+  assert_eq "the failed stub is re-run, the good one skipped" "facet-2" "$(cat "$calls" 2>/dev/null)"
   # A fresh (non-resume) run wipes the scratch and re-runs both.
   local calls2="$TMP/rp_rs_calls2"
   out="$( cd "$repo" && FACET_CALLS="$calls2" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
@@ -2983,6 +3003,12 @@ YAML
   assert_contains "the email folds in the challenge report" "$(cat "$msg" 2>/dev/null)" "Challenge report"
   assert_contains "the approval hint points at the challenge" "$out" "adversarial challenge of the draft's claims: profile.draft.challenge.md"
   assert_contains "logs the challenge pass spend" "$(cat "$repo/state/runs.log" 2>/dev/null)" '"pass":"challenge"'
+  # The summary (which the email + portal lead with) carries a staleness caveat, since the
+  # challenge may have corrected the draft after the summary was written.
+  assert_contains "the summary warns it may be stale vs the corrected draft" \
+    "$(cat "$repo/profile.draft.summary.md" 2>/dev/null)" "ran after this summary was written"
+  assert_contains "the emailed summary carries the staleness caveat too" \
+    "$(cat "$msg" 2>/dev/null)" "ran after this summary was written"
 }
 test_bootstrap_challenge
 

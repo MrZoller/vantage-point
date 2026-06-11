@@ -283,7 +283,11 @@ EOF
       running=0
       for _line in ${FACET_LINES[@]+"${FACET_LINES[@]}"}; do
         IFS=$'\t' read -r fid fgoal fjson <<<"$_line"
-        if [ -n "$RESUME" ] && [ -s "$NOTES_DIR/$fid.md" ] && [ "$NOTES_DIR/$fid.md" -nt "$PLAN_JSON" ]; then
+        # Resume skips a facet only if its notes are non-empty, newer than the plan, AND
+        # not a FACET FAILED stub -- a stub from a transient failure must be retried, not
+        # treated as done (else a resume could synthesize from failed notes).
+        if [ -n "$RESUME" ] && [ -s "$NOTES_DIR/$fid.md" ] && [ "$NOTES_DIR/$fid.md" -nt "$PLAN_JSON" ] \
+           && ! grep -q '^FACET FAILED' "$NOTES_DIR/$fid.md"; then
           echo "[bootstrap]   facet $fid: resume - keeping existing notes" >&2
           continue
         fi
@@ -544,6 +548,16 @@ low-confidence / uncertainty flag - faithfulness to the draft beats polish. Edit
       mv -f "$SUMMARY.pre-ed" "$SUMMARY"
       echo "[bootstrap] WARNING: editorial pass failed/emptied the summary - kept the unedited one" >&2
     fi
+  fi
+  # The summary is written by synthesis; a later challenge pass may have CORRECTED the
+  # draft after it, so the digest the email + portal lead with can contradict the
+  # corrected draft. Append an honest staleness caveat (after the editorial pass so it
+  # can't be polished away; it lands in both the file the portal reads and the email
+  # body built below). Deterministic - no re-summarize cost.
+  if [ -s "$CHALLENGE_MD" ]; then
+    # shellcheck disable=SC2016  # backticks are literal Markdown; %s is a printf placeholder
+    printf '\n\n---\n\n> _An adversarial **challenge pass** ran after this summary was written and may have corrected the draft. Where this digest and `%s` differ, the draft and the Challenge report below are authoritative._\n' \
+      "$DRAFT" >> "$SUMMARY"
   fi
   # Email the summary when output.email_to is set (one address or a list).
   if [ "${#EMAIL_TO[@]}" -gt 0 ]; then

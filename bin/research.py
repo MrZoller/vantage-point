@@ -84,7 +84,10 @@ def validate_plan(argv):
             n += 1
         seen.add(slug)
         facet["id"] = slug           # normalize the id the synthesizer/notes will use
-        goal = str(facet.get("goal") or facet.get("title") or slug).replace("\t", " ").strip()
+        # Collapse ALL whitespace (newlines + tabs included) in the human-facing goal:
+        # the shell protocol is one facet per line, TAB-delimited, so a raw newline or
+        # tab here would split a single facet into a corrupt extra line for the loop.
+        goal = " ".join(str(facet.get("goal") or facet.get("title") or slug).split())
         # One line: id, goal (for the manifest), and the whole facet as compact JSON
         # (json.dumps escapes any tab/newline, so the TAB/line framing is safe).
         out.append("%s\t%s\t%s" % (slug, goal, json.dumps(facet, ensure_ascii=False)))
