@@ -137,17 +137,19 @@ def cmd_prepare(argv):
     Keeps verdict in {up,down} (missed/other excluded -- they have no item context
     to rescore and test recall, not the rubric), takes the newest `max_n`, strips
     the verdict + recorded score, and emits oldest-first. `--max 0` disables the
-    backtest (emit nothing). Below MIN_GRADES usable rows it emits nothing too --
-    the caller reads empty output as "too few grades, skip with a note"."""
+    backtest (emit nothing). The MIN_GRADES floor is applied to the FINAL eval set
+    (after the cap), so a cap below MIN_GRADES skips too -- agreement percentages
+    over a 1-9 item sample would look meaningful from a sample we mean to skip; the
+    caller reads empty output as "too few grades, skip with a note"."""
     max_n = _parse_max(argv)
     if max_n == 0:
         return 0
     rows = [r for r in _read_jsonl(sys.stdin)
             if r.get("verdict") in ("up", "down") and r.get("id")]
-    if len(rows) < MIN_GRADES:
-        return 0
     rows.sort(key=_ts)            # oldest-first
     rows = rows[-max_n:]          # newest N, still oldest-first
+    if len(rows) < MIN_GRADES:    # floor the CAPPED set, not the raw count
+        return 0
     for r in rows:
         # Blind eval item: the recorded context the agent rescores, WITHOUT the
         # verdict or the score it earned (anchoring on either defeats the test).

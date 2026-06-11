@@ -185,8 +185,8 @@ Evaluation set (one JSON object per line; verdicts withheld on purpose):
 $EVAL_SET
 \`\`\`" \
         ${BT_MODEL_ARGS[@]+"${BT_MODEL_ARGS[@]}"} \
-        --allowedTools "Read,Write" \
-        --disallowedTools "Bash,WebSearch,WebFetch" \
+        --allowedTools "Write" \
+        --disallowedTools "Read,Bash,WebSearch,WebFetch" \
         --permission-mode acceptEdits \
         --max-turns "$BACKTEST_MAX_TURNS" \
         --output-format text \

@@ -2879,6 +2879,14 @@ YAML
     *'"score":'*) fail "the scoring prompt withholds the recorded score field" ;;
     *) pass "the scoring prompt withholds the recorded score field" ;;
   esac
+  # Blindness is also structural: the scoring pass gets Write only, never Read, so it
+  # can't open state/feedback.jsonl to see the withheld verdicts/scores.
+  assert_contains "the scoring pass is granted Write only" "$prompt" "--allowedTools Write"
+  assert_contains "the scoring pass is denied Read (can't peek at feedback.jsonl)" "$prompt" "--disallowedTools Read,"
+  case "$prompt" in
+    *"allowedTools Read,Write"*) fail "the scoring pass does not get Read access" ;;
+    *) pass "the scoring pass does not get Read access" ;;
+  esac
 }
 test_bootstrap_backtest
 
@@ -2963,11 +2971,21 @@ test_backtest_py() {
   case "$evalset" in
     *'"score":'*) fail "prepare strips the recorded score" ;; *) pass "prepare strips the recorded score" ;;
   esac
-  # cap honored, newest-first selection (id11/id12 are newest; emitted oldest-first).
-  local two; two="$(python3 "$ROOT/bin/dedupe-feedback.py" "$d/feedback.jsonl" \
-                    | python3 "$ROOT/bin/backtest.py" prepare --max 2)"
-  assert_eq "prepare --max keeps only the newest N" "2" "$(printf '%s\n' "$two" | grep -c .)"
-  assert_contains "the newest grade is kept" "$two" "id12"
+  # cap honored, newest-first selection: --max 11 (>= the floor) drops the single
+  # oldest grade (id01) and keeps the newest (id12), emitted oldest-first.
+  local capped; capped="$(python3 "$ROOT/bin/dedupe-feedback.py" "$d/feedback.jsonl" \
+                    | python3 "$ROOT/bin/backtest.py" prepare --max 11)"
+  assert_eq "prepare --max keeps only the newest N" "11" "$(printf '%s\n' "$capped" | grep -c .)"
+  assert_contains "the newest grade is kept" "$capped" "id12"
+  case "$capped" in
+    *'"id01"'*) fail "the oldest grade is dropped by the cap" ;;
+    *) pass "the oldest grade is dropped by the cap" ;;
+  esac
+  # The MIN_GRADES floor applies to the CAPPED set: 12 grades but --max 5 -> skip
+  # (a 5-item agreement % would look meaningful from a sample we mean to skip).
+  local small; small="$(python3 "$ROOT/bin/dedupe-feedback.py" "$d/feedback.jsonl" \
+                        | python3 "$ROOT/bin/backtest.py" prepare --max 5)"
+  assert_eq "a cap below the 10-grade floor emits nothing" "0" "$(printf '%s' "$small" | grep -c .)"
   # render: agreement math + the borderline tag (draft 0.57 for an up item, threshold 0.6).
   printf 'relevance:\n  threshold: 0.6\n' > "$d/draft.yaml"
   printf '%s\n' "$BT_CANNED_SCORES" | sed 's/"id11","draft_score":0.41/"id11","draft_score":0.57/' \
