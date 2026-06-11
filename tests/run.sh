@@ -2652,6 +2652,9 @@ case "$*" in
     exit "${ED_EXIT:-0}" ;;
   *"Backtest prompt"*)
     [ -n "${BT_ARGS:-}" ] && printf '%s\n' "$*" > "$BT_ARGS"
+    # A misbehaving/injected pass that tries to clobber the draft via a RELATIVE path:
+    # with the scratch-dir isolation it can only hit its own cwd, never the repo's draft.
+    [ -n "${BT_CLOBBER:-}" ] && printf 'CLOBBERED\n' > profile.draft.yaml
     [ -n "${BT_GARBAGE:-}" ] && printf 'not json at all\n@@@\n' > profile.draft.backtest.jsonl
     [ -n "${BT_JSONL:-}" ]   && printf '%s\n' "$BT_JSONL" > profile.draft.backtest.jsonl
     exit "${BT_EXIT:-0}" ;;
@@ -2939,6 +2942,24 @@ test_bootstrap_backtest_failsafe() {
 }
 test_bootstrap_backtest_failsafe
 
+echo "== bootstrap.sh: the scoring pass is isolated - it can't clobber the draft =="
+test_bootstrap_backtest_isolation() {
+  local repo="$TMP/bootbt_iso" home="$TMP/boothome_bt_iso" out
+  make_fake_bootstrap_repo "$repo" "$home"
+  printf 'derived: {}\nold: gone\n' > "$repo/profile.yaml"
+  seed_backtest_feedback "$repo/state/feedback.jsonl"
+  # The stub both writes valid scores AND tries to overwrite ./profile.draft.yaml; the
+  # scratch-dir isolation must keep that write off the real draft.
+  out="$( cd "$repo" && BT_JSONL="$BT_CANNED_SCORES" BT_CLOBBER=1 HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "the backtest still produces its report" "$out" "backtest report written"
+  case "$(cat "$repo/profile.draft.yaml" 2>/dev/null)" in
+    *CLOBBERED*) fail "the scoring pass cannot overwrite the real draft" ;;
+    *) pass "the scoring pass cannot overwrite the real draft" ;;
+  esac
+  assert_contains "the real draft is intact" "$(cat "$repo/profile.draft.yaml" 2>/dev/null)" "derived: {}"
+}
+test_bootstrap_backtest_isolation
+
 echo "== bootstrap.sh: no backtest on a first bootstrap; stale files are cleaned =="
 test_bootstrap_backtest_firstrun() {
   local repo="$TMP/bootbt6" home="$TMP/boothome_bt6" out
@@ -3031,6 +3052,32 @@ test_backtest_py() {
     --feedback "$d/fb_base.jsonl" --scores "$d/sc_base.jsonl" --out "$d/base.md"
   assert_contains "baseline uses the approved threshold (0.70 up still agrees)" \
     "$(cat "$d/base.md")" "approved profile: 10 / 10"
+
+  # prepare derives `source` from the URL host when a grade has no recorded source
+  # (older grades predate record_grade persisting it), so the rubric isn't starved of
+  # domain context. Exercise the helper directly (run from bin/ so it imports).
+  local derived; derived="$(cd "$ROOT/bin" && printf '%s' '{"url":"https://www.theverge.com/a"}' \
+    | python3 -c 'import sys,json,backtest; print(backtest._source(json.loads(sys.stdin.read())) or "")')"
+  assert_eq "source is derived from the URL host" "theverge.com" "$derived"
+
+  # render's universe is the prepared EVAL set, not the whole feedback log: a grade
+  # capped out of the eval set must NOT be reported as "not scored".
+  python3 "$ROOT/bin/dedupe-feedback.py" "$d/feedback.jsonl" \
+    | python3 "$ROOT/bin/backtest.py" prepare --max 11 > "$d/eval11.jsonl"
+  python3 - "$d/eval11.jsonl" "$d/sc11.jsonl" <<'PY'
+import json, sys
+ids = [json.loads(l)["id"] for l in open(sys.argv[1])]
+with open(sys.argv[2], "w") as f:
+    for i in ids:
+        f.write(json.dumps({"id": i, "draft_score": 0.8}) + "\n")
+PY
+  python3 "$ROOT/bin/backtest.py" render --draft "$d/draft.yaml" --approved "$d/draft.yaml" \
+    --feedback "$d/feedback.jsonl" --eval "$d/eval11.jsonl" --scores "$d/sc11.jsonl" --out "$d/eval.md"
+  assert_contains "render counts only the 11 prepared items" "$(cat "$d/eval.md")" "your 11 graded item"
+  case "$(cat "$d/eval.md")" in
+    *"not scored"*) fail "capped-out grades are not reported as not scored" ;;
+    *) pass "capped-out grades are not reported as not scored" ;;
+  esac
 }
 test_backtest_py
 

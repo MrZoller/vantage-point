@@ -172,7 +172,13 @@ if [ -f "$PROFILE" ] && [ -s "$DRAFT" ] && [ -s "$FEEDBACK" ] \
               | python3 bin/backtest.py prepare --max "$BACKTEST_MAX_ITEMS")" || EVAL_SET=""
   if [ -n "$EVAL_SET" ]; then
     echo "[bootstrap] backtest: re-scoring graded items under the draft rubric (model=${BACKTEST_MODEL:-CLI default})" >&2
-    if claude -p "$(cat "$BACKTEST_PROMPT")
+    # Persist the prepared (blind) eval set so render's universe is exactly what the
+    # scorer was asked about -- a capped run must not report capped-out grades as
+    # "not scored". Materialize the whole prompt now (draft + eval inline) so the pass
+    # needs no repo files at all.
+    BT_EVAL="$(mktemp)"
+    printf '%s\n' "$EVAL_SET" > "$BT_EVAL"
+    BT_PROMPT="$(cat "$BACKTEST_PROMPT")
 
 ---
 DRAFT profile YAML (the rubric under review):
@@ -183,16 +189,24 @@ $(cat "$DRAFT")
 Evaluation set (one JSON object per line; verdicts withheld on purpose):
 \`\`\`jsonl
 $EVAL_SET
-\`\`\`" \
-        ${BT_MODEL_ARGS[@]+"${BT_MODEL_ARGS[@]}"} \
-        --allowedTools "Write" \
-        --disallowedTools "Read,Bash,WebSearch,WebFetch" \
-        --permission-mode acceptEdits \
-        --max-turns "$BACKTEST_MAX_TURNS" \
-        --output-format text \
-        2>> bootstrap.err && [ -s "$BACKTEST_JSONL" ]; then
+\`\`\`"
+    # Run the scorer in a throwaway scratch dir: with Read denied AND cwd isolated, an
+    # injected or misbehaving pass can only write inside the scratch dir -- it cannot
+    # reach (let alone silently clobber) the draft/summary/diff we tell the reviewer are
+    # unaffected. We copy only the scores file back.
+    BT_SCRATCH="$(mktemp -d)"
+    if ( cd "$BT_SCRATCH" && claude -p "$BT_PROMPT" \
+          ${BT_MODEL_ARGS[@]+"${BT_MODEL_ARGS[@]}"} \
+          --allowedTools "Write" \
+          --disallowedTools "Read,Bash,WebSearch,WebFetch" \
+          --permission-mode acceptEdits \
+          --max-turns "$BACKTEST_MAX_TURNS" \
+          --output-format text \
+          2>> "$ROOT/bootstrap.err" ) \
+       && [ -s "$BT_SCRATCH/$BACKTEST_JSONL" ]; then
+      mv -f "$BT_SCRATCH/$BACKTEST_JSONL" "$BACKTEST_JSONL"
       if python3 bin/backtest.py render --draft "$DRAFT" --approved "$PROFILE" \
-           --feedback "$FEEDBACK" --scores "$BACKTEST_JSONL" --out "$BACKTEST_MD"; then
+           --feedback "$FEEDBACK" --eval "$BT_EVAL" --scores "$BACKTEST_JSONL" --out "$BACKTEST_MD"; then
         echo "[bootstrap] backtest report written to $BACKTEST_MD"
       else
         rm -f "$BACKTEST_MD"
@@ -201,6 +215,7 @@ $EVAL_SET
     else
       echo "[bootstrap] WARNING: backtest scoring pass failed/empty - skipping (draft unaffected)" >&2
     fi
+    rm -rf "$BT_SCRATCH"; rm -f "$BT_EVAL"
   else
     echo "[bootstrap] note: too few up/down grades to backtest (or backtest disabled) - skipping" >&2
   fi

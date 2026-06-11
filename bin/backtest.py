@@ -27,6 +27,7 @@ Stdlib only.
 """
 import json
 import sys
+from urllib.parse import urlparse
 
 MIN_GRADES = 10          # below this the percentages are noise; a constant, not a knob
 DEFAULT_MAX = 60
@@ -113,6 +114,22 @@ def _to_number(s):
         return None
 
 
+def _source(rec):
+    """The item's source for the blind eval set. Prefer the recorded `source` (the
+    publication/domain triage saw); fall back to the URL's host so older grades --
+    recorded before record_grade persisted `source` -- still carry the domain context
+    the rubric may weigh, instead of a bare null."""
+    src = rec.get("source")
+    if isinstance(src, str) and src.strip():
+        return src
+    url = rec.get("url")
+    if isinstance(url, str) and url:
+        host = urlparse(url).netloc
+        if host:
+            return host[4:] if host.startswith("www.") else host
+    return None
+
+
 # --------------------------------------------------------------------------- prepare
 
 def _parse_max(argv):
@@ -157,7 +174,7 @@ def cmd_prepare(argv):
             "id": r.get("id"),
             "title": r.get("title"),
             "url": r.get("url"),
-            "source": r.get("source"),
+            "source": _source(r),
             "signal": r.get("signal"),
             "so_what": r.get("so_what"),
         }
@@ -168,16 +185,34 @@ def cmd_prepare(argv):
 # --------------------------------------------------------------------------- render
 
 def _parse_render(argv):
-    opts = {"draft": "", "approved": "", "feedback": "", "scores": "", "out": ""}
+    opts = {"draft": "", "approved": "", "feedback": "", "eval": "", "scores": "", "out": ""}
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("--draft", "--approved", "--feedback", "--scores", "--out") and i + 1 < len(argv):
+        if a in ("--draft", "--approved", "--feedback", "--eval", "--scores", "--out") \
+                and i + 1 < len(argv):
             opts[a[2:]] = argv[i + 1]
             i += 2
         else:
             i += 1
     return opts
+
+
+def _eval_ids(path):
+    """The ordered, de-duplicated ids in the prepared (blind) eval set -- the exact set
+    the scorer was asked about. render's universe, so capped-out grades aren't reported
+    as 'not scored' (they were never in the eval set). Empty when no path/unreadable."""
+    ids, seen = [], set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            for obj in _read_jsonl(f):
+                rid = obj.get("id")
+                if rid and rid not in seen:
+                    seen.add(rid)
+                    ids.append(rid)
+    except OSError:
+        pass
+    return ids
 
 
 def _latest_verdicts(feedback_path):
@@ -246,13 +281,22 @@ def cmd_render(argv):
               % opts["scores"], file=sys.stderr)
         return 1
 
+    # Universe = the ids the scorer was actually asked about (the prepared eval set),
+    # NOT every verdict in the log. With a cap below the grade count, prepare sends only
+    # the newest ids; counting the capped-out remainder as "not scored" would mislead the
+    # reviewer. Fall back to all up/down verdicts when no eval set is supplied (standalone).
+    universe = _eval_ids(opts["eval"]) if opts["eval"] else list(verdicts)
+
     agree = baseline_agree = 0
     scored = 0
     not_scored = []                      # graded items the agent didn't score
     would_drop = []                      # was up, draft now scores below threshold
     would_surface = []                   # was down, draft now scores at/above threshold
 
-    for rid, rec in verdicts.items():
+    for rid in universe:
+        rec = verdicts.get(rid)
+        if rec is None:                  # in the eval set but no current verdict -- skip
+            continue
         verdict = rec["verdict"]
         ds = draft_scores.get(rid)
         if ds is None:
@@ -273,7 +317,7 @@ def cmd_render(argv):
         elif verdict == "down" and ds >= threshold:
             would_surface.append((rid, title, base, ds))
 
-    md = _format_report(threshold, scored, agree, baseline_agree, len(verdicts),
+    md = _format_report(threshold, scored, agree, baseline_agree, len(universe),
                         not_scored, would_drop, would_surface, malformed)
     try:
         with open(opts["out"], "w", encoding="utf-8") as f:

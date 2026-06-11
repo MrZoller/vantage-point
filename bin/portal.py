@@ -1076,6 +1076,7 @@ def record_grade(item, verdict):
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "id": item.get("id"), "verdict": verdict,
         "title": item.get("title"), "url": item.get("url"),
+        "source": item.get("source"),
         "signal": item.get("signal"), "score": item.get("score"),
         "so_what": item.get("so_what"),
     })
