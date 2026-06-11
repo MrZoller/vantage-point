@@ -156,16 +156,20 @@ surface marginal items):
 
 **Acting on what's due.** Each run, a `DUE EXPECTATIONS` block (below) lists the pending
 expectations whose date has arrived, with `overdue_days` and a `past_grace` flag. For
-each, append exactly one row to `./state/horizon.jsonl` under the **same `id`**:
-- **met** — it happened (often it's in this very sweep): a `status: "met"` row, `source`
-  = the evidence URL; the triggering item scores as usual.
-- **moved** — a new date was announced: a `status: "pending"` row with the new
-  `due`/`due_precision`/`due_text` and a note (history is preserved).
+each, append exactly one row to `./state/horizon.jsonl` under the **same `id`**. Every
+update row is a **full record** — carry `id`, `entity`, `event`, `due`, `due_precision`,
+and `due_text` forward from the original and change only what the transition changes.
+Readers keep the *latest row per id and replace it whole, not merge*, so a sparse row
+that drops `entity`/`event` retires the expectation but loses its dossier link.
+- **met** — it happened (often it's in this very sweep): the full row with
+  `status: "met"` and `source` = the evidence URL; the triggering item scores as usual.
+- **moved** — a new date was announced: the full row with `status: "pending"`, the new
+  `due`/`due_precision`/`due_text`, and a note (the prior date stays in history).
 - **due, inside grace, no evidence** (`past_grace` false): leave it — the weekly table
   shows it as due. Append nothing.
 - **past grace, no evidence** (`past_grace` true): the silent slip *is* the signal —
   surface a **finding** (why → what it suggests → confidence, citing the original
-  `source`) and append a `status: "lapsed"` row so it never re-alarms.
+  `source`) and append the full row with `status: "lapsed"` so it never re-alarms.
 
 ## Expectation record (appended to ./state/horizon.jsonl)
 One JSON object per line, append-only; the latest row per `id` wins (like

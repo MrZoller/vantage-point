@@ -325,17 +325,20 @@ DUE EXPECTATIONS - forward radar. Each row is a previously-recorded expectation 
 ./state/horizon.jsonl whose stated date has arrived (\`overdue_days\` days past it;
 \`past_grace\` true once it is overdue beyond its precision's grace). For EACH row,
 judge it against THIS run's sweep and APPEND exactly one row to ./state/horizon.jsonl
-under the SAME \`id\` (latest row per id wins):
-- MET - it happened (often it is in this very sweep): append a row with
+under the SAME \`id\` (latest row per id wins). Each update row is a FULL record: carry
+\`id\`/\`entity\`/\`event\`/\`due\`/\`due_precision\`/\`due_text\` forward and change only
+what the transition changes - readers REPLACE the latest row whole, not merge, so a
+sparse row loses the entity link and drops out of its dossier.
+- MET - it happened (often it is in this very sweep): the full row with
   \`status\`:\"met\" and \`source\` set to the evidence URL; let the triggering item
   flow through scoring as usual.
-- MOVED - a new date was announced: append a \`status\`:\"pending\" row with the new
-  \`due\`/\`due_precision\`/\`due_text\` and a note; the prior date stays in history.
+- MOVED - a new date was announced: the full row with \`status\`:\"pending\", the new
+  \`due\`/\`due_precision\`/\`due_text\`, and a note; the prior date stays in history.
 - DUE but inside grace, no evidence yet (\`past_grace\` false): leave it - the weekly
   Coming up table shows it as due. Do NOT append a row.
 - PAST GRACE, no evidence (\`past_grace\` true): the silent slip IS the signal - surface
   a finding (why -> what it suggests -> confidence, citing the original \`source\`) and
-  append a \`status\`:\"lapsed\" row so it never re-alarms on later runs.
+  append the full row with \`status\`:\"lapsed\" so it never re-alarms on later runs.
 \`\`\`jsonl
 $DUE
 \`\`\`"

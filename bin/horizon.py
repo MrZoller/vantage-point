@@ -95,8 +95,12 @@ def load_latest(path):
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(obj, dict) and obj.get("id"):
-                rid = obj["id"]
+            rid = obj.get("id") if isinstance(obj, dict) else None
+            # Require a STRING id before using it as a dict key: a hand-edited row with
+            # a non-hashable id (a JSON list/object) would otherwise raise TypeError and
+            # abort the whole sweep, dropping every valid expectation with it. Skip it,
+            # like portal.py's reader and the rest of the fail-safe JSONL handling.
+            if isinstance(rid, str) and rid:
                 prev = latest.get(rid)
                 # Newest BY TIMESTAMP wins; ISO-8601 strings compare lexicographically,
                 # and ties keep the later line (append order).

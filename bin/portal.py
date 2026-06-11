@@ -233,6 +233,23 @@ def cfg_get_text(block, key, path=CONFIG):
     return value
 
 
+def cfg_get_bool(block, key, default):
+    """A truthy/falsey config flag (mirrors bin/config-lib.sh's cfg_get_bool). An
+    absent/blank value returns `default`, so callers match the monitor's defaults."""
+    v = cfg_get(block, key).strip().lower()
+    if not v:
+        return default
+    return v in ("1", "true", "yes", "on")
+
+
+def horizon_enabled():
+    """Whether the forward radar is on, exactly as bin/monitor.sh decides it: on by
+    default when tracking is enabled, off when tracking.enabled or tracking.horizon is
+    false -- so a disabled radar shows no Coming up card / dossier rows in the portal."""
+    return cfg_get_bool("tracking", "enabled", True) \
+        and cfg_get_bool("tracking", "horizon", True)
+
+
 def resolve_state_file():
     """monitoring.state_file (default state/seen.jsonl), normalized like monitor.sh."""
     value = cfg_get("monitoring", "state_file") or "state/seen.jsonl"
@@ -858,7 +875,11 @@ HORIZON_GRACE = {"day": 3, "month": 7, "quarter": 21, "half": 30, "year": 30}
 
 def _latest_horizon():
     """id -> newest expectation record (by timestamp); the append-only log's latest row
-    per id wins, mirroring bin/horizon.py. Non-string ids are skipped (unhashable/edited)."""
+    per id wins, mirroring bin/horizon.py. Non-string ids are skipped (unhashable/edited).
+    Returns nothing when the radar is disabled, so a turned-off feature renders no card,
+    dossier rows, or index entries from leftover state -- matching the monitor."""
+    if not horizon_enabled():
+        return {}
     latest = {}
     for rec in read_jsonl(HORIZON):
         rid = rec.get("id")

@@ -2391,10 +2391,13 @@ test_horizon_py() {
     '{"timestamp":"2026-01-01T00:00:00Z","id":"h-monthok","entity":"C","event":"launch","due":"2026-06-01","due_precision":"month","status":"pending","source":"u"}' \
     '{"timestamp":"2026-01-01T00:00:00Z","id":"h-monthlate","entity":"D","event":"launch","due":"2026-05-30","due_precision":"month","status":"pending","source":"u"}' \
     '{"timestamp":"2026-01-01T00:00:00Z","id":"h-bad","entity":"E","event":"thing","due":"2026-05-01","due_precision":"fortnight","status":"pending","source":"u"}' \
+    '{"timestamp":"2026-01-01T00:00:00Z","id":["not","a","string"],"entity":"F","event":"oops","due":"2026-05-01","status":"pending","source":"u"}' \
     'this is not json -- a corrupt hand-edited row' \
     > "$h"
   due="$( python3 "$repo/horizon.py" due --as-of 2026-06-07 "$h" )"; rc=$?
   assert_eq "due exits 0 despite a corrupt row" "0" "$rc"
+  # A non-string (non-hashable) id must be skipped, not crash the whole sweep.
+  assert_contains "a non-string id is skipped without aborting" "$due" '"id": "h-monthok"'
   assert_contains "month-due +6d is due but NOT past grace" "$due" '"id": "h-monthok", '
   case "$due" in *'"id": "h-monthok"'*'"past_grace": false'*) pass "h-monthok flagged inside grace" ;; *) fail "h-monthok flagged inside grace" ;; esac
   case "$due" in *'"id": "h-monthlate"'*'"past_grace": true'*) pass "month-due +8d is past grace" ;; *) fail "month-due +8d is past grace" ;; esac
@@ -2527,6 +2530,24 @@ PY
   # The static export carries the card (Overview snapshot, no /entity route).
   ( cd "$repo" && python3 bin/portal.py --export kb/index.html >/dev/null 2>&1 )
   assert_contains "static export includes the Coming up card" "$(cat "$repo/kb/index.html" 2>/dev/null)" "Coming up"
+
+  # Disablement: tracking.horizon: false hides the card/dossier/index even with leftover
+  # state, matching the monitor (no stale Coming up card for a turned-off feature).
+  printf 'tracking:\n  horizon: false\n' > "$repo/monitor-config.yaml"
+  local dis
+  dis="$(python3 - "$repo/bin/portal.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("CARD", repr(m.coming_up_card()))
+print("EXP", m.entity_expectations("Competitor C"))
+print("INDEX", "Vendor X" in [r["name"] for r in m.all_entities()])
+PY
+)"
+  assert_contains "tracking.horizon: false hides the Coming up card" "$dis" "CARD ''"
+  assert_contains "tracking.horizon: false hides dossier expectations" "$dis" "EXP []"
+  assert_contains "a disabled radar drops its horizon-only entity from the index" "$dis" "INDEX False"
+  rm -f "$repo/monitor-config.yaml"   # restore default-enabled for the live-server checks
 
   if ! command -v curl >/dev/null 2>&1; then pass "dossier Expected (skipped: no curl)"; return; fi
   ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
