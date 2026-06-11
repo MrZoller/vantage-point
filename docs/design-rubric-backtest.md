@@ -1,7 +1,9 @@
 # Design: rubric backtest at the profile-refresh gate
 
-*Status: design sketch — not started. Companion to the backlog entry in
-[`roadmap.md`](roadmap.md).*
+*Status: shipped (Phase 19). This is the design that was built; see
+[`roadmap.md`](roadmap.md) for the as-shipped summary and `bin/backtest.py`,
+`backtest-prompt.md`, the backtest block in `bin/bootstrap.sh`, and
+`backtest_card()` in `bin/portal.py` for the implementation.*
 
 ## Problem
 

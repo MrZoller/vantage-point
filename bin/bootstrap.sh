@@ -21,6 +21,7 @@ export PATH="$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 CONFIG="monitor-config.yaml"
 PROMPT="bootstrap-prompt.md"
+BACKTEST_PROMPT="backtest-prompt.md"   # optional rubric backtest at the refresh gate
 PROFILE="profile.yaml"               # the currently-approved profile (absent on a first run)
 DRAFT="profile.draft.yaml"
 SUMMARY="profile.draft.summary.md"   # human-readable digest the agent writes alongside
@@ -43,8 +44,22 @@ SUBJECT_NAME="$(cfg_get_text subject name)"
 # 0/absent/non-numeric -> the long-standing defaults.
 BOOTSTRAP_MAX_TURNS="$(cfg_get budgets bootstrap_max_turns)"
 EDITOR_MAX_TURNS="$(cfg_get budgets editor_max_turns)"
+BACKTEST_MAX_TURNS="$(cfg_get budgets backtest_max_turns)"     # rubric-backtest scoring pass
 case "$BOOTSTRAP_MAX_TURNS" in ''|0|*[!0-9]*) BOOTSTRAP_MAX_TURNS=80 ;; esac
 case "$EDITOR_MAX_TURNS"    in ''|0|*[!0-9]*) EDITOR_MAX_TURNS=15 ;; esac
+case "$BACKTEST_MAX_TURNS"  in ''|0|*[!0-9]*) BACKTEST_MAX_TURNS=30 ;; esac
+# How many newest graded items to replay under the draft rubric; 0 disables the
+# backtest. Passed through to backtest.py prepare, which also enforces the 10-grade
+# floor. Absent/blank -> the helper's own default (60).
+BACKTEST_MAX_ITEMS="$(cfg_get relevance backtest_max_items)"
+case "$BACKTEST_MAX_ITEMS" in *[!0-9]*) BACKTEST_MAX_ITEMS=60 ;; '') BACKTEST_MAX_ITEMS=60 ;; esac
+
+# Model for the backtest scoring pass: the MONITOR model, because production scoring
+# happens there -- backtesting on the bootstrap model would validate a rubric the
+# production scorer may read differently. Fall back to the CLI default (omit --model).
+BACKTEST_MODEL="$(cfg_get models monitor)"
+BT_MODEL_ARGS=()
+[ -n "$BACKTEST_MODEL" ] && BT_MODEL_ARGS=(--model "$BACKTEST_MODEL")
 
 # Fall back to the CLI default by omitting --model when the key is absent/blank.
 # Print a notice so a typo'd config is visible rather than silently defaulting.
@@ -140,6 +155,72 @@ if [ -f "$PROFILE" ] && [ -s "$DRAFT" ]; then
   fi
 fi
 
+# ---- rubric backtest: how the DRAFT rubric scores items you already graded ----
+# The diff above shows WHAT changed; this shows WHAT EFFECT it has. Replay the
+# user's graded items (state/feedback.jsonl) under the draft rubric -- blind, on the
+# MONITOR model (the production scorer), numbers computed deterministically -- and
+# fold an agreement report into the review email + portal draft view. Runs only on a
+# refresh (profile.yaml exists), only when the draft was written, only when there are
+# enough up/down grades. Every failure mode warns and skips; the draft is never at risk.
+BACKTEST_JSONL="profile.draft.backtest.jsonl"   # the agent's {id, draft_score} scores
+BACKTEST_MD="profile.draft.backtest.md"         # the rendered agreement report
+rm -f "$BACKTEST_JSONL" "$BACKTEST_MD"          # stale-run hygiene, like rm -f "$DIFF_FILE"
+if [ -f "$PROFILE" ] && [ -s "$DRAFT" ] && [ -s "$FEEDBACK" ] \
+   && [ -f "$BACKTEST_PROMPT" ] && command -v python3 >/dev/null 2>&1 \
+   && [ -f bin/dedupe-feedback.py ] && [ -f bin/backtest.py ]; then
+  EVAL_SET="$(python3 bin/dedupe-feedback.py "$FEEDBACK" \
+              | python3 bin/backtest.py prepare --max "$BACKTEST_MAX_ITEMS")" || EVAL_SET=""
+  if [ -n "$EVAL_SET" ]; then
+    echo "[bootstrap] backtest: re-scoring graded items under the draft rubric (model=${BACKTEST_MODEL:-CLI default})" >&2
+    # Persist the prepared (blind) eval set so render's universe is exactly what the
+    # scorer was asked about -- a capped run must not report capped-out grades as
+    # "not scored". Materialize the whole prompt now (draft + eval inline) so the pass
+    # needs no repo files at all.
+    BT_EVAL="$(mktemp)"
+    printf '%s\n' "$EVAL_SET" > "$BT_EVAL"
+    BT_PROMPT="$(cat "$BACKTEST_PROMPT")
+
+---
+DRAFT profile YAML (the rubric under review):
+\`\`\`yaml
+$(cat "$DRAFT")
+\`\`\`
+
+Evaluation set (one JSON object per line; verdicts withheld on purpose):
+\`\`\`jsonl
+$EVAL_SET
+\`\`\`"
+    # Run the scorer in a throwaway scratch dir: with Read denied AND cwd isolated, an
+    # injected or misbehaving pass can only write inside the scratch dir -- it cannot
+    # reach (let alone silently clobber) the draft/summary/diff we tell the reviewer are
+    # unaffected. We copy only the scores file back.
+    BT_SCRATCH="$(mktemp -d)"
+    if ( cd "$BT_SCRATCH" && claude -p "$BT_PROMPT" \
+          ${BT_MODEL_ARGS[@]+"${BT_MODEL_ARGS[@]}"} \
+          --allowedTools "Write" \
+          --disallowedTools "Read,Bash,WebSearch,WebFetch" \
+          --permission-mode acceptEdits \
+          --max-turns "$BACKTEST_MAX_TURNS" \
+          --output-format text \
+          2>> "$ROOT/bootstrap.err" ) \
+       && [ -s "$BT_SCRATCH/$BACKTEST_JSONL" ]; then
+      mv -f "$BT_SCRATCH/$BACKTEST_JSONL" "$BACKTEST_JSONL"
+      if python3 bin/backtest.py render --draft "$DRAFT" --approved "$PROFILE" \
+           --feedback "$FEEDBACK" --eval "$BT_EVAL" --scores "$BACKTEST_JSONL" --out "$BACKTEST_MD"; then
+        echo "[bootstrap] backtest report written to $BACKTEST_MD"
+      else
+        rm -f "$BACKTEST_MD"
+        echo "[bootstrap] WARNING: backtest render failed - skipping (draft unaffected)" >&2
+      fi
+    else
+      echo "[bootstrap] WARNING: backtest scoring pass failed/empty - skipping (draft unaffected)" >&2
+    fi
+    rm -rf "$BT_SCRATCH"; rm -f "$BT_EVAL"
+  else
+    echo "[bootstrap] note: too few up/down grades to backtest (or backtest disabled) - skipping" >&2
+  fi
+fi
+
 # ---- optional delivery: email the draft summary as a review aid ----
 # Approval stays a deliberate LOCAL step (cp draft -> profile.yaml); this only
 # notifies + summarizes. Both the editorial polish and the email are opt-in and
@@ -187,6 +268,12 @@ low-confidence / uncertainty flag - faithfulness to the draft beats polish. Edit
           printf '```\n'
         } >> "$DELIVER"
       fi
+      # The rubric backtest -- what EFFECT the draft has -- appended after the diff,
+      # also post-editor so the editorial pass can never touch the numbers.
+      if [ -s "$BACKTEST_MD" ]; then
+        printf '\n\n---\n\n' >> "$DELIVER"
+        cat "$BACKTEST_MD" >> "$DELIVER"
+      fi
       # shellcheck disable=SC2016  # backticks are literal Markdown; %s are printf placeholders
       printf '\n\n---\n\n**To approve:** review `%s`, edit if needed, then run `cp %s profile.yaml` on the host. Nothing is monitored until you do.\n' \
         "$DRAFT" "$DRAFT" >> "$DELIVER"
@@ -213,6 +300,7 @@ fi
 echo "[bootstrap] Review it, edit as needed, then APPROVE with:"
 echo "             cp $DRAFT profile.yaml"
 [ -s "$DIFF_FILE" ] && echo "             (what changed vs the approved profile: $DIFF_FILE)"
+[ -s "$BACKTEST_MD" ] && echo "             (how the draft rubric scores your graded items: $BACKTEST_MD)"
 # Optional: copy the digest too so the portal's Profile tab shows it for the approved
 # profile (it renders profile.summary.md like the bootstrap email; YAML stays the source).
 [ -f "$SUMMARY" ] && echo "             cp $SUMMARY profile.summary.md   # optional: nicer Profile tab"

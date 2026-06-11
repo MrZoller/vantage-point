@@ -290,9 +290,17 @@ guesses to check), so you can triage the draft from your inbox. With `models.edi
 set it's polished by the editor first. On a *refresh* (an approved `profile.yaml`
 already exists) the email also carries a **What changed vs the approved profile**
 section — the `profile.draft.diff` unified diff, appended after the editorial pass so
-it's never rewritten. This is a review *aid* — approval stays the deliberate local
-step (`cp profile.draft.yaml profile.yaml`); the email even spells that out. Same
-fail-safe rules: a send failure never loses the on-disk draft.
+it's never rewritten. A refresh also folds in a **Backtest vs your grades** section
+(`profile.draft.backtest.md`): the draft rubric is replayed against the items you've
+graded (`state/feedback.jsonl`) — blind, on the monitor model — and the report shows
+how often it agrees with your verdicts, the approved profile's agreement as a baseline,
+and a concrete list of any thumbs-up it would now drop. So the gate becomes "does this
+rubric demonstrably agree with my judgment?", not just "does this YAML read right?".
+It's opt-out (`relevance.backtest_max_items: 0`) and needs at least ten up/down grades;
+the model only scores, the percentages are computed deterministically. This is a review
+*aid* — approval stays the deliberate local step (`cp profile.draft.yaml profile.yaml`);
+the email even spells that out. Same fail-safe rules: a send failure never loses the
+on-disk draft.
 
 (The `output.distribution` list in the config is documentation only — it sketches the
 intended multi-channel shape. Only `email_to` and `webhook_url` are wired today.)
@@ -425,7 +433,9 @@ and check `./bin/usage.sh` for where the spend goes.
   not a re-read: bootstrap writes **`profile.draft.diff`** (the draft vs the
   approved profile — what your grades re-ranked, which sources moved), folds it
   into the review email as a *What changed* section, and the portal's draft view
-  leads with the same diff computed live. Approve with the usual
+  leads with the same diff computed live. It also **backtests** the new rubric
+  against your graded items so you can see what *effect* the change has, not just
+  what changed (see *Bootstrap also emails*). Approve with the usual
   `cp profile.draft.yaml profile.yaml`.
 - **Tuning.** First week, read every daily and grade it. Move false positives into
   `relevance.calibration.not_relevant` and misses into `relevant`, then re-bootstrap

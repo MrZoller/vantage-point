@@ -47,6 +47,9 @@ PROFILE_DRAFT = os.path.join(ROOT, "profile.draft.yaml")
 # bootstrap review email when present; the YAML stays the source of truth.
 PROFILE_SUMMARY = os.path.join(ROOT, "profile.summary.md")
 PROFILE_DRAFT_SUMMARY = os.path.join(ROOT, "profile.draft.summary.md")
+# Rubric backtest: a point-in-time artifact of the refresh scoring pass (bootstrap.sh
+# + bin/backtest.py) -- how the draft rubric scores items you already graded.
+PROFILE_DRAFT_BACKTEST = os.path.join(ROOT, "profile.draft.backtest.md")
 MAX_ITEMS = 60
 MAX_EVENTS = 12
 MAX_REPORTS = 30
@@ -1073,6 +1076,7 @@ def record_grade(item, verdict):
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "id": item.get("id"), "verdict": verdict,
         "title": item.get("title"), "url": item.get("url"),
+        "source": item.get("source"),
         "signal": item.get("signal"), "score": item.get("score"),
         "so_what": item.get("so_what"),
     })
@@ -1615,6 +1619,27 @@ def draft_diff_card():
             '%s</div>' % render_diff(d))
 
 
+def backtest_card():
+    """The 'what effect' card on the draft view: how the draft rubric scores the items
+    you already graded (agreement vs your verdicts, the regression list). Unlike the
+    diff (recomputed live via difflib), this is a point-in-time artifact of the scoring
+    pass -- show its file mtime so staleness is visible if the draft was hand-edited
+    afterwards. Absent until a refresh runs the backtest."""
+    if not os.path.exists(PROFILE_DRAFT_BACKTEST):
+        return ""
+    try:
+        with open(PROFILE_DRAFT_BACKTEST, encoding="utf-8") as f:
+            body = render_markdown(f.read())
+        when = datetime.fromtimestamp(
+            os.path.getmtime(PROFILE_DRAFT_BACKTEST)).strftime("%Y-%m-%d")
+    except OSError:
+        return ""
+    return ('<div class="card"><p class="sublabel">Point-in-time replay of your graded '
+            'items under the draft rubric &mdash; backtested %s. Recomputed only when a '
+            'refresh runs; edit the draft by hand and this can go stale.</p>'
+            '<div class="body">%s</div></div>' % (esc(when), body))
+
+
 def render_yaml(text):
     """Read-only YAML rendering: escape everything, then lightly tint comments and keys.
     Display only -- the file is never written from here."""
@@ -1686,8 +1711,10 @@ def profile_inner(query):
         intro = ('The bootstrap\'s proposed profile, not yet approved. '
                  '<a href="/profile">View the approved profile</a>.')
         missing = "No profile.draft.yaml present."
-        # On a refresh, lead the review with the diff against the approved profile.
+        # On a refresh, lead the review with the diff against the approved profile,
+        # then the backtest -- what changed, then what effect it has.
         banner += draft_diff_card()
+        banner += backtest_card()
     else:
         yaml_path, summary_path = PROFILE, PROFILE_SUMMARY
         title, subtitle = "Profile", "Approved profile"
