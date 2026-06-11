@@ -2977,6 +2977,42 @@ test_backtest_py() {
   local md; md="$(cat "$d/out.md")"
   assert_contains "render agrees on the 10 concordant items" "$md" "10 / 12"
   assert_contains "render tags a near-threshold flip borderline" "$md" "(borderline)"
+
+  # Out-of-range draft scores (1.2, -0.1) are invalid model output -> counted as not
+  # scored, never folded into the agreement/flip arithmetic.
+  printf '%s\n' "$BT_CANNED_SCORES" \
+    | sed -e 's/"id01","draft_score":0.80/"id01","draft_score":1.2/' \
+          -e 's/"id06","draft_score":0.20/"id06","draft_score":-0.1/' > "$d/oor.jsonl"
+  python3 "$ROOT/bin/backtest.py" render --draft "$d/draft.yaml" --approved "$d/draft.yaml" \
+    --feedback "$d/feedback.jsonl" --scores "$d/oor.jsonl" --out "$d/oor.md"
+  assert_contains "out-of-range scores are dropped (10 of 12 scored)" "$(cat "$d/oor.md")" "your 10 graded item"
+  assert_contains "the dropped out-of-range items are counted as not scored" "$(cat "$d/oor.md")" "2 graded item(s) were not scored"
+
+  # Baseline uses the APPROVED threshold, not the draft's: an up item recorded at 0.70
+  # is correct under approved 0.6 but would look wrong under a raised draft 0.8.
+  printf 'relevance:\n  threshold: 0.8\n' > "$d/draft_hi.yaml"
+  printf 'relevance:\n  threshold: 0.6\n' > "$d/approved.yaml"
+  printf '%s\n' \
+    '{"timestamp":"2026-06-01T00:00:01Z","id":"b1","verdict":"up","title":"borderline up","score":0.70}' \
+    '{"timestamp":"2026-06-01T00:00:02Z","id":"b2","verdict":"up","title":"u2","score":0.90}' \
+    '{"timestamp":"2026-06-01T00:00:03Z","id":"b3","verdict":"up","title":"u3","score":0.90}' \
+    '{"timestamp":"2026-06-01T00:00:04Z","id":"b4","verdict":"up","title":"u4","score":0.90}' \
+    '{"timestamp":"2026-06-01T00:00:05Z","id":"b5","verdict":"up","title":"u5","score":0.90}' \
+    '{"timestamp":"2026-06-01T00:00:06Z","id":"b6","verdict":"down","title":"d6","score":0.10}' \
+    '{"timestamp":"2026-06-01T00:00:07Z","id":"b7","verdict":"down","title":"d7","score":0.10}' \
+    '{"timestamp":"2026-06-01T00:00:08Z","id":"b8","verdict":"down","title":"d8","score":0.10}' \
+    '{"timestamp":"2026-06-01T00:00:09Z","id":"b9","verdict":"down","title":"d9","score":0.10}' \
+    '{"timestamp":"2026-06-01T00:00:10Z","id":"b10","verdict":"down","title":"d10","score":0.10}' \
+    > "$d/fb_base.jsonl"
+  printf '%s\n' \
+    '{"id":"b1","draft_score":0.90}' '{"id":"b2","draft_score":0.90}' '{"id":"b3","draft_score":0.90}' \
+    '{"id":"b4","draft_score":0.90}' '{"id":"b5","draft_score":0.90}' '{"id":"b6","draft_score":0.10}' \
+    '{"id":"b7","draft_score":0.10}' '{"id":"b8","draft_score":0.10}' '{"id":"b9","draft_score":0.10}' \
+    '{"id":"b10","draft_score":0.10}' > "$d/sc_base.jsonl"
+  python3 "$ROOT/bin/backtest.py" render --draft "$d/draft_hi.yaml" --approved "$d/approved.yaml" \
+    --feedback "$d/fb_base.jsonl" --scores "$d/sc_base.jsonl" --out "$d/base.md"
+  assert_contains "baseline uses the approved threshold (0.70 up still agrees)" \
+    "$(cat "$d/base.md")" "approved profile: 10 / 10"
 }
 test_backtest_py
 

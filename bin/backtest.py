@@ -67,6 +67,17 @@ def _num(v):
     return f
 
 
+def _score(v):
+    """A relevance score in [0, 1], or None. The prompt requires draft_score to be 0..1
+    and this helper is the deterministic guardrail around the model pass, so an
+    out-of-range numeric (1.2, -0.1) is invalid output -- count it as unscored rather
+    than letting it skew the agreement/flip arithmetic."""
+    f = _num(v)
+    if f is None or f < 0.0 or f > 1.0:
+        return None
+    return f
+
+
 def _draft_threshold(path):
     """Read relevance.threshold from the draft YAML with the same shallow, no-library
     scan the shell's cfg_get uses: find the top-level `relevance:` block, then the
@@ -155,11 +166,11 @@ def cmd_prepare(argv):
 # --------------------------------------------------------------------------- render
 
 def _parse_render(argv):
-    opts = {"draft": "", "feedback": "", "scores": "", "out": ""}
+    opts = {"draft": "", "approved": "", "feedback": "", "scores": "", "out": ""}
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("--draft", "--feedback", "--scores", "--out") and i + 1 < len(argv):
+        if a in ("--draft", "--approved", "--feedback", "--scores", "--out") and i + 1 < len(argv):
             opts[a[2:]] = argv[i + 1]
             i += 2
         else:
@@ -203,6 +214,12 @@ def cmd_render(argv):
         return 2
 
     threshold = _draft_threshold(opts["draft"]) if opts["draft"] else 0.6
+    # Baseline = how the LIVE system scored these, so judge the recorded scores against
+    # the APPROVED profile's threshold, not the draft's. Using the draft threshold here
+    # would distort the comparator: raising it 0.6 -> 0.8 turns correct 0.7 thumbs-ups
+    # into phantom baseline disagreements. Fall back to the draft threshold only when no
+    # approved profile is supplied (a first run has no baseline to compare anyway).
+    baseline_threshold = _draft_threshold(opts["approved"]) if opts["approved"] else threshold
     verdicts = _latest_verdicts(opts["feedback"])
 
     # The agent's scores: {id: draft_score}. A null/garbage score counts as "not
@@ -215,7 +232,7 @@ def cmd_render(argv):
                 if not rid:
                     malformed += 1
                     continue
-                draft_scores[rid] = _num(obj.get("draft_score"))
+                draft_scores[rid] = _score(obj.get("draft_score"))
     except OSError as e:
         print("backtest render: cannot read scores: %s" % e, file=sys.stderr)
         return 1
@@ -242,10 +259,10 @@ def cmd_render(argv):
         scored += 1
         if _agrees(verdict, ds, threshold):
             agree += 1
-        # Baseline: how the LIVE system actually scored these (recorded score vs
-        # threshold vs verdict) -- free, no second scoring pass.
-        base = _num(rec.get("score"))
-        if base is not None and _agrees(verdict, base, threshold):
+        # Baseline: how the LIVE system actually scored these (recorded score vs the
+        # APPROVED threshold vs verdict) -- free, no second scoring pass.
+        base = _score(rec.get("score"))
+        if base is not None and _agrees(verdict, base, baseline_threshold):
             baseline_agree += 1
         # Flips that change the decision.
         title = rec.get("title") or rec.get("url") or rid

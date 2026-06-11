@@ -191,8 +191,8 @@ $EVAL_SET
         --max-turns "$BACKTEST_MAX_TURNS" \
         --output-format text \
         2>> bootstrap.err && [ -s "$BACKTEST_JSONL" ]; then
-      if python3 bin/backtest.py render --draft "$DRAFT" --feedback "$FEEDBACK" \
-           --scores "$BACKTEST_JSONL" --out "$BACKTEST_MD"; then
+      if python3 bin/backtest.py render --draft "$DRAFT" --approved "$PROFILE" \
+           --feedback "$FEEDBACK" --scores "$BACKTEST_JSONL" --out "$BACKTEST_MD"; then
         echo "[bootstrap] backtest report written to $BACKTEST_MD"
       else
         rm -f "$BACKTEST_MD"
