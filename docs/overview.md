@@ -97,7 +97,10 @@ flowchart LR
    calibration on the very next run** (a thumbs-down filters its lookalikes the next
    morning), and the **next profile refresh** — a re-run of the research step that you
    review and approve — consolidates all of them into the rubric durably (the refresh
-   review is a short *what changed* diff against the approved profile, not a re-read). Spotted
+   review is a short *what changed* diff against the approved profile, not a re-read,
+   plus a **backtest** that replays your graded items against the new rubric so you can
+   see what *effect* it has — its agreement with your verdicts, and any thumbs-up it
+   would now drop — before approving). Spotted
    something relevant it *never* surfaced? Report the URL as a **missed signal** from
    the same tab and it's treated as a false negative on both clocks. The portal
    also *measures* the loop: a Calibration view tracks precision week by week (with
@@ -192,7 +195,11 @@ relevance:
 
 Because the profile is a plain, diffable file, the review gate is concrete: you read
 exactly what the agent inferred (and the low-confidence guesses it flagged), correct it,
-and approve it — nothing is trusted until you do.
+and approve it — nothing is trusted until you do. On a *refresh* the gate gets two
+review aids: a diff of what changed against the approved profile, and a backtest that
+re-scores your already-graded items under the new rubric (blind, on the monitor model)
+and reports how often it agrees with your verdicts — so you can confirm the refresh
+demonstrably matches your judgment, not just that the YAML reads right.
 
 ## What you actually receive
 
