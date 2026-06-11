@@ -80,7 +80,13 @@ flowchart LR
    approves it.** Nothing is trusted until a person signs off (the quality gate).
    It can email you a readable summary of that draft (what it inferred, plus its
    lowest-confidence guesses) so you can review from your inbox; approving stays a
-   deliberate step you take, not something the email does for you.
+   deliberate step you take, not something the email does for you. For the hardest
+   profiles, an optional **deep-research mode** does this the way Claude's own Deep
+   Research works — a lead plans the investigation, parallel researchers each dig into
+   one facet with a fresh context, and a synthesis pass writes the draft from their
+   notes — then it verifies the draft's feeds and runs an adversarial pass that tries
+   to *break* its weakest claims before you ever see it. (Off by default; the everyday
+   single-pass research is unchanged.)
 2. **Monitor (daily/weekly).** It sweeps sources and scores each item against the
    profile, and notices what's *changed* since last time. Sources with an RSS/Atom
    feed (the research step finds and verifies these) are pulled **deterministically**
@@ -358,7 +364,10 @@ different market by swapping the config and re-running the research step.
 
 Two Claude agents over one config file: a one-time **research** pass that builds the
 reviewed profile, and a lightweight **monitor** that runs on a schedule (with optional
-deep-dive and editorial passes layered on top). It's a small, auditable codebase (shell +
+deep-dive and editorial passes layered on top). The research pass can optionally fan out
+into a **multi-agent pipeline** — a planner, parallel facet researchers with fresh
+contexts, a synthesizer, and an adversarial challenger — orchestrated as separate,
+individually-budgeted processes rather than one long context. It's a small, auditable codebase (shell +
 a little Python, no heavy dependencies) with a CI test suite, scheduled via the OS's own
 task runner. It's built to run unattended: per-run locking, wall-clock timeouts, bounded
 state, and fail-safe optional steps (a failed email or deep-dive never loses a good

@@ -21,6 +21,22 @@ stays consistent instead of re-deriving them.
   monitor model — and fold an agreement report (`profile.draft.backtest.md`) into the
   email after the diff + a portal draft card (model only scores; the numbers are
   deterministic). Fail-safe, opt-out via `relevance.backtest_max_items: 0`.
+  **Deep-research mode** (opt-in via `models.researcher`): bootstrap fans the single
+  research pass into Deep-Research's shape as separate `claude -p` passes — a **plan**
+  pass (`research-plan-prompt.md`) writes `state/.research/plan.json`, validated/clamped
+  by `bin/research.py validate-plan`; batched **facet** passes (`research-facet-prompt.md`,
+  `budgets.research_parallel` at a time, per-facet `budgets.facet_timeout_seconds`) write
+  cited notes to `state/.research/notes/<id>.md`; then today's `bootstrap-prompt.md`
+  **synthesizes** from the notes manifest. Plus deterministic `fetch.py --verify` (every
+  draft feed must serve a parseable feed → `profile.draft.feedcheck.md`) and an optional
+  adversarial **challenge** pass (`research-challenge-prompt.md`, `models.challenge`,
+  non-destructive → `profile.draft.challenge.md`) — both folded into the email + portal
+  draft view. Unset `models.researcher` = today's single pass, byte-for-byte; every
+  failure degrades to a stub note / single-pass, never a lost draft; `--resume` redoes
+  only missing facets. Per-pass usage logged to `runs.log`
+  (`research-plan`/`research-facet:<id>`/`bootstrap`/`challenge`); `budgets.thinking_tokens`
+  exports `MAX_THINKING_TOKENS` for plan/synthesis/challenge. Design:
+  [`docs/design-deep-research-bootstrap.md`](docs/design-deep-research-bootstrap.md).
 - **monitor** (`bin/monitor.sh` + `monitor-prompt.md`): scheduled daily/weekly run —
   deterministic feed pre-sweep (`bin/fetch.py`, from `subject.derived.feeds`; records
   per-feed health to `state/feedhealth.json` via `--health`) + catch-up lookback (gap
@@ -57,12 +73,15 @@ stays consistent instead of re-deriving them.
   (JSON report delivery), `usage.sh`, `install-launchd.sh`, `dedupe-feedback.py`
   (latest-per-id grades; `--since/--max` scope the monitor's live-calibration window),
   `backtest.py` (refresh-gate rubric backtest: `prepare` blinds the graded eval set,
-  `render` computes agreement vs verdicts; stdlib).
+  `render` computes agreement vs verdicts; stdlib), `research.py` (deep-research:
+  `validate-plan` clamps + slugifies the plan's facets, emits `id<TAB>goal<TAB>json`
+  per line for the bootstrap shell loop; stdlib).
 - **State** (gitignored): `state/seen.jsonl` (dedup), `state/observations.jsonl`
   (trends), `state/feedback.jsonl` (grades), `state/horizon.jsonl` (forward-radar
   expectations; append-only, latest-per-id, `tracking.horizon_max_lines`),
-  `state/runs.log` (per-run usage), `state/feedhealth.json` (per-feed sweep health);
-  `kb/` (reports + dashboard).
+  `state/runs.log` (per-run usage), `state/feedhealth.json` (per-feed sweep health),
+  `state/.research/` (deep-research scratch: `plan.json` + `notes/<id>.md`, cleared each
+  non-`--resume` run); `kb/` (reports + dashboard).
 - Deployed on a macOS mini via **launchd**, running from a local checkout — changes
   reach it by `git pull`, not by merging to GitHub. `install-launchd.sh` regenerates the
   plists (substituting `__VP_ROOT__` + `__VP_LABEL__`) and retires old agents. Multiple

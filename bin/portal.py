@@ -50,6 +50,10 @@ PROFILE_DRAFT_SUMMARY = os.path.join(ROOT, "profile.draft.summary.md")
 # Rubric backtest: a point-in-time artifact of the refresh scoring pass (bootstrap.sh
 # + bin/backtest.py) -- how the draft rubric scores items you already graded.
 PROFILE_DRAFT_BACKTEST = os.path.join(ROOT, "profile.draft.backtest.md")
+# Deep-research bootstrap review aids (bootstrap.sh): the deterministic draft-feed
+# verification (fetch.py --verify) and the adversarial challenge report (models.challenge).
+PROFILE_DRAFT_FEEDCHECK = os.path.join(ROOT, "profile.draft.feedcheck.md")
+PROFILE_DRAFT_CHALLENGE = os.path.join(ROOT, "profile.draft.challenge.md")
 MAX_ITEMS = 60
 MAX_EVENTS = 12
 MAX_REPORTS = 30
@@ -1640,6 +1644,38 @@ def backtest_card():
             '<div class="body">%s</div></div>' % (esc(when), body))
 
 
+def _draft_aid_card(path, sublabel):
+    """Render a deep-research review-aid markdown (the feed check or the challenge
+    report) as a draft-view card, stamped with its file mtime so a stale artifact is
+    visible. Absent until that pass runs; empty string when missing/unreadable."""
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            body = render_markdown(f.read())
+        when = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
+    except OSError:
+        return ""
+    return ('<div class="card"><p class="sublabel">%s &mdash; %s.</p>'
+            '<div class="body">%s</div></div>' % (sublabel, esc(when), body))
+
+
+def feedcheck_card():
+    """Deterministic verification that the draft's RSS/Atom feeds actually serve a feed
+    (bootstrap's fetch.py --verify) -- a bad feed caught at the gate, not weeks later."""
+    return _draft_aid_card(
+        PROFILE_DRAFT_FEEDCHECK,
+        "Deterministic check of the draft's feeds (fetch.py --verify); run")
+
+
+def challenge_card():
+    """The adversarial challenge of the draft's weakest claims (models.challenge): what
+    an attacker with fresh web evidence could confirm, correct, or not verify."""
+    return _draft_aid_card(
+        PROFILE_DRAFT_CHALLENGE,
+        "Adversarial challenge of the draft's claims (models.challenge); run")
+
+
 def render_yaml(text):
     """Read-only YAML rendering: escape everything, then lightly tint comments and keys.
     Display only -- the file is never written from here."""
@@ -1712,9 +1748,12 @@ def profile_inner(query):
                  '<a href="/profile">View the approved profile</a>.')
         missing = "No profile.draft.yaml present."
         # On a refresh, lead the review with the diff against the approved profile,
-        # then the backtest -- what changed, then what effect it has.
+        # then the backtest -- what changed, then what effect it has -- then the
+        # deep-research review aids (deterministic feed check, adversarial challenge).
         banner += draft_diff_card()
         banner += backtest_card()
+        banner += feedcheck_card()
+        banner += challenge_card()
     else:
         yaml_path, summary_path = PROFILE, PROFILE_SUMMARY
         title, subtitle = "Profile", "Approved profile"

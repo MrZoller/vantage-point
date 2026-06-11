@@ -17,13 +17,17 @@ vantage-point/
 ├── .gitignore
 ├── monitor-config.example.yaml   # template: subject, anchor, seeds, scope, calibration
 ├── samples/                      # ready-to-copy configs for common use cases (see samples/README.md)
-├── bootstrap-prompt.md           # the profile-builder prompt
+├── bootstrap-prompt.md           # the profile-builder (synthesis) prompt
+├── research-plan-prompt.md       # deep-research: plan the facets (optional pipeline)
+├── research-facet-prompt.md      # deep-research: one parallel facet researcher
+├── research-challenge-prompt.md  # deep-research: adversarial challenge of the draft
 ├── monitor-prompt.md             # the recurring-agent (triage) prompt
 ├── deepdive-prompt.md            # the optional second-pass investigator prompt
 ├── editor-prompt.md              # the optional final-pass editor prompt
 ├── bin/
 │   ├── init.sh                   # guided interview -> writes monitor-config.yaml
 │   ├── bootstrap.sh
+│   ├── research.py               # deep-research: validate/clamp the plan's facet list
 │   ├── monitor.sh                # monitor.sh {daily|weekly}
 │   ├── config-lib.sh            # shared cfg_get/cfg_get_text (sourced by both agents)
 │   ├── email-lib.sh             # shared email rendering + sender (sourced by both agents)
@@ -367,6 +371,11 @@ confirm a quick `claude -p "hi" --model <value>` succeeds before committing to a
 value. Remove or blank a key and that agent falls back to the CLI's default
 model (with a one-line notice on stderr) — nothing is hardcoded.
 
+Four more `models:` keys are optional and OFF unless set: `deepdive` and `editor`
+(the monitor's second-pass and polish — see their sections below), and
+`researcher` and `challenge` (the deep-research bootstrap — see
+"Deep-research bootstrap" below).
+
 ## Budgets
 
 The top-level `budgets:` block in `monitor-config.yaml` bounds what each run may
@@ -375,10 +384,18 @@ shown (which match what the scripts always used):
 
 ```yaml
 budgets:
-  bootstrap_max_turns: 80   # the deep research pass — depth lives here
+  bootstrap_max_turns: 80   # the deep research / synthesis pass — depth lives here
   monitor_max_turns: 40     # the daily/weekly triage pass
   deepdive_max_turns: 40    # the corroboration pass (when models.deepdive is set)
   editor_max_turns: 15      # the editorial pass (when models.editor is set)
+  # deep-research bootstrap (only when models.researcher / models.challenge are set):
+  plan_max_turns: 15        # the plan pass that decomposes the research into facets
+  facet_max_turns: 25       # each parallel facet researcher pass
+  research_max_facets: 6    # clamp on how many facets the plan may spawn
+  research_parallel: 3      # how many facet processes run at once
+  facet_timeout_seconds: 1200  # per-facet wall-clock bound (0 = off)
+  challenge_max_turns: 30   # the adversarial challenge pass (when models.challenge is set)
+  # thinking_tokens: 0      # MAX_THINKING_TOKENS for plan/synthesis/challenge (0 = CLI default)
   monthly_cost_usd: 0       # warn when 30-day estimated spend crosses this (0 = off)
 ```
 
@@ -391,6 +408,55 @@ the cap. It deliberately never skips a run — the estimate is API-equivalent, n
 your actual subscription billing, and silently stopping the watch would cost more
 than it saves. When the warning fires, lower the run frequency or the turn caps,
 and check `./bin/usage.sh` for where the spend goes.
+
+## Deep-research bootstrap (optional)
+
+Profile quality is the system's ceiling — every monitor run scores against what
+bootstrap produced. By default bootstrap is **one linear `claude` pass**: good, but by
+mid-run its context is mostly fetched page text, so the final synthesis works from a
+half-saturated window (a quality ceiling no `bootstrap_max_turns` increase fixes).
+
+Set **`models.researcher`** and bootstrap instead runs the shape Claude's own Deep
+Research uses — plan, fan out, synthesize — as separate, budgeted `claude -p` passes:
+
+1. **Plan** (`research-plan-prompt.md`, on `models.bootstrap`) decomposes the work into
+   independent *facets* — market structure, key players, sources-and-feeds, the anchor's
+   competitive set, signal definitions — and writes `state/.research/plan.json`.
+   `bin/research.py validate-plan` clamps the count to `budgets.research_max_facets`,
+   slugifies the ids, and hands them to the shell. A broken/empty plan → single-pass.
+2. **Facets** (`research-facet-prompt.md`, on `models.researcher` — typically a faster
+   model), run **`budgets.research_parallel` at a time**, each in a **fresh context**, each
+   writing a cited, compressed notes file to `state/.research/notes/<id>.md`. A facet that
+   fails or times out (`budgets.facet_timeout_seconds`) gets a stub note; the run goes on.
+3. **Synthesis** is the same `bootstrap-prompt.md` as always, now fed the **notes
+   manifest** instead of doing its own gathering — so its whole budget goes to judgment —
+   and asked to add a *How this draft was researched* provenance block to the summary.
+
+Two verification steps then arm the human review gate, and work in single-pass mode too:
+
+- **Feed verification** (`fetch.py --verify`): every `subject.derived.feeds` URL in the
+  draft is fetched and checked to actually serve a parseable RSS/Atom feed — a guessed
+  feed caught at the gate, not weeks later via feed health. The report is folded into the
+  review email and the portal draft view.
+- **Challenge pass** (`research-challenge-prompt.md`, opt-in via **`models.challenge`**, a
+  strong model): an adversary attacks the draft's highest-stakes, lowest-confidence claims
+  with fresh web evidence (a missing player, a defunct "competitor", stale pricing, a
+  wrong source rank), applies only **evidenced** corrections, and writes
+  `profile.draft.challenge.md`. Non-destructive like the deep-dive (the draft is backed up
+  and restored if the pass fails or empties it); folded into the email after the diff.
+
+It's **opt-in and fail-safe by construction**: `models.researcher` unset = today's single
+pass, byte-for-byte; any failure (bad plan, failed facets, failed challenge) degrades to a
+stub note or the single pass, never a lost draft. An interrupted run keeps its notes —
+re-run `./bin/bootstrap.sh --resume` to redo only the missing facets (without `--resume`
+the scratch dir is cleared at start). Every pass logs to `state/runs.log` (`pass`:
+`research-plan`, `research-facet:<id>`, `bootstrap`, `challenge`), so the soft monthly
+budget and `./bin/usage.sh` break the run down per facet; `budgets.thinking_tokens` turns
+on extended thinking for the judgment-heavy passes (plan, synthesis, challenge).
+
+The cost is **~4–10× a single-pass bootstrap** — the known price of the multi-agent shape,
+spent at the **refresh-cadence** profile gate where quality compounds hardest. The daily
+monitor's economics are deliberately untouched.
 
 ## Operating notes
 
@@ -435,8 +501,9 @@ and check `./bin/usage.sh` for where the spend goes.
   into the review email as a *What changed* section, and the portal's draft view
   leads with the same diff computed live. It also **backtests** the new rubric
   against your graded items so you can see what *effect* the change has, not just
-  what changed (see *Bootstrap also emails*). Approve with the usual
-  `cp profile.draft.yaml profile.yaml`.
+  what changed (see *Bootstrap also emails*), and — when configured — verifies the
+  draft's feeds and runs an adversarial challenge over its claims (see
+  *Deep-research bootstrap*). Approve with the usual `cp profile.draft.yaml profile.yaml`.
 - **Tuning.** First week, read every daily and grade it. Move false positives into
   `relevance.calibration.not_relevant` and misses into `relevant`, then re-bootstrap
   so the rubric learns your taste. That feedback loop is the whole reason to
@@ -674,7 +741,9 @@ need the `claude` CLI — launchd plist generation (including paths with shell/X
 special characters), `monitor.sh`'s argument/review-gate behavior, email
 plain-text/HTML rendering, the single-run lock (skip + stale-lock reclaim, via a stub
 `claude`), state pruning, the profile-staleness warning, the two-pass deep-dive
-orchestration (including failure/empty-report rollback), the `usage.sh` rollup, the
+orchestration (including failure/empty-report rollback), the deep-research bootstrap
+pipeline (plan → batched parallel facets → synthesis, the clamp/resume/fallback paths,
+the non-destructive challenge pass, and `fetch.py --verify`), the `usage.sh` rollup, the
 web portal (static export + the live server's routes and grading), and the `init.sh`
 wizard (driven non-interactively by piping answers: templating, quoting round-trips,
 the overwrite guard, and the optional review pass's accept/reject/fail paths). CI (`.github/workflows/ci.yml`) runs

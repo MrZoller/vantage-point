@@ -3,6 +3,7 @@
 
 Usage: fetch.py [--hours N] [--max N] [--seen FILE] [--out FILE] [--health FILE]
                 [YAML_FILES...]
+       fetch.py --verify [--out FILE] DRAFT.yaml   (refresh-gate feed verification)
 
 Scans the given YAML files (the approved profile and the config) for `feeds:` lists
 of RSS/Atom URLs, pulls each feed, keeps entries that are inside the lookback window
@@ -163,6 +164,18 @@ def _parse_when(text):
     return dt.astimezone(timezone.utc)
 
 
+def fetch_feed(feed, timeout=20):
+    """Pull a feed's bytes. Returns (data, None) on success or (None, error_string)
+    on any network/OS error -- the single fetch path shared by the sweep and --verify
+    so they behave identically on a down or slow feed."""
+    req = urllib.request.Request(feed, headers={"User-Agent": "vantage-point-fetch"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read(), None
+    except (urllib.error.URLError, OSError) as exc:
+        return None, str(exc)
+
+
 def parse_entries(data):
     """[(title, link, when)] from RSS 2.0/RDF or Atom bytes; None if unparseable."""
     try:
@@ -247,7 +260,7 @@ def update_health(path, outcomes):
 
 
 def _parse_args(argv):
-    hours, cap, seen, out, health = 30, 200, "", "", ""
+    hours, cap, seen, out, health, verify = 30, 200, "", "", "", False
     files = []
     i = 0
     while i < len(argv):
@@ -267,12 +280,72 @@ def _parse_args(argv):
                 out = val
             else:
                 health = val
+        elif arg == "--verify":
+            verify = True
         elif arg in ("-h", "--help"):
             return None
         else:
             files.append(arg)
         i += 1
-    return hours, cap, seen, out, health, files
+    return hours, cap, seen, out, health, verify, files
+
+
+def verify_feeds(files, out_path):
+    """At the refresh gate, fetch every `feeds:` URL in the DRAFT and report per feed
+    whether it actually serves a parseable RSS/Atom feed -- turning the bootstrap
+    prompt's 'verify each URL' INSTRUCTION into a checked fact before a human approves.
+    Writes a Markdown report (failures first) to out_path (or stdout). Always exits 0:
+    verification is a review aid, not a gate."""
+    feeds = []
+    for path in files:
+        for url in feeds_from(path):
+            if url not in feeds:
+                feeds.append(url)
+    if not feeds:
+        print("[fetch] no feeds in the draft - nothing to verify", file=sys.stderr)
+        return 0
+
+    good, bad = [], []
+    for feed in feeds:
+        data, err = fetch_feed(feed)
+        if err is not None:
+            bad.append((feed, err))
+            continue
+        entries = parse_entries(data)
+        if entries is None:
+            bad.append((feed, "not parseable RSS/Atom"))
+            continue
+        kind = "Atom" if data.lstrip()[:2048].find(b"http://www.w3.org/2005/Atom") >= 0 else "RSS"
+        newest = max((w for _, _, w in entries if w is not None), default=None)
+        good.append((feed, kind, len(entries),
+                     newest.strftime("%Y-%m-%d") if newest else "no dated entries"))
+
+    lines = ["## Draft feed check", ""]
+    if bad:
+        lines.append("**%d of %d draft feed(s) don't serve a parseable feed - fix or "
+                     "remove before approving:**" % (len(bad), len(feeds)))
+        for feed, why in bad:
+            lines.append("- %s  (%s)" % (feed, why))
+        lines.append("")
+    if good:
+        lines.append("Working feed(s) (%d of %d):" % (len(good), len(feeds)))
+        for feed, kind, n, newest in good:
+            lines.append("- %s  (%s, %d entries, newest %s)" % (feed, kind, n, newest))
+    if not bad:
+        lines.append("")
+        lines.append("All %d draft feed(s) serve a parseable feed." % len(feeds))
+
+    report = "\n".join(lines) + "\n"
+    if out_path:
+        tmp = out_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(report)
+        os.replace(tmp, out_path)
+    else:
+        sys.stdout.write(report)
+    print("[fetch] feed check: %d of %d draft feed(s) failed" % (len(bad), len(feeds)),
+          file=sys.stderr)
+    return 0
 
 
 def main():
@@ -283,7 +356,10 @@ def main():
     if parsed is None:
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    hours, cap, seen_path, out_path, health_path, files = parsed
+    hours, cap, seen_path, out_path, health_path, verify, files = parsed
+
+    if verify:
+        return verify_feeds(files, out_path)
 
     feeds = []
     for path in files:
@@ -301,14 +377,11 @@ def main():
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     candidates, urls_emitted, failed, outcomes = [], set(), 0, {}
     for feed in feeds:
-        req = urllib.request.Request(feed, headers={"User-Agent": "vantage-point-fetch"})
-        try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                data = resp.read()
-        except (urllib.error.URLError, OSError) as exc:
+        data, err = fetch_feed(feed)
+        if err is not None:
             failed += 1
-            outcomes[feed] = (False, str(exc))
-            print("[fetch] WARNING: %s failed: %s" % (feed, exc), file=sys.stderr)
+            outcomes[feed] = (False, err)
+            print("[fetch] WARNING: %s failed: %s" % (feed, err), file=sys.stderr)
             continue
         entries = parse_entries(data)
         if entries is None:
