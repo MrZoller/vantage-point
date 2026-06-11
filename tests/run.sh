@@ -2351,12 +2351,18 @@ SH
   printf '{"timestamp":"%s","mode":"daily","pass":"triage","cost_usd":0.01}\n' \
     "$(python3 -c 'from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=99,minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))')" \
     > "$repo/state/runs.log"
+  # A re-bootstrap logged its passes to the SAME runs.log just now. These must NOT be
+  # mistaken for a sweep: the catch-up baseline is the last triage row (~100h ago), so
+  # the window must still widen despite this recent bootstrap row being the newest line.
+  printf '{"timestamp":"%s","mode":"bootstrap","pass":"bootstrap","cost_usd":0.5}\n' \
+    "$(python3 -c 'from datetime import datetime,timezone; print(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')" \
+    >> "$repo/state/runs.log"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"
   assert_contains "announces the widened window" "$out" "catch-up: last run was"
   assert_contains "the prompt carries the catch-up instruction" "$(cat "$args" 2>/dev/null)" "CATCH-UP WINDOW"
-  assert_contains "the widened window covers the gap" "$(cat "$args" 2>/dev/null)" "widened to the last 100 hours"
+  assert_contains "a recent bootstrap row doesn't poison the sweep baseline" "$(cat "$args" 2>/dev/null)" "widened to the last 100 hours"
 
   # The widening is capped at catchup_max_hours EXTRA hours on top of the normal
   # window (30h daily + 48h cap = 78h) -- the cap bounds the widening, not the window.
@@ -2405,6 +2411,19 @@ SH
     *"CATCH-UP WINDOW"*) fail "catchup_max_hours: 0 disables catch-up" ;;
     *) pass "catchup_max_hours: 0 disables catch-up" ;;
   esac
+
+  # A LEGACY runs.log row (predates per-pass logging -> no `pass` field) must still seed
+  # the catch-up baseline: the bootstrap-exclusion filter keeps it.
+  local repo4="$TMP/catchuprepo4" args4="$TMP/catchup_args4"
+  make_fake_repo "$repo4"
+  cp "$repo/stub/claude" "$repo4/stub/claude"
+  printf '{"timestamp":"%s","mode":"daily","cost_usd":0.01}\n' \
+    "$(python3 -c 'from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=99,minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))')" \
+    > "$repo4/state/runs.log"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args4" HOME="$TMP/fakehome" PATH="$repo4/stub:$PATH" \
+          bash "$repo4/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "a legacy (no-pass) row still seeds the catch-up baseline" "$(cat "$args4" 2>/dev/null)" "widened to the last 100 hours"
 }
 test_monitor_catchup
 
@@ -2662,12 +2681,404 @@ case "$*" in
     [ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
     printf 'derived: {}\n' > profile.draft.yaml
     printf '# Profile draft summary\nbottom line: test market\n' > profile.draft.summary.md
+    printf '{"num_turns":1,"total_cost_usd":0.0}\n'
     exit 0 ;;
 esac
 SH
   chmod +x "$home/.npm-global/bin/claude"
   write_capture_msmtp "$home/.npm-global/bin/msmtp"
 }
+
+# An isolated bootstrap.sh checkout wired for the DEEP-RESEARCH pipeline (models.researcher
+# set): copies the research/fetch helpers + the real plan/facet/challenge prompts, and a
+# stub `claude` that branches on the prompt. The stub records facet invocations + per-facet
+# start/end times (batching), honors the MAX_THINKING_TOKENS env (plan/synth/challenge), and
+# can be driven to fail facets / write a garbage plan / empty the draft via env vars.
+make_research_bootstrap_repo() {  # <repo> <home>
+  local repo="$1" home="$2"
+  mkdir -p "$repo/bin" "$repo/state" "$home/.npm-global/bin"
+  cp "$ROOT/bin/bootstrap.sh" "$ROOT/bin/dedupe-feedback.py" "$ROOT/bin/backtest.py" \
+     "$ROOT/bin/research.py" "$ROOT/bin/fetch.py" "$repo/bin/"; cp_libs "$repo/bin"
+  cp "$ROOT/research-plan-prompt.md" "$ROOT/research-facet-prompt.md" \
+     "$ROOT/research-challenge-prompt.md" "$ROOT/backtest-prompt.md" "$repo/"
+  printf 'bootstrap prompt (test fixture)\n' > "$repo/bootstrap-prompt.md"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+  researcher: sonnet
+budgets:
+  research_parallel: 3
+YAML
+  cat > "$home/.npm-global/bin/claude" <<'SH'
+#!/usr/bin/env bash
+prompt="$*"
+emit_json() { printf '{"num_turns":1,"total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5}}\n'; }
+case "$prompt" in
+  *"lead researcher"*)              # PLAN pass
+    [ -n "${THINK_LOG:-}" ] && printf 'plan:%s\n' "${MAX_THINKING_TOKENS:-unset}" >> "$THINK_LOG"
+    mkdir -p state/.research
+    if [ -n "${PLAN_GARBAGE:-}" ]; then
+      printf 'not json at all {{{\n' > state/.research/plan.json
+    else
+      n="${PLAN_FACETS:-2}"; i=1
+      { printf '{ "facets": [\n'
+        while [ "$i" -le "$n" ]; do
+          sep=","; [ "$i" -eq "$n" ] && sep=""
+          printf '  { "id": "facet-%s", "title": "T%s", "goal": "G%s", "questions": ["q"], "seeds": [], "deliverable": "d" }%s\n' "$i" "$i" "$i" "$sep"
+          i=$((i + 1))
+        done
+        printf '] }\n'; } > state/.research/plan.json
+    fi
+    emit_json; exit 0 ;;
+  *"one researcher"*)               # FACET pass
+    note="$(printf '%s' "$prompt" | grep -o 'state/\.research/notes/[a-z0-9-]*\.md' | head -1)"
+    fid="$(basename "$note" .md)"
+    [ -n "${FACET_CALLS:-}" ] && printf '%s\n' "$fid" >> "$FACET_CALLS"
+    if [ -n "${FACET_TIMES:-}" ]; then
+      # python3 for a portable ms timestamp: BSD `date` (the macOS CI leg) has no %N.
+      python3 -c 'import time;print(int(time.time()*1000))' > "$FACET_TIMES.$fid"
+      sleep 0.4
+      python3 -c 'import time;print(int(time.time()*1000))' >> "$FACET_TIMES.$fid"
+    fi
+    if [ "${FACET_FAIL:-}" = all ] || [ "${FACET_FAIL:-}" = "$fid" ]; then exit 1; fi
+    printf '# Facet: %s\n\n## Findings\n- ok [x](https://e/%s)\n' "$fid" "$fid" > "$note"
+    emit_json; exit 0 ;;
+  *"drafted intelligence profile"*) # CHALLENGE pass
+    [ -n "${THINK_LOG:-}" ] && printf 'challenge:%s\n' "${MAX_THINKING_TOKENS:-unset}" >> "$THINK_LOG"
+    [ -n "${CH_EMPTY:-}" ] && : > profile.draft.yaml
+    [ -n "${CH_EXIT:-}" ] && exit "${CH_EXIT}"
+    printf '## Challenge report\n- claim X - verdict: confirmed [src](https://e/x)\n' > profile.draft.challenge.md
+    emit_json; exit 0 ;;
+  *"Backtest prompt"*) exit 0 ;;
+  *"PROFILE-DRAFT SUMMARY"*) exit 0 ;;
+  *)                                # SYNTHESIS pass
+    [ -n "${THINK_LOG:-}" ] && printf 'synth:%s\n' "${MAX_THINKING_TOKENS:-unset}" >> "$THINK_LOG"
+    [ -n "${SYNTH_ARGS:-}" ] && printf '%s\n' "$prompt" > "$SYNTH_ARGS"
+    printf 'derived: {}\n' > profile.draft.yaml
+    printf '# Profile draft summary\nbottom line: test market\n' > profile.draft.summary.md
+    emit_json; exit 0 ;;
+esac
+SH
+  chmod +x "$home/.npm-global/bin/claude"
+  write_capture_msmtp "$home/.npm-global/bin/msmtp"
+}
+
+echo "== research.py: validate-plan clamps, slugifies, de-dups (bad plan -> nonzero) =="
+test_research_py() {
+  local d="$TMP/research"; mkdir -p "$d"
+  # A plan with mixed-case/spaced ids, a colliding slug, and a no-id (title-only) facet.
+  cat > "$d/plan.json" <<'JSON'
+{ "facets": [
+  { "id": "Sources & Feeds", "goal": "ranked sources" },
+  { "id": "sources-feeds",   "goal": "dup slug" },
+  { "title": "The Anchor",   "goal": "anchor set" },
+  { "id": "extra-1", "goal": "g1" },
+  { "id": "extra-2", "goal": "g2" }
+] }
+JSON
+  local out
+  out="$(python3 "$ROOT/bin/research.py" validate-plan --max 3 "$d/plan.json")"
+  assert_eq "clamps to --max facets" "3" "$(printf '%s\n' "$out" | grep -c .)"
+  assert_contains "slugifies a spaced/punctuated id" "$out" "sources-feeds	"
+  assert_contains "de-dups a colliding slug" "$out" "sources-feeds-2	"
+  assert_contains "derives an id from a title-only facet" "$out" "the-anchor	"
+  assert_contains "carries the goal as the manifest field" "$out" "	ranked sources	"
+  # Each line is id<TAB>goal<TAB>compact-json with the normalized id inside.
+  assert_contains "emits the facet json with the normalized id" "$out" '"id": "sources-feeds"'
+  local rc
+  printf 'not json {{{\n' > "$d/bad.json"
+  python3 "$ROOT/bin/research.py" validate-plan "$d/bad.json" >/dev/null 2>&1; rc=$?
+  assert_eq "garbage plan exits nonzero (forces single-pass fallback)" "1" "$rc"
+  printf '{ "facets": [] }\n' > "$d/empty.json"
+  python3 "$ROOT/bin/research.py" validate-plan "$d/empty.json" >/dev/null 2>&1; rc=$?
+  assert_eq "empty facet list exits nonzero" "1" "$rc"
+  python3 "$ROOT/bin/research.py" validate-plan "$d/nope.json" >/dev/null 2>&1; rc=$?
+  assert_eq "missing plan file exits nonzero" "1" "$rc"
+  # A newline embedded in a goal must NOT add a stray output line (the shell protocol is
+  # one facet per line) -- it's collapsed to a space.
+  printf '{ "facets": [ {"id":"a","goal":"g a"}, {"id":"b","goal":"line1\\nline2"} ] }\n' > "$d/nl.json"
+  out="$(python3 "$ROOT/bin/research.py" validate-plan --max 6 "$d/nl.json")"
+  assert_eq "a newline in goal does not add a facet line" "2" "$(printf '%s\n' "$out" | grep -c .)"
+  assert_contains "the newline in goal is collapsed to a space" "$out" "line1 line2"
+}
+test_research_py
+
+echo "== fetch.py --verify: flags draft feeds that don't serve a parseable feed =="
+test_fetch_verify() {
+  local dir="$TMP/feeds-v" port=8795 rc
+  mkdir -p "$dir"; write_feed_fixtures "$dir"
+  # A well-formed XML doc that is NOT a feed (a sitemap) must be flagged, not blessed as
+  # a 0-entry feed -- the root element isn't rss/rdf/feed.
+  printf '<?xml version="1.0"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://e/x</loc></url></urlset>\n' \
+    > "$dir/sitemap.xml"
+  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) >/dev/null 2>&1 &
+  local srv=$!
+  if ! wait_port "$port"; then fail "verify feed server came up"; kill "$srv" 2>/dev/null; return; fi
+  cat > "$TMP/verify-draft.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/rss.xml
+      - http://127.0.0.1:$port/bad.xml
+      - http://127.0.0.1:$port/sitemap.xml
+      - http://127.0.0.1:1/dead.xml
+YAML
+  python3 "$ROOT/bin/fetch.py" --verify --out "$TMP/verify.md" "$TMP/verify-draft.yaml" 2>/dev/null; rc=$?
+  kill "$srv" 2>/dev/null || true
+  assert_eq "verify exits 0 (an aid, never a gate)" "0" "$rc"
+  local md; md="$(cat "$TMP/verify.md" 2>/dev/null)"
+  assert_contains "reports the failing count" "$md" "3 of 4 draft feed(s) don't serve a parseable feed"
+  assert_contains "names the unparseable feed" "$md" "bad.xml"
+  assert_contains "names the unreachable feed" "$md" "dead.xml"
+  assert_contains "flags a valid-XML non-feed (sitemap), not blessed as a feed" "$md" "sitemap.xml"
+  assert_contains "lists the working feed with its entry count" "$md" "rss.xml"
+  # No feeds in the draft -> nothing to verify, no file, exit 0.
+  printf 'subject:\n  derived:\n    feeds: []\n' > "$TMP/verify-none.yaml"
+  local err; err="$(python3 "$ROOT/bin/fetch.py" --verify --out "$TMP/vn.md" "$TMP/verify-none.yaml" 2>&1)"; rc=$?
+  assert_eq "no draft feeds exits 0" "0" "$rc"
+  assert_contains "notes there's nothing to verify" "$err" "nothing to verify"
+  if [ -f "$TMP/vn.md" ]; then fail "writes no report when there are no feeds"; else pass "writes no report when there are no feeds"; fi
+}
+test_fetch_verify
+
+echo "== bootstrap.sh: deep-research pipeline (plan -> parallel facets -> synthesis) =="
+test_bootstrap_research_pipeline() {
+  local repo="$TMP/rp" home="$TMP/rphome" synth="$TMP/rp_synth" calls="$TMP/rp_calls"
+  make_research_bootstrap_repo "$repo" "$home"
+  out="$( cd "$repo" && SYNTH_ARGS="$synth" FACET_CALLS="$calls" HOME="$home" \
+          bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "announces the plan pass" "$out" "planning the investigation"
+  assert_contains "announces the facets (default 2)" "$out" "2 facet(s), 3 at a time"
+  assert_contains "synthesizes from the research notes" "$out" "synthesizing the draft -> profile.draft.yaml (from research notes)"
+  # Both facets were researched and their notes written.
+  if [ -s "$repo/state/.research/notes/facet-1.md" ] && [ -s "$repo/state/.research/notes/facet-2.md" ]; then
+    pass "each facet wrote its notes file"
+  else
+    fail "each facet wrote its notes file"
+  fi
+  # The synthesis prompt names both notes files and asks for a provenance block.
+  local sp; sp="$(cat "$synth" 2>/dev/null)"
+  assert_contains "synthesis prompt carries the notes manifest" "$sp" "RESEARCH NOTES"
+  assert_contains "synthesis prompt names facet-1's notes" "$sp" "state/.research/notes/facet-1.md"
+  assert_contains "synthesis prompt names facet-2's notes" "$sp" "state/.research/notes/facet-2.md"
+  assert_contains "synthesis prompt asks for a provenance block" "$sp" "How this draft was researched"
+  # A facet prompt sees ONLY its own facet (mutual exclusion).
+  assert_eq "exactly two facet invocations" "2" "$(grep -c . "$calls" 2>/dev/null || echo 0)"
+  # Per-pass usage logged to runs.log: plan + 2 facets + synthesis.
+  local log; log="$(cat "$repo/state/runs.log" 2>/dev/null)"
+  assert_contains "logs the plan pass" "$log" '"pass":"research-plan"'
+  assert_contains "logs a facet pass" "$log" '"pass":"research-facet:facet-1"'
+  assert_contains "logs the synthesis pass" "$log" '"pass":"bootstrap"'
+}
+test_bootstrap_research_pipeline
+
+echo "== bootstrap.sh: models.researcher unset -> single-pass (no plan/facets) =="
+test_bootstrap_single_pass_invariance() {
+  local repo="$TMP/rp-off" home="$TMP/rpoffhome" synth="$TMP/rp_off_synth" calls="$TMP/rp_off_calls"
+  make_research_bootstrap_repo "$repo" "$home"
+  # Drop models.researcher -> the pipeline must not run at all.
+  printf 'version: 1\nmodels:\n  bootstrap: opus\n' > "$repo/monitor-config.yaml"
+  out="$( cd "$repo" && SYNTH_ARGS="$synth" FACET_CALLS="$calls" HOME="$home" \
+          bash bin/bootstrap.sh 2>&1 )"
+  case "$out" in
+    *"planning the investigation"*) fail "no plan pass when researcher unset" ;;
+    *) pass "no plan pass when researcher unset" ;;
+  esac
+  if [ -f "$calls" ]; then fail "no facet invocations when researcher unset"; else pass "no facet invocations when researcher unset"; fi
+  assert_not_contains "synthesis prompt has no notes manifest" "$(cat "$synth" 2>/dev/null)" "RESEARCH NOTES"
+  if [ -d "$repo/state/.research" ]; then fail "no research scratch dir when researcher unset"; else pass "no research scratch dir when researcher unset"; fi
+}
+test_bootstrap_single_pass_invariance
+
+echo "== bootstrap.sh: a failed facet gets a stub note; the run completes =="
+test_bootstrap_facet_failure() {
+  local repo="$TMP/rp-ff" home="$TMP/rpffhome" synth="$TMP/rp_ff_synth"
+  make_research_bootstrap_repo "$repo" "$home"
+  out="$( cd "$repo" && FACET_FAIL=facet-2 SYNTH_ARGS="$synth" HOME="$home" \
+          bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "the surviving facet wrote real notes" "$(cat "$repo/state/.research/notes/facet-1.md" 2>/dev/null)" "## Findings"
+  assert_contains "the failed facet gets a stub note" "$(cat "$repo/state/.research/notes/facet-2.md" 2>/dev/null)" "FACET FAILED"
+  assert_contains "the manifest flags the failed facet" "$(cat "$synth" 2>/dev/null)" "FAILED (treat as unresearched)"
+  assert_contains "reports partial coverage" "$out" "1/2 facet(s) produced notes"
+  if [ -s "$repo/profile.draft.yaml" ]; then pass "the run still produced a draft"; else fail "the run still produced a draft"; fi
+}
+test_bootstrap_facet_failure
+
+echo "== bootstrap.sh: every facet failing falls back to single-pass synthesis =="
+test_bootstrap_all_facets_fail() {
+  local repo="$TMP/rp-af" home="$TMP/rpafhome" synth="$TMP/rp_af_synth"
+  make_research_bootstrap_repo "$repo" "$home"
+  out="$( cd "$repo" && FACET_FAIL=all SYNTH_ARGS="$synth" HOME="$home" \
+          bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "warns every facet failed" "$out" "every facet failed"
+  assert_not_contains "synthesis runs with no notes manifest" "$(cat "$synth" 2>/dev/null)" "RESEARCH NOTES"
+  if [ -s "$repo/profile.draft.yaml" ]; then pass "single-pass fallback still produced a draft"; else fail "single-pass fallback still produced a draft"; fi
+}
+test_bootstrap_all_facets_fail
+
+echo "== bootstrap.sh: an invalid plan falls back to single-pass with a warning =="
+test_bootstrap_bad_plan() {
+  local repo="$TMP/rp-bp" home="$TMP/rpbphome" synth="$TMP/rp_bp_synth" calls="$TMP/rp_bp_calls"
+  make_research_bootstrap_repo "$repo" "$home"
+  out="$( cd "$repo" && PLAN_GARBAGE=1 SYNTH_ARGS="$synth" FACET_CALLS="$calls" HOME="$home" \
+          bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "warns the plan was unusable" "$out" "no usable research plan"
+  if [ -f "$calls" ]; then fail "no facets run on a bad plan"; else pass "no facets run on a bad plan"; fi
+  assert_not_contains "synthesis has no notes manifest after a bad plan" "$(cat "$synth" 2>/dev/null)" "RESEARCH NOTES"
+  if [ -s "$repo/profile.draft.yaml" ]; then pass "a bad plan still produced a draft"; else fail "a bad plan still produced a draft"; fi
+}
+test_bootstrap_bad_plan
+
+echo "== bootstrap.sh: clamps the plan's facet count to budgets.research_max_facets =="
+test_bootstrap_clamp() {
+  local repo="$TMP/rp-cl" home="$TMP/rpclhome" calls="$TMP/rp_cl_calls"
+  make_research_bootstrap_repo "$repo" "$home"
+  printf 'version: 1\nmodels:\n  bootstrap: opus\n  researcher: sonnet\nbudgets:\n  research_max_facets: 4\n  research_parallel: 4\n' \
+    > "$repo/monitor-config.yaml"
+  ( cd "$repo" && PLAN_FACETS=8 FACET_CALLS="$calls" HOME="$home" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  assert_eq "an 8-facet plan with max 4 runs exactly 4" "4" "$(grep -c . "$calls" 2>/dev/null || echo 0)"
+}
+test_bootstrap_clamp
+
+echo "== bootstrap.sh: facet batching never exceeds budgets.research_parallel =="
+test_bootstrap_batching() {
+  local repo="$TMP/rp-bt" home="$TMP/rpbthome" times="$TMP/rp_times"
+  make_research_bootstrap_repo "$repo" "$home"
+  printf 'version: 1\nmodels:\n  bootstrap: opus\n  researcher: sonnet\nbudgets:\n  research_parallel: 2\n' \
+    > "$repo/monitor-config.yaml"
+  ( cd "$repo" && PLAN_FACETS=5 FACET_TIMES="$times" HOME="$home" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  # Compute the max number of overlapping facet [start,end] intervals.
+  local maxc
+  maxc="$(python3 - "$times".* <<'PY'
+import sys
+events = []
+for path in sys.argv[1:]:
+    try:
+        nums = [int(x) for x in open(path).read().split()]
+    except (OSError, ValueError):
+        continue
+    if len(nums) >= 2:
+        events.append((nums[0], 1)); events.append((nums[1], -1))
+events.sort(key=lambda e: (e[0], e[1]))   # ends before starts at a tie
+cur = mx = 0
+for _, d in events:
+    cur += d; mx = max(mx, cur)
+print(mx)
+PY
+)"
+  local nfiles; nfiles="$(set -- "$times".*; [ -e "$1" ] && echo $# || echo 0)"
+  assert_eq "all 5 facets ran" "5" "$nfiles"
+  if [ "${maxc:-9}" -le 2 ]; then pass "never more than research_parallel=2 facets at once (peak $maxc)"; else fail "never more than research_parallel=2 facets at once (peak $maxc)"; fi
+}
+test_bootstrap_batching
+
+echo "== bootstrap.sh: --resume skips finished facets; a fresh run clears the scratch =="
+test_bootstrap_resume() {
+  local repo="$TMP/rp-rs" home="$TMP/rprshome" calls="$TMP/rp_rs_calls"
+  make_research_bootstrap_repo "$repo" "$home"
+  # Seed a finished plan, one fresh GOOD notes file, and one FAILED stub (both newer
+  # than the plan): resume must keep the good one and RE-RUN the failed stub.
+  mkdir -p "$repo/state/.research/notes"
+  printf '{ "facets": [ { "id":"facet-1","goal":"g1" }, { "id":"facet-2","goal":"g2" } ] }\n' \
+    > "$repo/state/.research/plan.json"
+  sleep 1
+  printf '# Facet: facet-1\n\n## Findings\n- prior [x](https://e/1)\n' > "$repo/state/.research/notes/facet-1.md"
+  printf '# Facet: facet-2\n\nFACET FAILED - prior transient failure\n' > "$repo/state/.research/notes/facet-2.md"
+  # A stale run-JSON from facet-1's prior (completed) attempt: resume must NOT re-log it.
+  printf '{"num_turns":1,"total_cost_usd":0.99}\n' > "$repo/state/.research/facet-1.json"
+  out="$( cd "$repo" && FACET_CALLS="$calls" HOME="$home" bash bin/bootstrap.sh --resume 2>&1 )"
+  assert_contains "reuses the existing plan on --resume" "$out" "reusing existing plan"
+  assert_contains "keeps the finished facet's notes" "$out" "facet facet-1: resume - keeping existing notes"
+  assert_eq "the failed stub is re-run, the good one skipped" "facet-2" "$(cat "$calls" 2>/dev/null)"
+  local rlog; rlog="$(cat "$repo/state/runs.log" 2>/dev/null)"
+  assert_not_contains "a skipped facet's prior spend is NOT re-logged" "$rlog" "research-facet:facet-1"
+  assert_contains "the re-run facet IS logged" "$rlog" "research-facet:facet-2"
+  # A fresh (non-resume) run wipes the scratch and re-runs both.
+  local calls2="$TMP/rp_rs_calls2"
+  out="$( cd "$repo" && FACET_CALLS="$calls2" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_eq "a fresh run re-invokes both facets" "2" "$(grep -c . "$calls2" 2>/dev/null || echo 0)"
+}
+test_bootstrap_resume
+
+echo "== bootstrap.sh: challenge pass writes a report folded into the email =="
+test_bootstrap_challenge() {
+  local repo="$TMP/rp-ch" home="$TMP/rpchhome" msg="$TMP/rp_ch.eml"
+  make_research_bootstrap_repo "$repo" "$home"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+  challenge: opus
+subject:
+  name: "Chal Market"
+output:
+  email_to: "me@example.com"
+YAML
+  out="$( cd "$repo" && MSG_OUT="$msg" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "announces the challenge pass" "$out" "challenge pass on opus"
+  assert_contains "writes the challenge report" "$out" "challenge report written to profile.draft.challenge.md"
+  assert_contains "the email folds in the challenge report" "$(cat "$msg" 2>/dev/null)" "Challenge report"
+  assert_contains "the approval hint points at the challenge" "$out" "adversarial challenge of the draft's claims: profile.draft.challenge.md"
+  assert_contains "logs the challenge pass spend" "$(cat "$repo/state/runs.log" 2>/dev/null)" '"pass":"challenge"'
+  # The summary (which the email + portal lead with) carries a staleness caveat, since the
+  # challenge may have corrected the draft after the summary was written.
+  assert_contains "the summary warns it may be stale vs the corrected draft" \
+    "$(cat "$repo/profile.draft.summary.md" 2>/dev/null)" "ran after this summary was written"
+  assert_contains "the emailed summary carries the staleness caveat too" \
+    "$(cat "$msg" 2>/dev/null)" "ran after this summary was written"
+}
+test_bootstrap_challenge
+
+echo "== bootstrap.sh: a challenge that empties the draft is non-destructive =="
+test_bootstrap_challenge_failsafe() {
+  local repo="$TMP/rp-cf" home="$TMP/rpcfhome" msg="$TMP/rp_cf.eml"
+  make_research_bootstrap_repo "$repo" "$home"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+  challenge: opus
+output:
+  email_to: "me@example.com"
+YAML
+  out="$( cd "$repo" && CH_EMPTY=1 MSG_OUT="$msg" HOME="$home" bash bin/bootstrap.sh 2>&1 )"; rc=$?
+  assert_eq "bootstrap still exits 0 when the challenge empties the draft" "0" "$rc"
+  assert_contains "warns the draft was restored" "$out" "challenge pass failed/emptied the draft"
+  assert_contains "the draft is restored from backup" "$(cat "$repo/profile.draft.yaml" 2>/dev/null)" "derived: {}"
+  if [ -f "$repo/profile.draft.challenge.md" ]; then fail "no challenge report when the pass empties the draft"; else pass "no challenge report when the pass empties the draft"; fi
+  assert_not_contains "no challenge section in the email" "$(cat "$msg" 2>/dev/null)" "Challenge report"
+}
+test_bootstrap_challenge_failsafe
+
+echo "== bootstrap.sh: budgets.thinking_tokens exports MAX_THINKING_TOKENS to the right passes =="
+test_bootstrap_thinking() {
+  local repo="$TMP/rp-th" home="$TMP/rpthhome" tlog="$TMP/rp_think.log"
+  make_research_bootstrap_repo "$repo" "$home"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+  researcher: sonnet
+  challenge: opus
+budgets:
+  thinking_tokens: 1234
+YAML
+  # env -u clears any ambient MAX_THINKING_TOKENS so the stub only sees what bootstrap sets.
+  ( cd "$repo" && env -u MAX_THINKING_TOKENS THINK_LOG="$tlog" HOME="$home" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  local tl; tl="$(cat "$tlog" 2>/dev/null)"
+  assert_contains "plan pass gets MAX_THINKING_TOKENS" "$tl" "plan:1234"
+  assert_contains "synthesis pass gets MAX_THINKING_TOKENS" "$tl" "synth:1234"
+  assert_contains "challenge pass gets MAX_THINKING_TOKENS" "$tl" "challenge:1234"
+  # thinking_tokens: 0 is the documented "CLI default" -> MUST NOT export 0 (which would
+  # DISABLE thinking). With the ambient var cleared, an un-set leaves the stub at "unset".
+  local repo0="$TMP/rp-th0" home0="$TMP/rpth0home" tlog0="$TMP/rp_think0.log"
+  make_research_bootstrap_repo "$repo0" "$home0"
+  printf 'version: 1\nmodels:\n  bootstrap: opus\nbudgets:\n  thinking_tokens: 0\n' > "$repo0/monitor-config.yaml"
+  ( cd "$repo0" && env -u MAX_THINKING_TOKENS THINK_LOG="$tlog0" HOME="$home0" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  assert_contains "thinking_tokens: 0 does not export MAX_THINKING_TOKENS" "$(cat "$tlog0" 2>/dev/null)" "synth:unset"
+}
+test_bootstrap_thinking
 
 echo "== bootstrap.sh: refuses to run without its config/prompt =="
 test_bootstrap_gates() {

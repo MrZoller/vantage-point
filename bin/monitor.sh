@@ -377,9 +377,15 @@ CATCHUP_MAX="$(cfg_get monitoring catchup_max_hours)"
 case "$CATCHUP_MAX" in ''|*[!0-9]*) CATCHUP_MAX=168 ;; esac
 CATCHUP_NOTE=""
 if [ "$CATCHUP_MAX" -gt 0 ] && [ -s state/runs.log ]; then
-  # runs.log rows are written by jq with a fixed key order; pull the newest row's
-  # timestamp without requiring jq here (a hand-edited log just skips the check).
-  last_ts="$(tail -n 1 state/runs.log | sed -n 's/.*"timestamp":[[:space:]]*"\([^"]*\)".*/\1/p')"
+  # The catch-up baseline is the newest SWEEP. EXCLUDE bootstrap-family rows (all carry
+  # "mode":"bootstrap" -- plan/facet/synthesis/challenge) so a re-bootstrap's rows, now
+  # also in runs.log, can't masquerade as a sweep and make this run skip widening (losing
+  # the gap between the last real sweep and the bootstrap). Excluding (rather than positive-
+  # matching "pass":"triage") keeps LEGACY rows that predate per-pass logging and have no
+  # `pass` field -- they're still real sweeps and must seed the baseline. runs.log rows are
+  # jq-written with a fixed key order; no jq needed here. `|| true` so an all-bootstrap log
+  # doesn't trip pipefail.
+  last_ts="$(grep -v '"mode":"bootstrap"' state/runs.log 2>/dev/null | tail -n 1 | sed -n 's/.*"timestamp":[[:space:]]*"\([^"]*\)".*/\1/p' || true)"
   last_epoch=""
   if [ -n "$last_ts" ]; then
     # GNU `date -d` vs BSD `date -j -u -f`; give up quietly if neither parses.

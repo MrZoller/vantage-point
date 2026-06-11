@@ -47,6 +47,20 @@ models:
                       # it inherits models.bootstrap: init runs once per deployment and
                       # shapes everything downstream, so it rides the deep-research
                       # model, not the cheap daily one.
+  # researcher: sonnet  # OPTIONAL deep-research bootstrap, OFF by default. Set it and the
+                      # single research pass becomes Deep-Research-shaped: a plan pass
+                      # decomposes the work into facets, parallel researcher passes (on
+                      # THIS model, typically a fast one) write cited notes with fresh
+                      # contexts, then `bootstrap`/synthesis builds the draft from those
+                      # notes. Unset = today's single pass, byte-for-byte. 4-10x bootstrap
+                      # cost, spent at the profile gate where quality compounds (refresh-
+                      # cadence only). See "Deep-research bootstrap" in the README.
+  # challenge:  opus    # OPTIONAL adversarial pass over the draft, OFF by default. A
+                      # strong model attacks the draft's weakest claims with fresh web
+                      # evidence (missing player? defunct competitor? stale pricing?) and
+                      # writes a report folded into the review email. Works with or
+                      # without `researcher`. Non-destructive (restores the draft on
+                      # failure). Can equal models.bootstrap.
 
 # Run budgets — the cost levers. Runs authenticate against your subscription, not
 # API billing, so `--max-budget-usd` can't govern them; what actually bounds spend
@@ -63,6 +77,15 @@ budgets:
   init_max_turns: 15        # bin/init.sh's one-time draft review (only if you opt in)
   backtest_max_turns: 30    # the refresh-gate rubric backtest (only on a re-bootstrap
                             # with enough grades; runs on the monitor model)
+  # ---- deep-research bootstrap (only when models.researcher / models.challenge set) ----
+  plan_max_turns: 15        # the plan pass that decomposes the research into facets
+  facet_max_turns: 25       # each parallel facet researcher pass
+  research_max_facets: 6    # clamp on how many facets the plan may spawn
+  research_parallel: 3      # how many facet processes run at once (rate-limit friendly)
+  facet_timeout_seconds: 1200  # per-facet wall-clock bound (0 = off; needs timeout/gtimeout)
+  challenge_max_turns: 30   # the adversarial challenge pass (when models.challenge is set)
+  # thinking_tokens: 0      # MAX_THINKING_TOKENS for the judgment-heavy passes (plan,
+                            # synthesis, challenge); 0/absent = the CLI default
   monthly_cost_usd: 0       # warn when 30-day estimated spend crosses this (0 = off)
 
 subject:

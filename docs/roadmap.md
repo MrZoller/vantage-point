@@ -296,21 +296,45 @@ agreement report into the review email and the portal draft view:
 - The portal's `/profile?draft=1` view gains a backtest card beside the diff card
   (point-in-time, stamped with the scoring-pass date so staleness is visible).
 
+## Phase 20 — deep-research-grade bootstrap ✅ (shipped)
+
+Profile quality is the system's ceiling — every future run scores against what
+bootstrap produced — yet bootstrap was **one linear agent in one context window**: by
+mid-run the window is mostly fetched page text and the final synthesis works from a
+half-saturated context, a quality ceiling no turn-cap fixes. Deep Research's power is
+architectural, and we replicate its shape with **script-orchestrated `claude -p`
+passes** (deterministic orchestration in shell, judgment in prompts — the monitor's
+triage→deep-dive→editor pattern applied to bootstrap):
+- a **plan** pass (`research-plan-prompt.md`) decomposes the work into facets and writes
+  `state/.research/plan.json`; `bin/research.py validate-plan` clamps the count, slugifies
+  + de-dups the ids, and emits one facet per line for the shell (a bad plan → single-pass
+  fallback);
+- **parallel facet** passes (`research-facet-prompt.md`, `models.researcher`, batched
+  `budgets.research_parallel` at a time on bash 3.2) each research one facet in a fresh
+  context and write a cited notes file to `state/.research/notes/<id>.md` — the
+  compression step the synthesizer reads instead of raw pages;
+- the **synthesis** pass is today's `bootstrap-prompt.md`, now fed the notes manifest and
+  asked for a *How this draft was researched* provenance block;
+- then deterministic **feed verification** (`fetch.py --verify`: every draft feed must
+  actually serve a parseable feed) and an optional adversarial **challenge** pass
+  (`research-challenge-prompt.md`, `models.challenge`) attack the draft before the human
+  gate, both folded into the review email and the portal draft view.
+
+**Opt-in** via `models.researcher` (unset = today's single pass, byte-for-byte — the
+same guarantee `models.deepdive` gives the monitor); `models.challenge` and feed
+verification work in single-pass mode too. The draft is sacred: a failed plan/facet/
+challenge degrades to a stub note or single-pass, never a lost draft, and an interrupted
+run resumes with `--resume`. Every pass logs to `runs.log` (`pass`: `research-plan`,
+`research-facet:<id>`, `bootstrap`, `challenge`) so the soft monthly budget + `usage.sh`
+see it; extended thinking via `budgets.thinking_tokens`. ~4–10× bootstrap cost, spent at
+the refresh gate where quality compounds hardest; the daily monitor's economics are
+untouched. (Design:
+[`design-deep-research-bootstrap.md`](design-deep-research-bootstrap.md).)
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost:
 
-- **Deep-research-grade bootstrap** *(designed — see
-  [`design-deep-research-bootstrap.md`](design-deep-research-bootstrap.md))*.
-  Bootstrap is one linear agent in one context window; Deep Research's power is
-  architectural — plan, parallel researchers with fresh contexts, synthesis over
-  compressed notes, verification. Replicate that shape with script-orchestrated
-  passes: a plan pass writes a facet list, batched parallel `claude -p` facet
-  passes write cited notes files, today's bootstrap prompt synthesizes from the
-  notes, then deterministic feed verification (`fetch.py --verify`) and an
-  optional adversarial challenge pass attack the draft before the human gate.
-  Opt-in via `models.researcher` (unset = today's single pass, byte-identical);
-  4–10× bootstrap cost, spent where quality compounds hardest.
 - **Dog-that-didn't-bark detection.** `observations.jsonl` encodes each entity's
   normal cadence; an entity gone quiet well past its baseline is itself a finding
   ("no release in 8 weeks vs a 3-week norm"). Deterministic from existing state.

@@ -11,6 +11,8 @@ profile.summary.md
 profile.draft.summary.md
 profile.draft.backtest.jsonl
 profile.draft.backtest.md
+profile.draft.challenge.md
+profile.draft.feedcheck.md
 .init.*
 state/
 kb/

@@ -1,9 +1,15 @@
 # Design: deep-research-grade bootstrap
 
-*Status: design sketch — not started. Companion to the backlog entry in
-[`roadmap.md`](roadmap.md). Same format as
+*Status: ✅ shipped (Phase 20 in [`roadmap.md`](roadmap.md)). This is the design of
+record; the implementation follows it. Same format as
 [`design-rubric-backtest.md`](design-rubric-backtest.md) and
 [`design-forward-radar.md`](design-forward-radar.md).*
+
+*Implementation notes (where the build refined the sketch): the per-facet wall-clock
+bound is the config knob `budgets.facet_timeout_seconds` (default 1200, `0` = off);
+`bin/research.py validate-plan` emits TAB-separated `id<TAB>goal<TAB>compact-json` per
+facet for the shell loop; and the challenge + feed-verification reports are surfaced on
+the portal's draft view as cards (beside the diff + backtest) as well as in the email.*
 
 ## Problem
 
