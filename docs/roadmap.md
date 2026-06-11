@@ -258,6 +258,59 @@ covers the email fan-out people actually asked for, without the multi-channel ma
 
 Ideas raised but not built — captured so they aren't lost:
 
+- **Rubric backtest at the refresh gate** *(designed — see
+  [`design-rubric-backtest.md`](design-rubric-backtest.md))*. The refresh review
+  sees what changed in the draft (Phase 15) but not what *effect* it has. Replay
+  the user's graded items (`state/feedback.jsonl`) against the draft rubric —
+  blind, on the monitor model, numbers computed deterministically — and fold an
+  agreement report ("87% vs your verdicts; would now drop these 2 thumbs-ups")
+  into the review email and the portal draft view. Turns the approval gate from
+  "does this YAML read right?" into "does this rubric demonstrably agree with my
+  judgment more than the approved one?"
+- **Deep-research-grade bootstrap** *(designed — see
+  [`design-deep-research-bootstrap.md`](design-deep-research-bootstrap.md))*.
+  Bootstrap is one linear agent in one context window; Deep Research's power is
+  architectural — plan, parallel researchers with fresh contexts, synthesis over
+  compressed notes, verification. Replicate that shape with script-orchestrated
+  passes: a plan pass writes a facet list, batched parallel `claude -p` facet
+  passes write cited notes files, today's bootstrap prompt synthesizes from the
+  notes, then deterministic feed verification (`fetch.py --verify`) and an
+  optional adversarial challenge pass attack the draft before the human gate.
+  Opt-in via `models.researcher` (unset = today's single pass, byte-identical);
+  4–10× bootstrap cost, spent where quality compounds hardest.
+- **Dog-that-didn't-bark detection.** `observations.jsonl` encodes each entity's
+  normal cadence; an entity gone quiet well past its baseline is itself a finding
+  ("no release in 8 weeks vs a 3-week norm"). Deterministic from existing state.
+- **Confidence-label resolution.** Items ship with high/medium/low confidence but
+  nothing checks whether high-confidence calls pan out more often than low ones;
+  even a crude sampled follow-up would tell us if the labels mean anything.
+- **Forward radar ("Coming up")** *(designed — see
+  [`design-forward-radar.md`](design-forward-radar.md))*. Reports look strictly
+  backward, but swept items are full of forward-dated facts — earnings dates,
+  conference keynotes, "GA in Q3", regulatory comment deadlines. Record them as
+  dated expectations (an observations-like `state/horizon.jsonl`), render a
+  **Coming up** section in the weekly digest plus a portal card, and have the
+  monitor re-check expectations as they come due — a slipped or silently-passed
+  date is itself a signal (pairs with dog-that-didn't-bark above). No new claude
+  pass: recording rides triage, checking and rendering are deterministic.
+- **Standing questions / tasking.** Between refreshes the anchor's priorities are
+  frozen; an analyst can be re-briefed on Monday, the monitor can't. A portal box
+  (or `state/focus.md`) records a time-boxed tasking — "weight pricing news higher
+  this month", "watching for anyone shipping X" — injected into triage alongside
+  live calibration and expiring after N days so stale taskings can't skew scoring
+  indefinitely. Ephemeral priority shifts without a re-bootstrap.
+- **Source promotion ("source nursery").** Feed health (Phase 16) catches dying
+  sources; nothing catches *missing* ones short of a full re-bootstrap. Track the
+  origin domain of every surfaced item; when a domain outside the ranked
+  `news_sources` earns repeated surfaced (or thumbed-up) items via the agentic
+  backstop, flag it as a promotion candidate — with feed discovery — in the weekly
+  digest and at the next refresh. The recall-side complement to Phase 8's
+  per-source hit rates.
+- **Evidence preservation.** Dossiers (Phase 10) compound for months but their
+  citations rot — pricing pages change, posts get deleted. At surfacing time,
+  store a bounded extracted-text snippet + content hash per cited URL (stdlib
+  fetch, pruned like `seen.jsonl`), so a dossier's claims stay verifiable after
+  the link dies; optionally also submit the URL to the Internet Archive.
 - **Thread-friendly email subject.** Gmail collapses daily reports into one
   conversation because the subject prefix is stable. Option to lead the subject with
   the date or market (e.g. `<market> — daily <date>`) or add a per-run token so each
