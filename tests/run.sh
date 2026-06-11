@@ -2411,6 +2411,19 @@ SH
     *"CATCH-UP WINDOW"*) fail "catchup_max_hours: 0 disables catch-up" ;;
     *) pass "catchup_max_hours: 0 disables catch-up" ;;
   esac
+
+  # A LEGACY runs.log row (predates per-pass logging -> no `pass` field) must still seed
+  # the catch-up baseline: the bootstrap-exclusion filter keeps it.
+  local repo4="$TMP/catchuprepo4" args4="$TMP/catchup_args4"
+  make_fake_repo "$repo4"
+  cp "$repo/stub/claude" "$repo4/stub/claude"
+  printf '{"timestamp":"%s","mode":"daily","cost_usd":0.01}\n' \
+    "$(python3 -c 'from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)-timedelta(hours=99,minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))')" \
+    > "$repo4/state/runs.log"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args4" HOME="$TMP/fakehome" PATH="$repo4/stub:$PATH" \
+          bash "$repo4/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "a legacy (no-pass) row still seeds the catch-up baseline" "$(cat "$args4" 2>/dev/null)" "widened to the last 100 hours"
 }
 test_monitor_catchup
 
@@ -2972,10 +2985,15 @@ test_bootstrap_resume() {
   sleep 1
   printf '# Facet: facet-1\n\n## Findings\n- prior [x](https://e/1)\n' > "$repo/state/.research/notes/facet-1.md"
   printf '# Facet: facet-2\n\nFACET FAILED - prior transient failure\n' > "$repo/state/.research/notes/facet-2.md"
+  # A stale run-JSON from facet-1's prior (completed) attempt: resume must NOT re-log it.
+  printf '{"num_turns":1,"total_cost_usd":0.99}\n' > "$repo/state/.research/facet-1.json"
   out="$( cd "$repo" && FACET_CALLS="$calls" HOME="$home" bash bin/bootstrap.sh --resume 2>&1 )"
   assert_contains "reuses the existing plan on --resume" "$out" "reusing existing plan"
   assert_contains "keeps the finished facet's notes" "$out" "facet facet-1: resume - keeping existing notes"
   assert_eq "the failed stub is re-run, the good one skipped" "facet-2" "$(cat "$calls" 2>/dev/null)"
+  local rlog; rlog="$(cat "$repo/state/runs.log" 2>/dev/null)"
+  assert_not_contains "a skipped facet's prior spend is NOT re-logged" "$rlog" "research-facet:facet-1"
+  assert_contains "the re-run facet IS logged" "$rlog" "research-facet:facet-2"
   # A fresh (non-resume) run wipes the scratch and re-runs both.
   local calls2="$TMP/rp_rs_calls2"
   out="$( cd "$repo" && FACET_CALLS="$calls2" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
@@ -3046,11 +3064,19 @@ models:
 budgets:
   thinking_tokens: 1234
 YAML
-  ( cd "$repo" && THINK_LOG="$tlog" HOME="$home" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  # env -u clears any ambient MAX_THINKING_TOKENS so the stub only sees what bootstrap sets.
+  ( cd "$repo" && env -u MAX_THINKING_TOKENS THINK_LOG="$tlog" HOME="$home" bash bin/bootstrap.sh >/dev/null 2>&1 )
   local tl; tl="$(cat "$tlog" 2>/dev/null)"
   assert_contains "plan pass gets MAX_THINKING_TOKENS" "$tl" "plan:1234"
   assert_contains "synthesis pass gets MAX_THINKING_TOKENS" "$tl" "synth:1234"
   assert_contains "challenge pass gets MAX_THINKING_TOKENS" "$tl" "challenge:1234"
+  # thinking_tokens: 0 is the documented "CLI default" -> MUST NOT export 0 (which would
+  # DISABLE thinking). With the ambient var cleared, an un-set leaves the stub at "unset".
+  local repo0="$TMP/rp-th0" home0="$TMP/rpth0home" tlog0="$TMP/rp_think0.log"
+  make_research_bootstrap_repo "$repo0" "$home0"
+  printf 'version: 1\nmodels:\n  bootstrap: opus\nbudgets:\n  thinking_tokens: 0\n' > "$repo0/monitor-config.yaml"
+  ( cd "$repo0" && env -u MAX_THINKING_TOKENS THINK_LOG="$tlog0" HOME="$home0" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  assert_contains "thinking_tokens: 0 does not export MAX_THINKING_TOKENS" "$(cat "$tlog0" 2>/dev/null)" "synth:unset"
 }
 test_bootstrap_thinking
 

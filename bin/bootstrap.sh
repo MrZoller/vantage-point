@@ -109,9 +109,11 @@ case "$FACET_TIMEOUT"       in ''|*[!0-9]*)   FACET_TIMEOUT=1200 ;; esac   # 0 =
 
 # Extended thinking for the judgment-heavy passes (plan/synthesis/challenge). Exported
 # per-call as MAX_THINKING_TOKENS so it never leaks onto the facet/editor/backtest
-# passes. Absent/non-numeric -> the CLI default (no override).
+# passes. Absent/0/non-numeric -> the CLI default (no override): 0 is the documented
+# "CLI default" value, and exporting MAX_THINKING_TOKENS=0 would DISABLE thinking rather
+# than leave the default, so it must fall through to unset here too.
 THINKING_TOKENS="$(cfg_get budgets thinking_tokens)"
-case "$THINKING_TOKENS" in *[!0-9]*) THINKING_TOKENS="" ;; esac
+case "$THINKING_TOKENS" in ''|0|*[!0-9]*) THINKING_TOKENS="" ;; esac
 THINK_ENV=()
 [ -n "$THINKING_TOKENS" ] && THINK_ENV=(env "MAX_THINKING_TOKENS=$THINKING_TOKENS")
 
@@ -289,6 +291,9 @@ EOF
         if [ -n "$RESUME" ] && [ -s "$NOTES_DIR/$fid.md" ] && [ "$NOTES_DIR/$fid.md" -nt "$PLAN_JSON" ] \
            && ! grep -q '^FACET FAILED' "$NOTES_DIR/$fid.md"; then
           echo "[bootstrap]   facet $fid: resume - keeping existing notes" >&2
+          # Drop any stale run-JSON from the prior attempt so the logging loop below
+          # doesn't re-log this skipped facet's spend (it didn't run this invocation).
+          rm -f "$RESEARCH_DIR/$fid.json"
           continue
         fi
         run_facet "$fid" "$fjson" &
