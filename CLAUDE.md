@@ -21,9 +21,11 @@ stays consistent instead of re-deriving them.
   per-feed health to `state/feedhealth.json` via `--health`) + catch-up lookback (gap
   since the last logged run widens the window, capped by
   `monitoring.catchup_max_hours`) + live calibration injection (recent post-bootstrap
-  grades, `relevance.recent_grades`) → sweep → dedup → score → trends → optional
-  deep-dive → optional edit → report → deliver (email and/or `output.webhook_url`
-  via `bin/webhook.py`).
+  grades, `relevance.recent_grades`) + forward-radar due-expectation injection
+  (`bin/horizon.py due`, `tracking.horizon`) → sweep → dedup → score → trends →
+  optional deep-dive → optional edit → report → (weekly) append a deterministic
+  **Coming up** section (`bin/horizon.py upcoming`, post-editor so kb/email/webhook/portal
+  all carry it) → deliver (email and/or `output.webhook_url` via `bin/webhook.py`).
 - **deep-dive** (`deepdive-prompt.md`): optional 2nd pass (`models.deepdive`) that
   corroborates the top items on a stronger model.
 - **editor** (`editor-prompt.md`): optional final pass (`models.editor`) that curates +
@@ -43,13 +45,17 @@ stays consistent instead of re-deriving them.
   web portal — overview (incl. the Calibration precision card)/reports/entities
   (per-entity dossiers)/review/profile/config; grading + missed-signal reports →
   `state/feedback.jsonl` (verdicts up/down/missed);
-  `--export` → static `kb/index.html`), `fetch.py` (deterministic feed sweep →
-  candidates JSONL), `webhook.py` (JSON report delivery), `usage.sh`,
-  `install-launchd.sh`, `dedupe-feedback.py` (latest-per-id grades; `--since/--max`
-  scope the monitor's live-calibration window).
+  `--export` → static `kb/index.html`; Overview also has the forward-radar **Coming up**
+  card + per-dossier **Expected** list), `fetch.py` (deterministic feed sweep →
+  candidates JSONL), `horizon.py` (forward radar: `due`/`upcoming` over
+  `state/horizon.jsonl`, latest-per-id, precision-scaled grace; stdlib), `webhook.py`
+  (JSON report delivery), `usage.sh`, `install-launchd.sh`, `dedupe-feedback.py`
+  (latest-per-id grades; `--since/--max` scope the monitor's live-calibration window).
 - **State** (gitignored): `state/seen.jsonl` (dedup), `state/observations.jsonl`
-  (trends), `state/feedback.jsonl` (grades), `state/runs.log` (per-run usage),
-  `state/feedhealth.json` (per-feed sweep health); `kb/` (reports + dashboard).
+  (trends), `state/feedback.jsonl` (grades), `state/horizon.jsonl` (forward-radar
+  expectations; append-only, latest-per-id, `tracking.horizon_max_lines`),
+  `state/runs.log` (per-run usage), `state/feedhealth.json` (per-feed sweep health);
+  `kb/` (reports + dashboard).
 - Deployed on a macOS mini via **launchd**, running from a local checkout — changes
   reach it by `git pull`, not by merging to GitHub. `install-launchd.sh` regenerates the
   plists (substituting `__VP_ROOT__` + `__VP_LABEL__`) and retires old agents. Multiple

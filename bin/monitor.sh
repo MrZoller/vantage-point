@@ -84,6 +84,20 @@ case "$DEEPDIVE_MAX"    in ''|*[!0-9]*) DEEPDIVE_MAX=5 ;; esac
 case "$REFRESH_DAYS"    in *[!0-9]*)    REFRESH_DAYS="" ;; esac   # blank/non-numeric -> skip check
 case "$RECENT_GRADES"   in ''|*[!0-9]*) RECENT_GRADES=20 ;; esac
 
+# ---- forward radar (tracking.horizon; recording + checking ride the triage run) ----
+# Record time-bounded expectations the sweep mentions (earnings dates, "GA in Q3",
+# launch windows) to state/horizon.jsonl, re-check them as they come due, and render a
+# weekly "Coming up" section. On by default when tracking is on; tracking.horizon: false
+# (or tracking.enabled: false) turns the whole feature off. Knobs optional with defaults.
+TRACKING_ENABLED="$(cfg_get_bool tracking enabled 1)"   # the trend layer; default on, like the example
+HORIZON_ENABLED=""
+[ -n "$TRACKING_ENABLED" ] && HORIZON_ENABLED="$(cfg_get_bool tracking horizon 1)"
+HORIZON="state/horizon.jsonl"
+HORIZON_MAX_LINES="$(cfg_get tracking horizon_max_lines)"
+HORIZON_DAYS="$(cfg_get tracking horizon_upcoming_days)"
+case "$HORIZON_MAX_LINES" in ''|*[!0-9]*) HORIZON_MAX_LINES=2000 ;; esac
+case "$HORIZON_DAYS"       in ''|*[!0-9]*) HORIZON_DAYS=14 ;; esac
+
 # ---- run budgets (budgets: block; all optional with the long-standing defaults) ----
 # On a Max subscription the spend is subscription headroom, not API billing, so the
 # real cost levers are run frequency and these per-pass turn caps (each is passed to
@@ -209,6 +223,8 @@ prune_state() {  # <file> <max_lines>
 }
 prune_state "$STATE_FILE" "$STATE_MAX_LINES"
 prune_state state/observations.jsonl "$OBS_MAX_LINES"
+# The expectation log is created by the agent on first record; prune only if it exists.
+[ -n "$HORIZON_ENABLED" ] && [ -f "$HORIZON" ] && prune_state "$HORIZON" "$HORIZON_MAX_LINES"
 
 # ---- profile staleness (governance.profile_refresh_days) ----
 # Anchors drift; a stale profile silently mis-scores. Warn (don't refuse) when the
@@ -287,6 +303,41 @@ example as in-scope and material - and give its source sweep attention this run.
 For anything they don't cover, the approved rubric governs unchanged.
 \`\`\`jsonl
 $FEEDBACK_DATA
+\`\`\`"
+  fi
+fi
+
+# ---- forward radar: due expectations (tracking.horizon) ----
+# Inject the pending expectations whose stated date has arrived so the agent checks
+# each against this run's sweep. The "what is due" arithmetic is deterministic (Python);
+# the "did it actually happen" judgment is the agent's - the same division as trend
+# detection. Fail-safe: any problem here skips the injection, never the run.
+HORIZON_NOTE=""
+if [ -n "$HORIZON_ENABLED" ] && [ -s "$HORIZON" ] \
+   && command -v python3 >/dev/null 2>&1 && [ -f bin/horizon.py ]; then
+  DUE="$(python3 bin/horizon.py due --as-of "$TODAY" "$HORIZON" 2>/dev/null || true)"
+  if [ -n "$DUE" ]; then
+    n_due="$(printf '%s\n' "$DUE" | grep -c . || true)"
+    echo "[monitor:$MODE] forward radar: $n_due expectation(s) due as of $TODAY" >&2
+    HORIZON_NOTE="
+
+DUE EXPECTATIONS - forward radar. Each row is a previously-recorded expectation from
+./state/horizon.jsonl whose stated date has arrived (\`overdue_days\` days past it;
+\`past_grace\` true once it is overdue beyond its precision's grace). For EACH row,
+judge it against THIS run's sweep and APPEND exactly one row to ./state/horizon.jsonl
+under the SAME \`id\` (latest row per id wins):
+- MET - it happened (often it is in this very sweep): append a row with
+  \`status\`:\"met\" and \`source\` set to the evidence URL; let the triggering item
+  flow through scoring as usual.
+- MOVED - a new date was announced: append a \`status\`:\"pending\" row with the new
+  \`due\`/\`due_precision\`/\`due_text\` and a note; the prior date stays in history.
+- DUE but inside grace, no evidence yet (\`past_grace\` false): leave it - the weekly
+  Coming up table shows it as due. Do NOT append a row.
+- PAST GRACE, no evidence (\`past_grace\` true): the silent slip IS the signal - surface
+  a finding (why -> what it suggests -> confidence, citing the original \`source\`) and
+  append a \`status\`:\"lapsed\" row so it never re-alarms on later runs.
+\`\`\`jsonl
+$DUE
 \`\`\`"
   fi
 fi
@@ -403,6 +454,9 @@ Your observations file is ./state/observations.jsonl - your longitudinal metric/
 memory for trend detection. When tracking.enabled, read the recent observations for
 the tracked entities, append this run's observations, and follow the 'Trend detection'
 + 'What changed' rules in the prompt above (driven by the tracking.* thresholds).
+When the forward radar is on, ALSO record forward-dated, time-bounded expectations you
+read in the sweep to ./state/horizon.jsonl per the 'Forward radar' rules in the prompt
+above, and act on any DUE EXPECTATIONS block below.
 Write the $MODE report to ./$RUN_REPORT, following the report rules in the prompt
 above - including the show_borderline / 'Considered (below threshold)' handling.
 For a daily run, if those rules produce no report at all (no items AND no changes),
@@ -413,7 +467,7 @@ also append your highest-scoring surfaced items - those with score >= $DEEPDIVE_
 at most $DEEPDIVE_MAX of them, highest first - to ./$QUEUE, one JSON object per line:
 {\"url\":...,\"title\":...,\"signal\":...,\"score\":...,\"so_what\":...}. A separate
 stronger agent will investigate these and enrich them in the report; you just queue
-them. Do not write the queue when it's disabled.$CATCHUP_NOTE$CANDIDATES_NOTE$FEEDBACK_NOTE" \
+them. Do not write the queue when it's disabled.$CATCHUP_NOTE$CANDIDATES_NOTE$FEEDBACK_NOTE$HORIZON_NOTE" \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
@@ -568,6 +622,22 @@ item's source link or confidence." \
     fi
   else
     echo "[monitor:$MODE] WARNING: $EDITOR_PROMPT missing - skipping editorial pass (report stands)" >&2
+  fi
+fi
+
+# ---- forward radar: append the weekly "Coming up" section (tracking.horizon) ----
+# After the editor pass (so it can't be paraphrased away) and before the report is
+# promoted/delivered: on a WEEKLY run, append a deterministic Coming up table when any
+# pending expectation is due inside the horizon window. Appending to the report FILE
+# means kb/, email, webhook, and the portal all carry it (unlike bootstrap's email-only
+# diff fold). A silent weekly stays silent - the radar adds to a report, it never causes
+# one. Fail-safe: any problem ships the report without the section.
+if [ "$MODE" = weekly ] && [ -n "$HORIZON_ENABLED" ] && [ -s "$RUN_REPORT" ] \
+   && [ -s "$HORIZON" ] && command -v python3 >/dev/null 2>&1 && [ -f bin/horizon.py ]; then
+  UPCOMING="$(python3 bin/horizon.py upcoming --as-of "$TODAY" --days "$HORIZON_DAYS" "$HORIZON" 2>/dev/null || true)"
+  if [ -n "$UPCOMING" ]; then
+    printf '\n\n## Coming up\n\n%s\n' "$UPCOMING" >> "$RUN_REPORT" \
+      && echo "[monitor:$MODE] forward radar: appended the Coming up section" >&2
   fi
 fi
 

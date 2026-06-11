@@ -38,6 +38,7 @@ CONFIG = os.path.join(ROOT, "monitor-config.yaml")
 FEEDBACK = os.path.join(ROOT, "state", "feedback.jsonl")
 FEEDHEALTH = os.path.join(ROOT, "state", "feedhealth.json")
 OBS = os.path.join(ROOT, "state", "observations.jsonl")
+HORIZON = os.path.join(ROOT, "state", "horizon.jsonl")
 RUNS = os.path.join(ROOT, "state", "runs.log")
 KB = os.path.join(ROOT, "kb")
 PROFILE = os.path.join(ROOT, "profile.yaml")
@@ -391,6 +392,14 @@ def all_entities():
     for rec in items:                            # tags can introduce new entities
         for ent in _item_entities(rec):
             row(ent)
+    # Forward-radar expectations can name an entity not otherwise on file; register it
+    # (and bump its last-activity) so its dossier -- which lists its expectations -- is
+    # reachable from the index.
+    for rec in _latest_horizon().values():
+        ent = rec.get("entity")
+        if isinstance(ent, str) and ent:
+            r = row(ent)
+            r["last"] = max(r["last"], _ts(rec)[:10])
     matchers = {name: _entity_word_re(name) for name in agg}
     for rec in items:
         d = rec.get("date")
@@ -838,6 +847,130 @@ def feed_health_card():
     return "".join(parts)
 
 
+# ------------------------------------------------------------------ forward radar
+# The "Coming up" surface (Phase 18): the monitor records dated, time-bounded
+# expectations to state/horizon.jsonl as it sweeps, and re-checks them as they come
+# due. The Overview card and each dossier's "Expected" list render that log, collapsed
+# latest-row-per-id exactly like bin/horizon.py. Grace by precision mirrors horizon.py.
+
+HORIZON_GRACE = {"day": 3, "month": 7, "quarter": 21, "half": 30, "year": 30}
+
+
+def _latest_horizon():
+    """id -> newest expectation record (by timestamp); the append-only log's latest row
+    per id wins, mirroring bin/horizon.py. Non-string ids are skipped (unhashable/edited)."""
+    latest = {}
+    for rec in read_jsonl(HORIZON):
+        rid = rec.get("id")
+        if not isinstance(rid, str) or not rid:
+            continue
+        prev = latest.get(rid)
+        if prev is None or _ts(rec) >= _ts(prev):
+            latest[rid] = rec
+    return latest
+
+
+def _horizon_timing(rec):
+    """(due date, days overdue as of today, past_grace) for a record, or None when the
+    due date is missing/unparseable (treated as unplottable rather than crashing)."""
+    due = rec.get("due")
+    if not isinstance(due, str):
+        return None
+    try:
+        d = date.fromisoformat(due[:10])
+    except ValueError:
+        return None
+    overdue = (date.today() - d).days
+    precision = rec.get("due_precision")
+    grace = HORIZON_GRACE.get(precision, 30) if isinstance(precision, str) else 30
+    return d, overdue, overdue > grace
+
+
+def coming_up_rows():
+    """Pending expectations (latest per id) for the Overview card: overdue first, then
+    due, then upcoming, each sorted by due date."""
+    rows = []
+    for rec in _latest_horizon().values():
+        if rec.get("status", "pending") != "pending":
+            continue
+        timing = _horizon_timing(rec)
+        if timing is None:
+            continue
+        d, overdue, past_grace = timing
+        if past_grace:
+            status, cls, order = "overdue %dd" % overdue, "st-bad", 0
+        elif overdue >= 0:
+            status, cls, order = "due", "st-warn", 1
+        else:
+            status, cls, order = "upcoming", "muted", 2
+        rows.append({"entity": rec.get("entity", ""), "event": rec.get("event", ""),
+                     "due": d.isoformat(), "due_text": rec.get("due_text", ""),
+                     "status": status, "cls": cls, "order": order, "when": d})
+    rows.sort(key=lambda r: (r["order"], r["when"]))
+    return rows
+
+
+def coming_up_card(static=False):
+    """The Overview's Coming up card (the forward radar). Omitted until an expectation
+    has been recorded."""
+    rows = coming_up_rows()
+    if not rows:
+        return ""
+    overdue = sum(1 for r in rows if r["order"] == 0)
+    summary = ("%d pending; %d overdue (a silent slip is itself a signal)" % (len(rows), overdue)
+               if overdue else "%d pending, none overdue" % len(rows))
+    parts = ['<div class="card"><h2>Coming up</h2>',
+             '<p class="sublabel">Forward-dated expectations the monitor recorded from '
+             'the sweep &mdash; earnings dates, announced launches, "GA in Q3" &mdash; '
+             '%s.</p>' % esc(summary),
+             '<table><tr><th>Due</th><th>Entity</th><th>Expected</th>'
+             '<th>Status</th></tr>']
+    for r in rows:
+        # In the live portal the entity opens its dossier; the static export has no
+        # /entity route, so it keeps plain text (like the other Overview tables).
+        ent = esc(r["entity"])
+        if r["entity"] and not static:
+            ent = '<a href="%s">%s</a>' % (esc(entity_href(r["entity"])), ent)
+        expected = esc(r["event"])
+        if r["due_text"]:
+            expected += ' <span class="muted">(&ldquo;%s&rdquo;)</span>' % esc(r["due_text"])
+        parts.append('<tr><td class="num">%s</td><td>%s</td><td>%s</td>'
+                     '<td class="%s">%s</td></tr>'
+                     % (esc(r["due"]), ent, expected, r["cls"], esc(r["status"])))
+    parts.append('</table></div>')
+    return "".join(parts)
+
+
+def entity_expectations(name):
+    """This entity's expectation chain (latest row per id): pending first (overdue, then
+    due, then upcoming), then the met/lapsed/withdrawn history -- so a dossier shows the
+    announced -> slipped -> met arc."""
+    pend, history = [], []
+    for rec in _latest_horizon().values():
+        if rec.get("entity") != name:
+            continue
+        timing = _horizon_timing(rec)
+        status = rec.get("status", "pending")
+        when = timing[0].isoformat() if timing else (
+            rec.get("due") if isinstance(rec.get("due"), str) else "")
+        out = {"event": rec.get("event", ""), "due": when,
+               "due_text": rec.get("due_text", ""), "status": status,
+               "source": safe_url(rec.get("source")), "note": rec.get("note", "")}
+        if status == "pending" and timing is not None:
+            _, overdue, past_grace = timing
+            out["badge"] = ("overdue %dd" % overdue if past_grace
+                            else "due" if overdue >= 0 else "upcoming")
+            out["cls"] = ("st-bad" if past_grace else "st-warn" if overdue >= 0 else "muted")
+            out["sort"] = (0 if past_grace else 1 if overdue >= 0 else 2, when)
+            pend.append(out)
+        else:
+            out["badge"], out["cls"], out["sort"] = status, "muted", when
+            history.append(out)
+    pend.sort(key=lambda r: r["sort"])
+    history.sort(key=lambda r: r["sort"], reverse=True)
+    return pend + history
+
+
 def list_reports():
     """Daily/weekly report basenames, newest first (names are date-prefixed)."""
     try:
@@ -1122,6 +1255,7 @@ def overview_inner(static=False):
         parts.append('</div>')
 
     parts.append(calibration_card(static=static))
+    parts.append(coming_up_card(static=static))
     parts.append(feed_health_card())
 
     parts.append('<div class="card"><h2>Tracked entities</h2>')
@@ -1353,6 +1487,26 @@ def entity_inner(query):
                          '<td class="spark">%s</td><td class="muted">%s</td></tr>'
                          % (esc(r["metric"]), esc(r["latest"]), esc(r["unit"]),
                             spark(r["series"]), esc(r["as_of"])))
+        parts.append('</table></div>')
+
+    expectations = entity_expectations(name)
+    if expectations:
+        parts.append('<div class="card"><h2>Expected</h2>'
+                     '<p class="sublabel">Forward-dated expectations on file for this '
+                     'entity &mdash; pending first, then the met/lapsed history.</p>'
+                     '<table><tr><th>Due</th><th>Event</th><th>Status</th></tr>')
+        for e in expectations:
+            event = esc(e["event"])
+            if e["due_text"]:
+                event += ' <span class="muted">(&ldquo;%s&rdquo;)</span>' % esc(e["due_text"])
+            if e["source"]:
+                event += (' &middot; <a href="%s" target="_blank" '
+                          'rel="noopener noreferrer">source</a>' % esc(e["source"]))
+            if e["note"]:
+                event += '<div class="muted">%s</div>' % esc(e["note"])
+            parts.append('<tr><td class="num">%s</td><td>%s</td>'
+                         '<td class="%s">%s</td></tr>'
+                         % (esc(e["due"]) or "&mdash;", event, e["cls"], esc(e["badge"])))
         parts.append('</table></div>')
 
     events = entity_events(name)

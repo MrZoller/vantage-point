@@ -13,6 +13,9 @@ re-derive the market or the anchor. The approved profile is your ground truth.
 - `./state/observations.jsonl` — your longitudinal metric/event memory per entity.
   This is what makes "is this CHANGING?" answerable (see Trend detection).
 - The `tracking` config block — what to track over time and how sensitively.
+- `./state/horizon.jsonl` — your forward calendar of recorded expectations (dated,
+  time-bounded facts the sweep mentioned). This is what makes "what's COMING, and did
+  an announced date silently slip?" answerable (see Forward radar).
 - The run mode for this cycle: `daily` or `weekly`.
 - Sometimes a **RECENT OPERATOR GRADES** block appended below — the user's freshest
   thumbs up/down on past surfaced items, plus any **missed-signal reports** (relevant
@@ -61,6 +64,9 @@ humans at review time, not by you mid-run.
      — the pattern is the signal.
    - **Label.** When `tracking.label_confidence`, tag each change high/medium/low by
      how solid the data is (one source vs. triangulated).
+   - **Forward radar.** When the radar is on (default with `tracking.enabled`), record
+     the dated expectations the sweep mentions and act on any `DUE EXPECTATIONS` block
+     injected below — see 'Forward radar' and the expectation record.
 7. **Record.** Append every new item you evaluated to `state_file` (so it's
    never re-scored). Surfaced items get the full record below; dropped items get
    just the dedup keys + score. Write surfaced items into the knowledge base too.
@@ -124,6 +130,62 @@ data point is not a trend, so record it and wait rather than inferring a move.
   "event_type": null,                // when metric == "event": leak | hire | filing | reissue | ...
   "source": "https://...",           // no source, no observation
   "note": "median ask across 8 listings"
+}
+```
+
+## Forward radar (Coming up)
+Swept content is full of **forward-dated, time-bounded facts** — earnings dates,
+"GA in Q3", conference keynotes, regulatory comment deadlines, announced launch
+windows. Recording them as checkable expectations lets the monitor anticipate
+("Competitor B's earnings are Thursday") and — more valuable — catch an announced
+date that passes *silently* (a slipped roadmap, a quiet cancellation). On by default
+when `tracking.enabled` and `tracking.horizon` is not `false`; the deterministic
+arithmetic (what's due, the weekly table) is handled in code, so your job is only to
+**record** and to **judge** what is due.
+
+**Recording rules** (discipline is the whole game — the radar is not an excuse to
+surface marginal items):
+- Record an expectation only from an item that **cleared `relevance.threshold`** or
+  concerns a watchlist/profile entity (the observation rule). No source, no expectation.
+- Only **time-bounded** expectations: a stated day, month, quarter, half, or year.
+  Never "soon", "eventually", or "planned" with no window.
+- **One expectation per entity+event** — the stable `id` enforces it; a re-announced or
+  slipped date is an *update* (a new row, same `id`), not a second record.
+- Record and move on. Recording an expectation does **not** make the item itself more
+  surfaceable.
+
+**Acting on what's due.** Each run, a `DUE EXPECTATIONS` block (below) lists the pending
+expectations whose date has arrived, with `overdue_days` and a `past_grace` flag. For
+each, append exactly one row to `./state/horizon.jsonl` under the **same `id`**:
+- **met** — it happened (often it's in this very sweep): a `status: "met"` row, `source`
+  = the evidence URL; the triggering item scores as usual.
+- **moved** — a new date was announced: a `status: "pending"` row with the new
+  `due`/`due_precision`/`due_text` and a note (history is preserved).
+- **due, inside grace, no evidence** (`past_grace` false): leave it — the weekly table
+  shows it as due. Append nothing.
+- **past grace, no evidence** (`past_grace` true): the silent slip *is* the signal —
+  surface a **finding** (why → what it suggests → confidence, citing the original
+  `source`) and append a `status: "lapsed"` row so it never re-alarms.
+
+## Expectation record (appended to ./state/horizon.jsonl)
+One JSON object per line, append-only; the latest row per `id` wins (like
+`observations.jsonl`/`feedback.jsonl`). Normalize every stated window to the **end of
+its period** plus a precision tag: "Q3" → `2026-09-30`/`quarter`, "by May" →
+`2026-05-31`/`month`, "June 18" → `2026-06-18`/`day`.
+```json
+{
+  "timestamp": "2026-06-10T07:00:00Z",
+  "id": "h-9c2d1e0f",              // "h-" + 8 hex of lowercased "entity|event" — stable,
+                                   // so a re-announced date UPDATES instead of duplicating
+  "entity": "Competitor C",        // exact watchlist/profile name (joins its dossier)
+  "event": "EU launch",            // short, stable noun phrase
+  "due": "2026-05-31",             // normalized: the END of the stated period
+  "due_precision": "month",        // day | month | quarter | half | year
+  "due_text": "by May",            // what the source actually said
+  "status": "pending",             // pending | met | lapsed | withdrawn
+  "source": "https://...",         // where the date was announced (REQUIRED)
+  "item_id": "a1b2c3d4",           // the surfaced item that carried it, if any
+  "note": "announced at partner event"
 }
 ```
 
@@ -199,7 +261,9 @@ Borderline behavior (daily), explicitly:
 
 **Weekly (digest).** Bottom line → What changed → Watchlist status → grouped items
 (opportunity / threat / shift) → Watching → (Quiet on). Readable in under two minutes;
-someone should look forward to it, not mute it.
+someone should look forward to it, not mute it. A deterministic **Coming up** section
+(the forward radar's upcoming expectations) may be appended to the weekly report after
+your pass — don't write it yourself, and don't duplicate it.
 
 Include a **Watchlist status** table — a one-glance snapshot of each tracked entity
 (from `tracking.watch` + the profile). Render a unicode sparkline of recent values

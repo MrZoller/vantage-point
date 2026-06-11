@@ -737,7 +737,7 @@ make_fake_repo() {
   local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
   cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" \
-     "$ROOT/bin/webhook.py" "$ROOT/bin/fetch.py" "$repo/bin/"
+     "$ROOT/bin/webhook.py" "$ROOT/bin/fetch.py" "$ROOT/bin/horizon.py" "$repo/bin/"
   cp_libs "$repo/bin"
   cat > "$repo/monitor-config.yaml" <<YAML
 version: 1
@@ -2376,6 +2376,169 @@ SH
   esac
 }
 test_monitor_catchup
+
+echo "== horizon.py: latest-per-id collapse, grace by precision, due/upcoming math =="
+test_horizon_py() {
+  local repo="$TMP/horizonpy" h="$TMP/horizonpy/h.jsonl" due upcoming far rc
+  mkdir -p "$repo"; cp "$ROOT/bin/horizon.py" "$repo/"
+  # Fixed dates + a fixed --as-of so the math is deterministic regardless of the day
+  # the suite runs. as-of = 2026-06-07; month grace is 7 days, year grace 30.
+  printf '%s\n' \
+    '{"timestamp":"2026-01-01T00:00:00Z","id":"h-slip","entity":"A","event":"GA","due":"2026-03-31","due_precision":"quarter","due_text":"Q1","status":"pending","source":"u"}' \
+    '{"timestamp":"2026-02-01T00:00:00Z","id":"h-slip","entity":"A","event":"GA","due":"2026-09-30","due_precision":"quarter","due_text":"slipped to Q3","status":"pending","source":"u"}' \
+    '{"timestamp":"2026-01-01T00:00:00Z","id":"h-met","entity":"B","event":"earnings","due":"2026-05-01","due_precision":"day","status":"pending","source":"u"}' \
+    '{"timestamp":"2026-05-02T00:00:00Z","id":"h-met","entity":"B","event":"earnings","due":"2026-05-01","due_precision":"day","status":"met","source":"u"}' \
+    '{"timestamp":"2026-01-01T00:00:00Z","id":"h-monthok","entity":"C","event":"launch","due":"2026-06-01","due_precision":"month","status":"pending","source":"u"}' \
+    '{"timestamp":"2026-01-01T00:00:00Z","id":"h-monthlate","entity":"D","event":"launch","due":"2026-05-30","due_precision":"month","status":"pending","source":"u"}' \
+    '{"timestamp":"2026-01-01T00:00:00Z","id":"h-bad","entity":"E","event":"thing","due":"2026-05-01","due_precision":"fortnight","status":"pending","source":"u"}' \
+    'this is not json -- a corrupt hand-edited row' \
+    > "$h"
+  due="$( python3 "$repo/horizon.py" due --as-of 2026-06-07 "$h" )"; rc=$?
+  assert_eq "due exits 0 despite a corrupt row" "0" "$rc"
+  assert_contains "month-due +6d is due but NOT past grace" "$due" '"id": "h-monthok", '
+  case "$due" in *'"id": "h-monthok"'*'"past_grace": false'*) pass "h-monthok flagged inside grace" ;; *) fail "h-monthok flagged inside grace" ;; esac
+  case "$due" in *'"id": "h-monthlate"'*'"past_grace": true'*) pass "month-due +8d is past grace" ;; *) fail "month-due +8d is past grace" ;; esac
+  case "$due" in *'"id": "h-bad"'*'"past_grace": true'*) pass "an unknown precision degrades to year grace" ;; *) fail "an unknown precision degrades to year grace" ;; esac
+  assert_not_contains "a met expectation is suppressed (latest row wins)" "$due" "h-met"
+  assert_not_contains "a not-yet-due expectation is excluded" "$due" "h-slip"
+
+  upcoming="$( python3 "$repo/horizon.py" upcoming --as-of 2026-06-07 --days 14 "$h" )"
+  assert_contains "upcoming renders a Markdown table header" "$upcoming" "| When | Entity | Expected | Status |"
+  assert_contains "an in-grace due row lands in the table as 'due'" "$upcoming" "| by Jun 1 | C | launch | due |"
+  assert_contains "past-grace rows go to the overdue list" "$upcoming" "Overdue / unconfirmed:"
+  assert_contains "an overdue row names the entity + days past" "$upcoming" "D's launch was expected"
+  # A wide window surfaces the slipped (collapsed-to-Q3) expectation as a quarter label.
+  far="$( python3 "$repo/horizon.py" upcoming --as-of 2026-06-07 --days 200 "$h" )"
+  assert_contains "the collapsed slip shows its new (Q3) date" "$far" "~Sep (Q3)"
+  assert_not_contains "the slip's old Q1 date is gone (latest row wins)" "$far" "Q1"
+  # An empty / missing log emits nothing (the caller skips the section).
+  assert_eq "missing file emits nothing" "" "$( python3 "$repo/horizon.py" upcoming --as-of 2026-06-07 "$TMP/nope.jsonl" )"
+}
+test_horizon_py
+
+echo "== monitor.sh: forward radar injects DUE EXPECTATIONS; daily appends no section =="
+test_monitor_horizon() {
+  local repo="$TMP/horizonrepo" out args="$TMP/horizon_args" past future
+  make_fake_repo "$repo"
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  # A due-past-grace expectation (~40d overdue, month precision) and a future one.
+  past="$(python3 -c 'from datetime import date,timedelta; print((date.today()-timedelta(days=40)).isoformat())')"
+  future="$(python3 -c 'from datetime import date,timedelta; print((date.today()+timedelta(days=20)).isoformat())')"
+  printf '%s\n' \
+    "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"id\":\"h-past\",\"entity\":\"Competitor C\",\"event\":\"EU launch\",\"due\":\"$past\",\"due_precision\":\"month\",\"due_text\":\"by then\",\"status\":\"pending\",\"source\":\"https://z\"}" \
+    "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"id\":\"h-fut\",\"entity\":\"Competitor B\",\"event\":\"Q2 earnings\",\"due\":\"$future\",\"due_precision\":\"day\",\"due_text\":\"soon\",\"status\":\"pending\",\"source\":\"https://x\"}" \
+    > "$repo/state/horizon.jsonl"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "announces due expectations" "$out" "forward radar: 1 expectation(s) due"
+  assert_contains "prompt carries the injected DUE EXPECTATIONS block" "$(cat "$args" 2>/dev/null)" "DUE EXPECTATIONS - forward radar"
+  assert_contains "the past-grace row is injected" "$(cat "$args" 2>/dev/null)" "h-past"
+  assert_contains "the injected row is flagged past grace" "$(cat "$args" 2>/dev/null)" '"past_grace": true'
+  assert_not_contains "a not-yet-due expectation is NOT injected" "$(cat "$args" 2>/dev/null)" "h-fut"
+  assert_not_contains "a daily run never appends a Coming up section" "$out" "appended the Coming up section"
+
+  # tracking.horizon: false turns the whole feature off (no injection).
+  local args2="$TMP/horizon_args2"
+  printf 'tracking:\n  horizon: false\n' >> "$repo/monitor-config.yaml"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args2" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  assert_not_contains "tracking.horizon: false disables the injection" "$(cat "$args2" 2>/dev/null)" "DUE EXPECTATIONS - forward radar"
+}
+test_monitor_horizon
+
+echo "== monitor.sh: weekly appends the Coming up section; a silent weekly stays silent =="
+test_monitor_horizon_weekly() {
+  local repo="$TMP/horizonwk" out soon report
+  make_fake_repo "$repo"
+  # A stub that writes a weekly report so the post-editor append path is exercised.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '# weekly report\n* item\n' > "kb/.$(date +%F).weekly.partial.md"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  soon="$(python3 -c 'from datetime import date,timedelta; print((date.today()+timedelta(days=10)).isoformat())')"
+  printf '%s\n' \
+    "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"id\":\"h-soon\",\"entity\":\"Competitor B\",\"event\":\"Q2 earnings\",\"due\":\"$soon\",\"due_precision\":\"day\",\"due_text\":\"in 10 days\",\"status\":\"pending\",\"source\":\"https://x\"}" \
+    > "$repo/state/horizon.jsonl"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
+  report="$repo/kb/$(date +%F).weekly.md"
+  assert_contains "announces the appended section" "$out" "appended the Coming up section"
+  assert_contains "the weekly report carries a Coming up section" "$(cat "$report" 2>/dev/null)" "## Coming up"
+  assert_contains "the section lists the upcoming expectation" "$(cat "$report" 2>/dev/null)" "Q2 earnings"
+
+  # Silence preserved: pending expectations but an EMPTY report -> no report, no section.
+  local repo2="$TMP/horizonwk2"
+  make_fake_repo "$repo2"                       # default stub writes no report
+  cp "$repo/state/horizon.jsonl" "$repo2/state/horizon.jsonl"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" bash "$repo2/bin/monitor.sh" weekly 2>&1 )"
+  assert_contains "a silent weekly stays silent" "$out" "nothing material"
+  assert_not_contains "no section is appended without a report" "$out" "appended the Coming up section"
+  if [ -f "$repo2/kb/$(date +%F).weekly.md" ]; then fail "the radar never causes a report"; else pass "the radar never causes a report"; fi
+}
+test_monitor_horizon_weekly
+
+echo "== portal.py: forward-radar Coming up card + dossier Expected list + export =="
+test_portal_coming_up() {
+  local repo="$TMP/pcu" out py="$TMP/pcu.py" port=8794 page
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  cat > "$py" <<'PY'
+import importlib.util, json, sys
+from datetime import date, timedelta
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("NO_FILE", repr(m.coming_up_card()))
+today = date.today()
+rows = [
+  {"timestamp":"2026-01-01T00:00:00Z","id":"h-late","entity":"Competitor C","event":"EU launch","due":(today-timedelta(days=60)).isoformat(),"due_precision":"month","due_text":"by then","status":"pending","source":"https://z"},
+  {"timestamp":"2026-01-01T00:00:00Z","id":"h-due","entity":"Competitor B","event":"earnings","due":(today-timedelta(days=2)).isoformat(),"due_precision":"day","status":"pending","source":"https://x"},
+  {"timestamp":"2026-01-01T00:00:00Z","id":"h-soon","entity":"Vendor X","event":"GA","due":(today+timedelta(days=10)).isoformat(),"due_precision":"quarter","due_text":"Q3","status":"pending","source":"https://q"},
+  {"timestamp":"2026-01-02T00:00:00Z","id":"h-old","entity":"Competitor C","event":"price cut","due":"2026-01-01","due_precision":"day","status":"met","source":"https://m"},
+]
+with open(m.HORIZON, "w") as f:
+    for r in rows: f.write(json.dumps(r) + "\n")
+print("ORDER", "|".join(r["entity"] for r in m.coming_up_rows()))
+card = m.coming_up_card()
+print("OVERDUE_STYLED", "st-bad" in card and "overdue" in card)
+print("LINKS", "/entity?e=Competitor%20C" in card)
+print("EXP", "|".join("%s:%s" % (e["event"], e["badge"]) for e in m.entity_expectations("Competitor C")))
+print("INDEX", "Vendor X" in [r["name"] for r in m.all_entities()])
+PY
+  out="$(python3 "$py" "$repo/bin/portal.py")"
+  assert_contains "card omitted with no expectations" "$out" "NO_FILE ''"
+  assert_contains "overdue sorts before due before upcoming" "$out" "ORDER Competitor C|Competitor B|Vendor X"
+  assert_contains "an overdue expectation is styled as a warning" "$out" "OVERDUE_STYLED True"
+  assert_contains "entity names link to their dossier" "$out" "LINKS True"
+  assert_contains "dossier lists the pending overdue expectation" "$out" "EU launch:overdue"
+  assert_contains "dossier keeps the met history after pending" "$out" "price cut:met"
+  assert_contains "a horizon-only entity reaches the index" "$out" "INDEX True"
+  # The static export carries the card (Overview snapshot, no /entity route).
+  ( cd "$repo" && python3 bin/portal.py --export kb/index.html >/dev/null 2>&1 )
+  assert_contains "static export includes the Coming up card" "$(cat "$repo/kb/index.html" 2>/dev/null)" "Coming up"
+
+  if ! command -v curl >/dev/null 2>&1; then pass "dossier Expected (skipped: no curl)"; return; fi
+  ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
+  local srv=$!
+  page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/" || true)"
+  assert_contains "overview shows the Coming up card" "$page" "Coming up"
+  page="$(curl -s "http://127.0.0.1:$port/entity?e=Competitor%20C" || true)"
+  assert_contains "dossier shows the Expected list" "$page" "Expected"
+  assert_contains "dossier shows the entity's expectation" "$page" "EU launch"
+  kill "$srv" 2>/dev/null || true
+}
+test_portal_coming_up
 
 echo "== usage.sh: rolls up runs.log within the window =="
 test_usage() {
