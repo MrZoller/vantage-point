@@ -1324,6 +1324,24 @@ test_demo_bundle() {
   else
     fail "bundles with no data without crashing"
   fi
+  # Safety: --force must never aim rm -rf at the repo itself, an ancestor, or an
+  # arbitrary important directory. A canary file in the repo proves nothing got deleted.
+  printf 'canary\n' > "$repo/CANARY"
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out . --force 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --out . (the repo itself)" "$err" "refusing"
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out .. --force 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --out .. (an ancestor of the repo)" "$err" "ancestor"
+  if [ -f "$repo/CANARY" ] && [ -f "$repo/bin/demo-bundle.sh" ]; then
+    pass "refused --force left the repo untouched"
+  else
+    fail "refused --force left the repo untouched"
+  fi
+  # --force won't nuke a populated directory it didn't create (no START-HERE.md).
+  local stranger="$TMP/demostranger"
+  mkdir -p "$stranger"; printf 'precious\n' > "$stranger/keep.txt"
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out "$stranger" --force 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --force on a populated non-bundle dir" "$err" "not a previous demo bundle"
+  if [ -f "$stranger/keep.txt" ]; then pass "stranger dir left intact"; else fail "stranger dir left intact"; fi
 }
 test_demo_bundle
 

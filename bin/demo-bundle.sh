@@ -51,17 +51,44 @@ done
 
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found - the portal needs it to serve" >&2; exit 1; }
 
-# Resolve OUT to an absolute path so cp/tar behave regardless of the working dir, and
-# refuse to clobber an existing folder unless --force (a bundle is cheap to rebuild,
-# but blowing away the wrong directory is not).
+# Resolve OUT to a canonical absolute path so cp/tar behave regardless of the working
+# dir AND the safety checks below can't be sidestepped by '.', '..', or symlink
+# spellings. (os.path.realpath is lexical-plus-symlink and works on a not-yet-existing
+# path, so it's safe to canonicalize the destination before we create it.)
+abspath() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
+OUT="$(abspath "$OUT")"
+ROOT_ABS="$(abspath "$ROOT")"
+
+# Guard rails for the `rm -rf` below: --force must only ever replace a bundle, never
+# the filesystem root, the repo checkout, or any ancestor of it. Without this a stray
+# `--out . --force` (or `--out ..`) would delete the live config, state, kb, and even
+# this script. These checks run BEFORE any deletion.
+if [ "$OUT" = "/" ] || [ "$OUT" = "$ROOT_ABS" ]; then
+  echo "demo-bundle.sh: refusing --out $OUT (the filesystem root or the repo itself)" >&2
+  exit 2
+fi
+case "$ROOT_ABS/" in
+  "$OUT"/*)
+    echo "demo-bundle.sh: refusing --out $OUT (an ancestor of the repo -- deleting it would wipe the checkout)" >&2
+    exit 2 ;;
+esac
+
+# Refuse to clobber an existing destination unless --force (a bundle is cheap to
+# rebuild, but blowing away the wrong directory is not).
 if [ -e "$OUT" ]; then
-  if [ "$FORCE" -eq 1 ]; then
-    rm -rf "$OUT"
-  else
+  if [ "$FORCE" -ne 1 ]; then
     echo "demo-bundle.sh: $OUT already exists (use --force to overwrite)" >&2
     exit 1
   fi
+  # Even with --force, only replace a *previous bundle* (carrying our START-HERE.md
+  # signature) or an empty directory -- never an arbitrary populated directory we
+  # didn't create, in case --out points somewhere important by accident.
+  if [ -d "$OUT" ] && [ ! -f "$OUT/START-HERE.md" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
+    echo "demo-bundle.sh: refusing to --force-overwrite $OUT (not empty and not a previous demo bundle)" >&2
+    exit 1
+  fi
+  rm -rf "$OUT"
 fi
 
 mkdir -p "$OUT/bin"
