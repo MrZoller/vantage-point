@@ -16,6 +16,8 @@ profile.draft.feedcheck.md
 .init.*
 state/
 kb/
+# demo-bundle.sh output (the portable portal demo folder + its tarball)
+dist/
 *.err
 *.log
 

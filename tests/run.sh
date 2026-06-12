@@ -1268,6 +1268,157 @@ PY
 }
 test_portal_export
 
+echo "== demo-bundle.sh: packages the portal runtime + live data into a portable folder =="
+test_demo_bundle() {
+  local repo="$TMP/demorepo" out="$TMP/demoout"
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
+     "$ROOT/bin/config-lib.sh" "$ROOT/bin/demo-bundle.sh" "$repo/bin/"
+  printf 'subject:\n  name: Acme Corp\noutput:\n  webhook_url: https://x/h\n' > "$repo/monitor-config.yaml"
+  printf 'subject:\n  name: Acme Corp\n' > "$repo/profile.yaml"
+  printf '{"timestamp":"2026-06-01T07:00:00Z","entity":"Acme","metric":"event","event_type":"x","value":"hi","source":"u"}\n' \
+    > "$repo/state/observations.jsonl"
+  printf 'r\n' > "$repo/kb/2026-06-06.daily.md"
+  ( cd "$repo" && bash bin/demo-bundle.sh --out "$out" --tar >/dev/null 2>&1 )
+  # The portal runtime travels with the bundle (portal.py is required; cadence.py is the
+  # one sibling it loads by path).
+  for f in bin/portal.py bin/portal.sh bin/cadence.py; do
+    if [ -f "$out/$f" ]; then pass "bundle ships $f"; else fail "bundle ships $f"; fi
+  done
+  # Live data is copied verbatim (we bundle everything as-is, no redaction).
+  if [ -f "$out/monitor-config.yaml" ]; then pass "bundle ships monitor-config.yaml"; else fail "bundle ships monitor-config.yaml"; fi
+  if [ -f "$out/profile.yaml" ]; then pass "bundle ships profile.yaml"; else fail "bundle ships profile.yaml"; fi
+  if [ -f "$out/state/observations.jsonl" ]; then pass "bundle ships state/"; else fail "bundle ships state/"; fi
+  if [ -f "$out/kb/2026-06-06.daily.md" ]; then pass "bundle ships kb/ reports"; else fail "bundle ships kb/ reports"; fi
+  # A one-command launcher and an orientation note land at the bundle root.
+  if [ -x "$out/start-demo.sh" ]; then pass "bundle has an executable start-demo.sh"; else fail "bundle has an executable start-demo.sh"; fi
+  if [ -f "$out/START-HERE.md" ]; then pass "bundle has START-HERE.md"; else fail "bundle has START-HERE.md"; fi
+  # --tar writes a carryable archive alongside the folder.
+  if [ -f "$out.tar.gz" ]; then pass "--tar writes a tarball"; else fail "--tar writes a tarball"; fi
+  # The bundle is self-serving: the portal renders the bundled data on its own.
+  ( cd "$out" && python3 bin/portal.py --export >/dev/null 2>&1 )
+  if [ -f "$out/kb/index.html" ]; then
+    pass "bundled portal renders its data (kb/index.html)"
+    assert_contains "bundle render names the tracked entity" "$(cat "$out/kb/index.html")" "Acme"
+  else
+    fail "bundled portal renders its data (kb/index.html)"
+  fi
+  # Without --force, an existing destination is refused (a bundle is cheap to rebuild,
+  # but clobbering the wrong folder is not).
+  local err
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out "$out" 2>&1 1>/dev/null )" || true
+  assert_contains "refuses to overwrite without --force" "$err" "already exists"
+  # --force replaces it cleanly.
+  if ( cd "$repo" && bash bin/demo-bundle.sh --out "$out" --force >/dev/null 2>&1 ); then
+    pass "--force overwrites an existing bundle"
+  else
+    fail "--force overwrites an existing bundle"
+  fi
+  # An empty source still produces a (warned) startable bundle rather than crashing.
+  local bare="$TMP/demobare" bareout="$TMP/demobareout"
+  mkdir -p "$bare/bin"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
+     "$ROOT/bin/demo-bundle.sh" "$bare/bin/"
+  if ( cd "$bare" && bash bin/demo-bundle.sh --out "$bareout" >/dev/null 2>&1 ); then
+    pass "bundles with no data without crashing"
+  else
+    fail "bundles with no data without crashing"
+  fi
+  # Safety: --force must never aim rm -rf at the repo itself, an ancestor, or an
+  # arbitrary important directory. A canary file in the repo proves nothing got deleted.
+  printf 'canary\n' > "$repo/CANARY"
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out . --force 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --out . (the repo itself)" "$err" "refusing"
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out .. --force 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --out .. (an ancestor of the repo)" "$err" "ancestor"
+  if [ -f "$repo/CANARY" ] && [ -f "$repo/bin/demo-bundle.sh" ]; then
+    pass "refused --force left the repo untouched"
+  else
+    fail "refused --force left the repo untouched"
+  fi
+  # --force won't nuke a populated directory it didn't create (no START-HERE.md).
+  local stranger="$TMP/demostranger"
+  mkdir -p "$stranger"; printf 'precious\n' > "$stranger/keep.txt"
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out "$stranger" --force 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --force on a populated non-bundle dir" "$err" "not a previous demo bundle"
+  if [ -f "$stranger/keep.txt" ]; then pass "stranger dir left intact"; else fail "stranger dir left intact"; fi
+  # --force on an existing regular file is refused (a bundle is a folder) -- so a stray
+  # '--out profile.yaml --force' can't delete the live profile.
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out profile.yaml --force 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --force on an existing non-directory" "$err" "non-directory"
+  if [ -f "$repo/profile.yaml" ]; then pass "live profile.yaml left intact"; else fail "live profile.yaml left intact"; fi
+  # A destination inside a copied tree (state/, kb/) is refused before cp recurses into
+  # itself and strands a half-built bundle in the live data.
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out state/demo 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --out inside state/" "$err" "inside the state/ tree"
+  if [ ! -e "$repo/state/demo" ]; then pass "no bundle stranded under state/"; else fail "no bundle stranded under state/"; fi
+  # A custom monitoring.state_file outside state/ is copied into the bundle and the demo
+  # config repointed at it (so the off-machine portal never reaches back to live state).
+  local sfrepo="$TMP/demosf" sfout="$TMP/demosfout"
+  mkdir -p "$sfrepo/bin" "$sfrepo/state" "$sfrepo/var"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
+     "$ROOT/bin/config-lib.sh" "$ROOT/bin/demo-bundle.sh" "$sfrepo/bin/"
+  printf 'monitoring:\n  state_file: var/dedup.jsonl\nsubject:\n  name: Acme\n' > "$sfrepo/monitor-config.yaml"
+  printf '{"id":"i1","date":"2026-06-06","signal":"opportunity","title":"x","url":"https://x"}\n' \
+    > "$sfrepo/var/dedup.jsonl"
+  ( cd "$sfrepo" && bash bin/demo-bundle.sh --out "$sfout" >/dev/null 2>&1 )
+  if [ -f "$sfout/state/dedup.jsonl" ]; then pass "bundles the out-of-tree state_file under state/"; else fail "bundles the out-of-tree state_file under state/"; fi
+  assert_contains "repoints the demo config at the bundled state_file" \
+    "$(cat "$sfout/monitor-config.yaml" 2>/dev/null)" "state_file: state/dedup.jsonl"
+  # A real bundle carries the .vp-demo-bundle sentinel; --force keys off that, not a
+  # generic START-HERE.md, so an unrelated docs folder that merely has its own
+  # START-HERE.md is not clobbered.
+  if [ -f "$out/.vp-demo-bundle" ]; then pass "bundle carries the .vp-demo-bundle sentinel"; else fail "bundle carries the .vp-demo-bundle sentinel"; fi
+  local docsdir="$TMP/demodocs"
+  mkdir -p "$docsdir"; printf '# getting started\n' > "$docsdir/START-HERE.md"; printf 'keep\n' > "$docsdir/other.txt"
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out "$docsdir" --force 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --force on a non-bundle dir that only has START-HERE.md" "$err" "not a previous demo bundle"
+  if [ -f "$docsdir/other.txt" ]; then pass "generic START-HERE.md dir left intact"; else fail "generic START-HERE.md dir left intact"; fi
+  # --tar treats <out>.tar.gz as an output artifact: it won't clobber an existing one
+  # without --force (test with the folder absent so the folder guard doesn't mask it).
+  local tdir="$TMP/demotar"
+  ( cd "$repo"; bash bin/demo-bundle.sh --out "$tdir" --tar >/dev/null 2>&1 )
+  rm -rf "$tdir"                                   # keep $tdir.tar.gz, drop the folder
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out "$tdir" --tar 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --tar when the tarball already exists" "$err" ".tar.gz already exists"
+  if ( cd "$repo"; bash bin/demo-bundle.sh --out "$tdir" --tar --force >/dev/null 2>&1 ); then
+    pass "--force lets --tar overwrite an existing tarball"
+  else
+    fail "--force lets --tar overwrite an existing tarball"
+  fi
+  # An out-of-tree state_file whose basename collides with a real bundled file (grades)
+  # is namespaced, not overwritten -- the bundled feedback.jsonl keeps its grades.
+  local colrepo="$TMP/democol" colout="$TMP/democolout"
+  mkdir -p "$colrepo/bin" "$colrepo/state" "$colrepo/var"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
+     "$ROOT/bin/config-lib.sh" "$ROOT/bin/demo-bundle.sh" "$colrepo/bin/"
+  printf 'monitoring:\n  state_file: var/feedback.jsonl\nsubject:\n  name: Acme\n' > "$colrepo/monitor-config.yaml"
+  printf 'REAL_GRADES\n' > "$colrepo/state/feedback.jsonl"
+  printf 'DEDUP_LOG\n' > "$colrepo/var/feedback.jsonl"
+  ( cd "$colrepo" && bash bin/demo-bundle.sh --out "$colout" >/dev/null 2>&1 )
+  assert_eq "basename collision preserves the bundled grades file" "REAL_GRADES" "$(cat "$colout/state/feedback.jsonl" 2>/dev/null)"
+  if [ -f "$colout/state/statefile-feedback.jsonl" ]; then pass "colliding state_file is namespaced"; else fail "colliding state_file is namespaced"; fi
+  assert_contains "config repointed at the namespaced state_file" \
+    "$(cat "$colout/monitor-config.yaml" 2>/dev/null)" "state_file: state/statefile-feedback.jsonl"
+  # A symlinked file inside state/ is dereferenced into real data, so the off-site bundle
+  # is self-contained (and never points back at the original machine's live state).
+  local symrepo="$TMP/demosym" symout="$TMP/demosymout" ext="$TMP/demoext.jsonl"
+  mkdir -p "$symrepo/bin" "$symrepo/state"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
+     "$ROOT/bin/config-lib.sh" "$ROOT/bin/demo-bundle.sh" "$symrepo/bin/"
+  printf 'subject:\n  name: Acme\n' > "$symrepo/monitor-config.yaml"
+  printf 'EXTERNAL_OBS\n' > "$ext"
+  ln -s "$ext" "$symrepo/state/observations.jsonl"
+  ( cd "$symrepo" && bash bin/demo-bundle.sh --out "$symout" >/dev/null 2>&1 )
+  if [ -f "$symout/state/observations.jsonl" ] && [ ! -L "$symout/state/observations.jsonl" ]; then
+    pass "symlinked state file is dereferenced into a real file"
+  else
+    fail "symlinked state file is dereferenced into a real file"
+  fi
+  assert_eq "dereferenced content matches the link target" "EXTERNAL_OBS" "$(cat "$symout/state/observations.jsonl" 2>/dev/null)"
+}
+test_demo_bundle
+
 echo "== portal.sh: argument handling =="
 test_portal_args() {
   local repo="$TMP/portalargs" rc

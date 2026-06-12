@@ -72,7 +72,11 @@ stays consistent instead of re-deriving them.
   (per-entity dossiers)/review/profile/config; grading + missed-signal reports →
   `state/feedback.jsonl` (verdicts up/down/missed);
   `--export` → static `kb/index.html`; Overview also has the forward-radar **Coming up**
-  card + per-dossier **Expected** list and **Cadence** line), `fetch.py`
+  card + per-dossier **Expected** list and **Cadence** line), `demo-bundle.sh`
+  (package the portal runtime — `portal.py`/`portal.sh`/`cadence.py` — plus the live
+  `monitor-config.yaml`/`profile.yaml`/`state/`/`kb/` into a portable `dist/` folder +
+  `start-demo.sh` launcher for showing the portal off-site with just `python3`, no
+  agent; `--out`/`--tar`/`--force`; bundles as-is, no redaction), `fetch.py`
   (deterministic feed sweep → candidates JSONL), `horizon.py` (forward radar:
   `due`/`upcoming` over `state/horizon.jsonl`, latest-per-id, precision-scaled grace;
   stdlib), `cadence.py` (quiet detection: `quiet`/`mark`/`compact` — median event-gap
