@@ -37,6 +37,10 @@ fi
 OUT="$ROOT/dist/vantage-point-demo"
 MAKE_TAR=0
 FORCE=0
+# A bundle-specific sentinel we drop in every bundle, so --force only ever overwrites a
+# folder THIS script created -- not, say, an unrelated docs/demo folder that happens to
+# carry its own generic START-HERE.md.
+MARKER=".vp-demo-bundle"
 
 usage() {
   printf 'usage: demo-bundle.sh [--out DIR] [--tar] [--force]\n'
@@ -106,17 +110,27 @@ if [ -e "$OUT" ]; then
     echo "demo-bundle.sh: refusing --force on $OUT (an existing non-directory; a bundle is a folder)" >&2
     exit 1
   fi
-  # And even for a directory, only replace a *previous bundle* (carrying our
-  # START-HERE.md signature) or an empty one -- never an arbitrary populated directory
-  # we didn't create, in case --out points somewhere important by accident.
-  if [ ! -f "$OUT/START-HERE.md" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
+  # And even for a directory, only replace a *previous bundle* (identified by the
+  # bundle-specific .vp-demo-bundle sentinel we write, not a generic filename) or an
+  # empty one -- never an arbitrary populated directory we didn't create.
+  if [ ! -f "$OUT/$MARKER" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
     echo "demo-bundle.sh: refusing to --force-overwrite $OUT (not empty and not a previous demo bundle)" >&2
     exit 1
   fi
   rm -rf "$OUT"
 fi
 
+# Treat <out>.tar.gz as an output artifact too: don't silently clobber an existing
+# archive unless --force, mirroring the folder guard above.
+TARBALL="$OUT.tar.gz"
+if [ "$MAKE_TAR" -eq 1 ] && [ -e "$TARBALL" ] && [ "$FORCE" -ne 1 ]; then
+  echo "demo-bundle.sh: $TARBALL already exists (use --force to overwrite)" >&2
+  exit 1
+fi
+
 mkdir -p "$OUT/bin"
+# Stamp the bundle so a later --force can recognize it (see the guard above).
+printf 'vantage-point demo bundle -- created by bin/demo-bundle.sh\n' > "$OUT/$MARKER"
 
 # 1) Portal runtime. portal.sh + portal.py are required; cadence.py is the one sibling
 # portal.py loads (the dossier Cadence line) and degrades gracefully if absent, but we
@@ -142,7 +156,10 @@ copy_file() {  # copy_file <src-relative> [warn]
 }
 copy_dir() {   # copy_dir <src-relative> [warn]
   if [ -d "$ROOT/$1" ]; then
-    cp -R "$ROOT/$1" "$OUT/$1"; copied_any=1
+    # -L dereferences symlinks: a state/ or kb/ that is (or contains) a symlink to an
+    # absolute live path must land as real data in the bundle, or the off-site copy has
+    # broken links and the original machine's portal would write back into live state.
+    cp -RL "$ROOT/$1" "$OUT/$1"; copied_any=1
   elif [ "${2:-}" = "warn" ]; then
     echo "demo-bundle.sh: WARNING: $1/ not found - its portal tab will be empty" >&2
   fi
@@ -195,11 +212,20 @@ if command -v cfg_get >/dev/null 2>&1 && [ -f "$OUT/monitor-config.yaml" ]; then
     if [ -f "$sf_src" ]; then
       base="$(basename "$sf_src")"
       mkdir -p "$OUT/state"
-      cp "$sf_src" "$OUT/state/$base"
-      rewrite_state_file "$OUT/monitor-config.yaml" "state/$base"
-      copied_any=1
-      echo "demo-bundle.sh: NOTE: bundled the configured state_file ($sf) as state/$base" \
-           "and repointed the demo config" >&2
+      dest="state/$base"
+      # Don't overwrite a real bundled state file (e.g. feedback.jsonl grades) if the
+      # external state_file shares its basename -- namespace it instead.
+      if [ -e "$OUT/$dest" ]; then dest="state/statefile-$base"; fi
+      if [ -e "$OUT/$dest" ]; then
+        echo "demo-bundle.sh: WARNING: configured state_file ($sf) collides with bundled" \
+             "state data; left the demo config unchanged rather than overwrite it" >&2
+      else
+        cp "$sf_src" "$OUT/$dest"
+        rewrite_state_file "$OUT/monitor-config.yaml" "$dest"
+        copied_any=1
+        echo "demo-bundle.sh: NOTE: bundled the configured state_file ($sf) as $dest" \
+             "and repointed the demo config" >&2
+      fi
     else
       echo "demo-bundle.sh: WARNING: configured state_file ($sf) not found -" \
            "the demo Overview's surfaced-items view may be empty" >&2
@@ -266,14 +292,13 @@ else
   echo "demo-bundle.sh: NOTE: static --export smoke test $smoke" >&2
 fi
 
-# 6) Optional tarball for easy carrying.
+# 6) Optional tarball for easy carrying (TARBALL was validated against --force above).
 tarmsg=""
 if [ "$MAKE_TAR" -eq 1 ]; then
-  base="$(basename "$OUT")"
-  tarball="$OUT.tar.gz"
-  rm -f "$tarball"
-  ( cd "$(dirname "$OUT")" && tar -czf "$tarball" "$base" )
-  tarmsg="  tarball: $tarball"$'\n'
+  tarbase="$(basename "$OUT")"
+  rm -f "$TARBALL"
+  ( cd "$(dirname "$OUT")" && tar -czf "$TARBALL" "$tarbase" )
+  tarmsg="  tarball: $TARBALL"$'\n'
 fi
 
 bytes="$(du -sh "$OUT" 2>/dev/null | cut -f1 || echo '?')"

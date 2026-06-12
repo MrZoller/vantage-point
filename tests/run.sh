@@ -1365,6 +1365,57 @@ test_demo_bundle() {
   if [ -f "$sfout/state/dedup.jsonl" ]; then pass "bundles the out-of-tree state_file under state/"; else fail "bundles the out-of-tree state_file under state/"; fi
   assert_contains "repoints the demo config at the bundled state_file" \
     "$(cat "$sfout/monitor-config.yaml" 2>/dev/null)" "state_file: state/dedup.jsonl"
+  # A real bundle carries the .vp-demo-bundle sentinel; --force keys off that, not a
+  # generic START-HERE.md, so an unrelated docs folder that merely has its own
+  # START-HERE.md is not clobbered.
+  if [ -f "$out/.vp-demo-bundle" ]; then pass "bundle carries the .vp-demo-bundle sentinel"; else fail "bundle carries the .vp-demo-bundle sentinel"; fi
+  local docsdir="$TMP/demodocs"
+  mkdir -p "$docsdir"; printf '# getting started\n' > "$docsdir/START-HERE.md"; printf 'keep\n' > "$docsdir/other.txt"
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out "$docsdir" --force 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --force on a non-bundle dir that only has START-HERE.md" "$err" "not a previous demo bundle"
+  if [ -f "$docsdir/other.txt" ]; then pass "generic START-HERE.md dir left intact"; else fail "generic START-HERE.md dir left intact"; fi
+  # --tar treats <out>.tar.gz as an output artifact: it won't clobber an existing one
+  # without --force (test with the folder absent so the folder guard doesn't mask it).
+  local tdir="$TMP/demotar"
+  ( cd "$repo"; bash bin/demo-bundle.sh --out "$tdir" --tar >/dev/null 2>&1 )
+  rm -rf "$tdir"                                   # keep $tdir.tar.gz, drop the folder
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out "$tdir" --tar 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --tar when the tarball already exists" "$err" ".tar.gz already exists"
+  if ( cd "$repo"; bash bin/demo-bundle.sh --out "$tdir" --tar --force >/dev/null 2>&1 ); then
+    pass "--force lets --tar overwrite an existing tarball"
+  else
+    fail "--force lets --tar overwrite an existing tarball"
+  fi
+  # An out-of-tree state_file whose basename collides with a real bundled file (grades)
+  # is namespaced, not overwritten -- the bundled feedback.jsonl keeps its grades.
+  local colrepo="$TMP/democol" colout="$TMP/democolout"
+  mkdir -p "$colrepo/bin" "$colrepo/state" "$colrepo/var"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
+     "$ROOT/bin/config-lib.sh" "$ROOT/bin/demo-bundle.sh" "$colrepo/bin/"
+  printf 'monitoring:\n  state_file: var/feedback.jsonl\nsubject:\n  name: Acme\n' > "$colrepo/monitor-config.yaml"
+  printf 'REAL_GRADES\n' > "$colrepo/state/feedback.jsonl"
+  printf 'DEDUP_LOG\n' > "$colrepo/var/feedback.jsonl"
+  ( cd "$colrepo" && bash bin/demo-bundle.sh --out "$colout" >/dev/null 2>&1 )
+  assert_eq "basename collision preserves the bundled grades file" "REAL_GRADES" "$(cat "$colout/state/feedback.jsonl" 2>/dev/null)"
+  if [ -f "$colout/state/statefile-feedback.jsonl" ]; then pass "colliding state_file is namespaced"; else fail "colliding state_file is namespaced"; fi
+  assert_contains "config repointed at the namespaced state_file" \
+    "$(cat "$colout/monitor-config.yaml" 2>/dev/null)" "state_file: state/statefile-feedback.jsonl"
+  # A symlinked file inside state/ is dereferenced into real data, so the off-site bundle
+  # is self-contained (and never points back at the original machine's live state).
+  local symrepo="$TMP/demosym" symout="$TMP/demosymout" ext="$TMP/demoext.jsonl"
+  mkdir -p "$symrepo/bin" "$symrepo/state"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
+     "$ROOT/bin/config-lib.sh" "$ROOT/bin/demo-bundle.sh" "$symrepo/bin/"
+  printf 'subject:\n  name: Acme\n' > "$symrepo/monitor-config.yaml"
+  printf 'EXTERNAL_OBS\n' > "$ext"
+  ln -s "$ext" "$symrepo/state/observations.jsonl"
+  ( cd "$symrepo" && bash bin/demo-bundle.sh --out "$symout" >/dev/null 2>&1 )
+  if [ -f "$symout/state/observations.jsonl" ] && [ ! -L "$symout/state/observations.jsonl" ]; then
+    pass "symlinked state file is dereferenced into a real file"
+  else
+    fail "symlinked state file is dereferenced into a real file"
+  fi
+  assert_eq "dereferenced content matches the link target" "EXTERNAL_OBS" "$(cat "$symout/state/observations.jsonl" 2>/dev/null)"
 }
 test_demo_bundle
 
