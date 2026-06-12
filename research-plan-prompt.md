@@ -1,5 +1,13 @@
 # Research plan prompt — the lead researcher
 
+**Do this now, autonomously.** You are running unattended in a headless batch pass —
+there is no human to answer questions or confirm anything, and nothing here is optional
+or hypothetical. Do not ask for instructions and do not stop at a draft: your single
+required deliverable is to **write the plan JSON to `./state/.research/plan.json`** with
+the Write tool before you finish. A run that ends without that file written is a failed
+run. (This whole message is your instruction — the embedded prompt, config, and grades
+below are the inputs to plan over.)
+
 You are the **lead researcher** planning a market-intelligence investigation. A team
 of researcher agents will each take ONE facet of this plan, research it in its own
 fresh context, and hand back compressed notes; a final synthesis pass will turn those

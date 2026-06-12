@@ -2717,6 +2717,7 @@ emit_json() { printf '{"num_turns":1,"total_cost_usd":0.01,"usage":{"input_token
 case "$prompt" in
   *"lead researcher"*)              # PLAN pass
     [ -n "${THINK_LOG:-}" ] && printf 'plan:%s\n' "${MAX_THINKING_TOKENS:-unset}" >> "$THINK_LOG"
+    [ -n "${PLAN_ARGS:-}" ] && printf '%s\n' "$*" > "$PLAN_ARGS"
     mkdir -p state/.research
     if [ -n "${PLAN_GARBAGE:-}" ]; then
       printf 'not json at all {{{\n' > state/.research/plan.json
@@ -2872,6 +2873,43 @@ test_bootstrap_research_pipeline() {
   assert_contains "logs the synthesis pass" "$log" '"pass":"bootstrap"'
 }
 test_bootstrap_research_pipeline
+
+echo "== bootstrap.sh: the plan pass runs unattended (can't punt to AskUserQuestion) =="
+# Regression: a model sometimes treats the plan prompt as ambiguous and calls
+# AskUserQuestion instead of writing plan.json; in a headless run that question is
+# auto-dismissed and no plan is written -> "no usable research plan" every time. The
+# plan pass must disallow that escape hatch, and the prompt must say so out loud.
+test_bootstrap_plan_autonomous() {
+  local repo="$TMP/rp-auto" home="$TMP/rpautohome" pargs="$TMP/rp_plan_args"
+  make_research_bootstrap_repo "$repo" "$home"
+  ( cd "$repo" && PLAN_ARGS="$pargs" HOME="$home" bash bin/bootstrap.sh >/dev/null 2>&1 )
+  local pa; pa="$(cat "$pargs" 2>/dev/null)"
+  assert_contains "the plan pass disallows AskUserQuestion" "$pa" "AskUserQuestion"
+  # The flag travels with --disallowedTools (not, say, a stray mention in the prompt).
+  case "$pa" in
+    *--disallowedTools*AskUserQuestion*) pass "AskUserQuestion is on the disallowedTools list" ;;
+    *) fail "AskUserQuestion is on the disallowedTools list" ;;
+  esac
+  # The prompt itself tells the headless model to act, not ask.
+  assert_contains "the plan prompt says it runs unattended" \
+    "$(cat "$ROOT/research-plan-prompt.md")" "autonomously"
+}
+test_bootstrap_plan_autonomous
+
+echo "== every unattended claude -p pass disallows AskUserQuestion =="
+# A headless pass that can ask a question hangs/aborts on a silent dismissal. Guard the
+# invariant across both agents: every `claude -p` here must name AskUserQuestion in its
+# --disallowedTools so the model can never block on a prompt nobody will answer.
+test_no_pass_can_ask() {
+  local f n_pass n_guarded
+  for f in "$ROOT/bin/bootstrap.sh" "$ROOT/bin/monitor.sh"; do
+    n_pass="$(grep -c -- '--disallowedTools' "$f")"
+    n_guarded="$(grep -c -- '--disallowedTools "[^"]*AskUserQuestion' "$f")"
+    assert_eq "$(basename "$f"): every claude -p pass disallows AskUserQuestion" \
+      "$n_pass" "$n_guarded"
+  done
+}
+test_no_pass_can_ask
 
 echo "== bootstrap.sh: models.researcher unset -> single-pass (no plan/facets) =="
 test_bootstrap_single_pass_invariance() {

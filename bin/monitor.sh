@@ -479,7 +479,7 @@ stronger agent will investigate these and enrich them in the report; you just qu
 them. Do not write the queue when it's disabled.$CATCHUP_NOTE$CANDIDATES_NOTE$FEEDBACK_NOTE$HORIZON_NOTE" \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
-  --disallowedTools "Bash" \
+  --disallowedTools "Bash,AskUserQuestion" \
   --permission-mode acceptEdits \
   --max-turns "$MONITOR_MAX_TURNS" \
   --output-format json \
@@ -548,7 +548,7 @@ flag anything you can't corroborate. Do not remove non-queued items or change th
 report's structure." \
       ${DEEPDIVE_MODEL_ARGS[@]+"${DEEPDIVE_MODEL_ARGS[@]}"} \
       --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
-      --disallowedTools "Bash" \
+      --disallowedTools "Bash,AskUserQuestion" \
       --permission-mode acceptEdits \
       --max-turns "$DEEPDIVE_MAX_TURNS" \
       --output-format json \
@@ -611,7 +611,7 @@ blockquote, ## sections, item ids). Do NOT add facts, change any figure, or remo
 item's source link or confidence." \
       ${EDITOR_MODEL_ARGS[@]+"${EDITOR_MODEL_ARGS[@]}"} \
       --allowedTools "Read,Write,Edit" \
-      --disallowedTools "Bash,WebSearch,WebFetch" \
+      --disallowedTools "Bash,WebSearch,WebFetch,AskUserQuestion" \
       --permission-mode acceptEdits \
       --max-turns "$EDITOR_MAX_TURNS" \
       --output-format json \

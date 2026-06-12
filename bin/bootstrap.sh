@@ -215,7 +215,7 @@ $(cat "$CONFIG")
 Write your notes as valid Markdown to ./$note (the schema is in the prompt above)." \
     ${RESEARCHER_MODEL_ARGS[@]+"${RESEARCHER_MODEL_ARGS[@]}"} \
     --allowedTools "Read,Write,WebSearch,WebFetch" \
-    --disallowedTools "Bash" \
+    --disallowedTools "Bash,AskUserQuestion" \
     --permission-mode acceptEdits \
     --max-turns "$FACET_MAX_TURNS" \
     --output-format json \
@@ -259,7 +259,7 @@ $(cat "$CONFIG")
 \`\`\`$FEEDBACK_NOTE" \
         ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
         --allowedTools "Read,Write,WebSearch,WebFetch" \
-        --disallowedTools "Bash" \
+        --disallowedTools "Bash,AskUserQuestion" \
         --permission-mode acceptEdits \
         --max-turns "$PLAN_MAX_TURNS" \
         --output-format json \
@@ -361,7 +361,7 @@ $(cat "$CONFIG")
 \`\`\`$FEEDBACK_NOTE$NOTES_NOTE" \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
-  --disallowedTools "Bash" \
+  --disallowedTools "Bash,AskUserQuestion" \
   --permission-mode acceptEdits \
   --max-turns "$BOOTSTRAP_MAX_TURNS" \
   --output-format json \
@@ -397,7 +397,7 @@ Write your findings to ./$CHALLENGE_MD per the prompt above, and apply ONLY evid
 corrections to ./$DRAFT (downgrade, don't delete, what you can't verify)." \
     ${CHALLENGE_MODEL_ARGS[@]+"${CHALLENGE_MODEL_ARGS[@]}"} \
     --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
-    --disallowedTools "Bash" \
+    --disallowedTools "Bash,AskUserQuestion" \
     --permission-mode acceptEdits \
     --max-turns "$CHALLENGE_MAX_TURNS" \
     --output-format json \
@@ -502,7 +502,7 @@ $EVAL_SET
     if ( cd "$BT_SCRATCH" && claude -p "$BT_PROMPT" \
           ${BT_MODEL_ARGS[@]+"${BT_MODEL_ARGS[@]}"} \
           --allowedTools "Write" \
-          --disallowedTools "Read,Bash,WebSearch,WebFetch" \
+          --disallowedTools "Read,Bash,WebSearch,WebFetch,AskUserQuestion" \
           --permission-mode acceptEdits \
           --max-turns "$BACKTEST_MAX_TURNS" \
           --output-format text \
@@ -542,7 +542,7 @@ low-confidence / uncertainty flag - faithfulness to the draft beats polish. Edit
 ./$SUMMARY in place and keep it valid Markdown." \
         --model "$EDITOR_MODEL" \
         --allowedTools "Read,Write,Edit" \
-        --disallowedTools "Bash,WebSearch,WebFetch" \
+        --disallowedTools "Bash,WebSearch,WebFetch,AskUserQuestion" \
         --permission-mode acceptEdits \
         --max-turns "$EDITOR_MAX_TURNS" \
         --output-format text \
