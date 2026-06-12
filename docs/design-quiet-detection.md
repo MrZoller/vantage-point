@@ -1,10 +1,14 @@
 # Design: dog-that-didn't-bark detection (cadence baselines)
 
-*Status: proposed (backlog — not started). Companion to the backlog entry in
-[`roadmap.md`](roadmap.md). The forward radar
-([`design-forward-radar.md`](design-forward-radar.md)) shipped the *stated*-date
-half of this idea; this design covers the implicit, cadence-derived half its v2
-notes deferred.*
+*Status: ✅ shipped (Phase 21) — `bin/cadence.py` plus the injection/marking wired
+through `bin/monitor.sh`, `monitor-prompt.md`, and the dossier Cadence line in
+`bin/portal.py`. This document is the design of record; it matched the
+implementation closely (one deviation: the portal loads `cadence.py` by file path
+with a no-line fallback, rather than a plain import, so a standalone `portal.py`
+copy can't crash). Companion to the Phase 21 entry in [`roadmap.md`](roadmap.md).
+The forward radar ([`design-forward-radar.md`](design-forward-radar.md)) shipped
+the *stated*-date half of this idea; this design covers the implicit,
+cadence-derived half its v2 notes deferred.*
 
 ## Problem
 

@@ -86,7 +86,11 @@ together. Read the week's surfaced records AND `observations.jsonl` and:
 - **Watching:** slow-burn items that haven't crossed the daily threshold alone but
   are building across the week — the pattern only visible at this cadence.
 - **(Optional, org anchors) Quiet on:** notable *absence* of movement where you'd
-  expect it. A competitor's silence is itself a signal.
+  expect it. A competitor's silence is itself a signal. When a **QUIET ENTITIES**
+  block is injected below, anchor this section on it: those are computed cadence
+  baselines from your own recorded event history (median gap vs current silence),
+  not vibes — verify each flagged silence against this run's sweep per that block's
+  instructions before calling it quiet, and cite the numbers when you do.
 You may do a light re-sweep for slow-moving sources that rarely trip a daily run,
 but dedup against what the dailies already surfaced.
 

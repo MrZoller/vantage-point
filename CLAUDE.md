@@ -43,7 +43,11 @@ stays consistent instead of re-deriving them.
   since the last logged run widens the window, capped by
   `monitoring.catchup_max_hours`) + live calibration injection (recent post-bootstrap
   grades, `relevance.recent_grades`) + forward-radar due-expectation injection
-  (`bin/horizon.py due`, `tracking.horizon`) → sweep → dedup → score → trends →
+  (`bin/horizon.py due`, `tracking.horizon`) + (weekly) quiet-entity injection
+  (`bin/cadence.py quiet`, `tracking.quiet`: entities silent past their median event
+  cadence, for the agent to verify → "Quiet on"; flagged silences marked to
+  `state/quiet.jsonl` only post-ship so they never re-alarm, self-voiding on
+  resumption) → sweep → dedup → score → trends →
   optional deep-dive → optional edit → report → (weekly) append a deterministic
   **Coming up** section (`bin/horizon.py upcoming`, post-editor so kb/email/webhook/portal
   all carry it) → deliver (email and/or `output.webhook_url` via `bin/webhook.py`).
@@ -67,9 +71,12 @@ stays consistent instead of re-deriving them.
   (per-entity dossiers)/review/profile/config; grading + missed-signal reports →
   `state/feedback.jsonl` (verdicts up/down/missed);
   `--export` → static `kb/index.html`; Overview also has the forward-radar **Coming up**
-  card + per-dossier **Expected** list), `fetch.py` (deterministic feed sweep →
-  candidates JSONL), `horizon.py` (forward radar: `due`/`upcoming` over
-  `state/horizon.jsonl`, latest-per-id, precision-scaled grace; stdlib), `webhook.py`
+  card + per-dossier **Expected** list and **Cadence** line), `fetch.py`
+  (deterministic feed sweep → candidates JSONL), `horizon.py` (forward radar:
+  `due`/`upcoming` over `state/horizon.jsonl`, latest-per-id, precision-scaled grace;
+  stdlib), `cadence.py` (quiet detection: `quiet`/`mark` — median event-gap baselines
+  over `state/observations.jsonl`, 14-day floor, flags in `state/quiet.jsonl`; stdlib;
+  the portal loads it by path for the dossier Cadence line), `webhook.py`
   (JSON report delivery), `usage.sh`, `install-launchd.sh`, `dedupe-feedback.py`
   (latest-per-id grades; `--since/--max` scope the monitor's live-calibration window),
   `backtest.py` (refresh-gate rubric backtest: `prepare` blinds the graded eval set,
@@ -79,7 +86,8 @@ stays consistent instead of re-deriving them.
 - **State** (gitignored): `state/seen.jsonl` (dedup), `state/observations.jsonl`
   (trends), `state/feedback.jsonl` (grades), `state/horizon.jsonl` (forward-radar
   expectations; append-only, latest-per-id, `tracking.horizon_max_lines`),
-  `state/runs.log` (per-run usage), `state/feedhealth.json` (per-feed sweep health),
+  `state/quiet.jsonl` (quiet-detection flags; latest-per-entity/event_type, constant
+  500-line prune), `state/runs.log` (per-run usage), `state/feedhealth.json` (per-feed sweep health),
   `state/.research/` (deep-research scratch: `plan.json` + `notes/<id>.md`, cleared each
   non-`--resume` run); `kb/` (reports + dashboard).
 - Deployed on a macOS mini via **launchd**, running from a local checkout — changes

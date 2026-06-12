@@ -37,6 +37,7 @@ vantage-point/
 │   ├── portal.py                 # the portal app: overview, reports, entities, review, profile, config
 │   ├── fetch.py                  # deterministic feed pre-sweep (profile feeds -> candidates)
 │   ├── horizon.py                # forward radar: due/upcoming over state/horizon.jsonl
+│   ├── cadence.py                # quiet detection: cadence baselines over observations.jsonl
 │   ├── webhook.py                # POST a report as JSON to output.webhook_url (Slack/Discord/generic)
 │   └── dedupe-feedback.py        # collapse feedback.jsonl to latest-per-id (bootstrap + live calibration)
 └── launchd/
@@ -52,6 +53,7 @@ Created at runtime, gitignored (a specific deployment's data):
 ├── state/seen.jsonl              # dedup memory: "is this NEW?"
 ├── state/observations.jsonl      # longitudinal metric/event memory: "is this CHANGING?"
 ├── state/horizon.jsonl           # forward-radar expectations: "what's COMING, did a date slip?"
+├── state/quiet.jsonl             # quiet-detection flags: silences already reported (no re-alarms)
 ├── state/feedback.jsonl          # your thumbs up/down grades (calibration input)
 └── kb/                           # accumulated reports, per-run logs, and index.html
 ```
@@ -569,6 +571,37 @@ to turn it off, or tune `tracking.horizon_upcoming_days` (the weekly window, def
 and `tracking.horizon_max_lines` (the prune bound, default 2000). The grace constants
 are deliberately not configurable. Empty-day ethics are unchanged: the radar only *adds*
 to a report that's already being sent — it never *causes* one.
+
+## Quiet detection (the dog that didn't bark)
+
+The forward radar catches a *stated* date that slips. Most silences were never
+announced — they're visible only against the entity's own history. A competitor that
+ships every ~3 weeks and then says nothing for 8 is telling you something (a pivot, a
+layoff, a stealth rework), and the data to notice is already on disk: every sourced
+event in `state/observations.jsonl` contributes to that entity's **normal cadence**.
+
+On **weekly** runs, `bin/cadence.py` (Python stdlib) computes a baseline per entity +
+event type — the **median gap** between its recorded event dates, for entities with at
+least `tracking.quiet_min_events` (default 4) on record — and flags any entity whose
+current silence exceeds `tracking.quiet_factor` × that baseline (default 3, with a
+14-day floor so a fast-cadence entity can't alarm over a long weekend). The flagged
+rows are injected as a **QUIET ENTITIES** block for the agent to *verify* against that
+run's sweep: if the entity actually did the thing, it just records the observation as
+usual (the baseline data was behind); if it's genuinely quiet, the weekly's **Quiet
+on** section gets an entry citing the computed numbers — "no release in 8 weeks vs a
+~3-week norm" — and the last event's source. The arithmetic is deterministic; only the
+judgment is the agent's, the same division as trend detection and the radar.
+
+A reported silence is remembered in `state/quiet.jsonl` (only after the report actually
+shipped) so the *same* silence never re-alarms; the flag self-voids when the entity
+resumes, so a later quiet spell is a new episode. Each **entity dossier** in the portal
+shows the same arithmetic as a **Cadence** line above its event timeline (rhythm, last
+event, days quiet when past threshold). Daily reports are untouched — a silence builds
+over weeks, and flagging it daily is noise. On by default with `tracking.enabled`; set
+`tracking.quiet: false` to turn it off. Mention-count metrics deliberately don't form
+baselines: mention volume tracks how hard each run swept, so "mentions went quiet"
+would measure our own coverage, not the entity. Empty-day ethics unchanged: quiet
+entities only *add* to a weekly that's already being written.
 
 ## Deterministic feed sweep (auditable recall)
 

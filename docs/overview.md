@@ -266,6 +266,14 @@ records the expectation, re-checks it as it comes due, and surfaces the slip as 
 finding. It costs nothing extra — recording rides the existing triage pass, and the
 arithmetic and rendering are plain Python.
 
+Unannounced silences get the same treatment via **quiet detection** (the dog that
+didn't bark): from the recorded event history, each tracked entity gets a normal
+rhythm (the median gap between its events), and an entity silent well past that
+baseline is flagged on the weekly for the monitor to verify and — when it's genuinely
+quiet — surface under *Quiet on* with the numbers: "no release in 8 weeks vs a
+~3-week norm." A reported silence won't re-alarm week after week; the flag resets
+when the entity resumes.
+
 The optional **editorial pass** polishes the brief one more step before it ships (leads
 with the strongest finding, cuts the marginal, tightens the prose) without adding facts
 or dropping citations. The same data also feeds a **web portal** (`bin/portal.sh`): an
@@ -279,7 +287,9 @@ history, event timeline, and every item ever surfaced about it — that compound
 longer the monitor runs: walking into a meeting with six sourced months on a competitor
 is where the accumulated state pays off. The Overview also carries a **Coming up** card
 (the forward radar's pending expectations, overdue ones flagged), and each dossier an
-**Expected** list, so a competitor's announced-and-slipped dates are visible at a glance.
+**Expected** list, so a competitor's announced-and-slipped dates are visible at a
+glance — plus a **Cadence** line on its event timeline (the entity's normal rhythm,
+flagged when its current silence is well past it).
 The charts are server-rendered inline SVG, so there's no JavaScript and nothing to load.
 
 ![The portal Overview](img/portal-overview.png)
@@ -287,7 +297,8 @@ The charts are server-rendered inline SVG, so there's no JavaScript and nothing 
 A [report rendered in the portal](img/portal-reports.png) (same styling as the email),
 the [Review tab](img/portal-review.png) for thumbing items up/down, and a
 [per-entity dossier](img/portal-entity.png) with its **Expected** list (the forward
-radar's announced-and-slipped dates). A static `kb/index.html` snapshot of the Overview is written each
+radar's announced-and-slipped dates) and **Cadence** line (the entity's normal rhythm
+vs its current silence). A static `kb/index.html` snapshot of the Overview is written each
 run too, so there's something to read with no server and no email required.
 
 (Delivery is optional — reports always land in `kb/` regardless. Email renders as HTML

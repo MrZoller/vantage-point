@@ -331,17 +331,33 @@ the refresh gate where quality compounds hardest; the daily monitor's economics 
 untouched. (Design:
 [`design-deep-research-bootstrap.md`](design-deep-research-bootstrap.md).)
 
+## Phase 21 — quiet detection (the dog that didn't bark) ✅ (shipped)
+
+The implicit half of what Phase 18 did for *stated* dates: an entity gone quiet well
+past its own recorded rhythm is itself a finding ("no release in 8 weeks vs a ~3-week
+norm"), and `observations.jsonl` already encodes that rhythm. `bin/cadence.py`
+(stdlib) computes per entity + event_type baselines — the **median gap** between
+distinct event dates, requiring `tracking.quiet_min_events` (default 4) — and on
+**weekly** runs the monitor injects a **QUIET ENTITIES** block for every entity silent
+past `max(tracking.quiet_factor × median, 14 days)` (factor default 3; the floor is a
+constant). The agent verifies each against that run's sweep: activity found → record
+the observation as usual; genuinely quiet → a **Quiet on** entry citing the computed
+numbers and the last event's source. Reported silences are remembered in
+`state/quiet.jsonl` (marked only after the report ships, pruned at a constant 500) so
+the same silence never re-alarms; the flag self-voids when the entity resumes
+(`last_seen` advances), so a later quiet spell re-flags as a new episode. Each portal
+dossier shows the same arithmetic as a **Cadence** line on its event timeline.
+Mention-count metrics deliberately form no baselines (they'd measure our own sweep
+effort, not the entity); dailies are untouched; an empty weekly stays empty — quiet
+entities only *add* to a report. On by default with `tracking.enabled`;
+`tracking.quiet: false` disables it. Zero new claude passes. (Design:
+[`design-quiet-detection.md`](design-quiet-detection.md).)
+
 ## Backlog / possible next steps (not started)
 
 Ideas raised but not built — captured so they aren't lost. Each feature-sized
 item now has a detailed design of record, ready to build:
 
-- **Dog-that-didn't-bark detection.** `observations.jsonl` encodes each entity's
-  normal cadence; an entity gone quiet well past its baseline is itself a finding
-  ("no release in 8 weeks vs a 3-week norm"). Deterministic from existing state.
-  (Phase 18's forward radar covers the *stated*-date half of this; the implicit,
-  cadence-derived half is still open — see the design's v2 notes.)
-  (Design: [`design-quiet-detection.md`](design-quiet-detection.md).)
 - **Confidence-label resolution.** Items ship with high/medium/low confidence but
   nothing checks whether high-confidence calls pan out more often than low ones;
   even a crude sampled follow-up would tell us if the labels mean anything.
