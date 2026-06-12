@@ -1273,7 +1273,7 @@ test_demo_bundle() {
   local repo="$TMP/demorepo" out="$TMP/demoout"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
   cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
-     "$ROOT/bin/demo-bundle.sh" "$repo/bin/"
+     "$ROOT/bin/config-lib.sh" "$ROOT/bin/demo-bundle.sh" "$repo/bin/"
   printf 'subject:\n  name: Acme Corp\noutput:\n  webhook_url: https://x/h\n' > "$repo/monitor-config.yaml"
   printf 'subject:\n  name: Acme Corp\n' > "$repo/profile.yaml"
   printf '{"timestamp":"2026-06-01T07:00:00Z","entity":"Acme","metric":"event","event_type":"x","value":"hi","source":"u"}\n' \
@@ -1342,6 +1342,29 @@ test_demo_bundle() {
   err="$( cd "$repo"; bash bin/demo-bundle.sh --out "$stranger" --force 2>&1 1>/dev/null )" || true
   assert_contains "refuses --force on a populated non-bundle dir" "$err" "not a previous demo bundle"
   if [ -f "$stranger/keep.txt" ]; then pass "stranger dir left intact"; else fail "stranger dir left intact"; fi
+  # --force on an existing regular file is refused (a bundle is a folder) -- so a stray
+  # '--out profile.yaml --force' can't delete the live profile.
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out profile.yaml --force 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --force on an existing non-directory" "$err" "non-directory"
+  if [ -f "$repo/profile.yaml" ]; then pass "live profile.yaml left intact"; else fail "live profile.yaml left intact"; fi
+  # A destination inside a copied tree (state/, kb/) is refused before cp recurses into
+  # itself and strands a half-built bundle in the live data.
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out state/demo 2>&1 1>/dev/null )" || true
+  assert_contains "refuses --out inside state/" "$err" "inside the state/ tree"
+  if [ ! -e "$repo/state/demo" ]; then pass "no bundle stranded under state/"; else fail "no bundle stranded under state/"; fi
+  # A custom monitoring.state_file outside state/ is copied into the bundle and the demo
+  # config repointed at it (so the off-machine portal never reaches back to live state).
+  local sfrepo="$TMP/demosf" sfout="$TMP/demosfout"
+  mkdir -p "$sfrepo/bin" "$sfrepo/state" "$sfrepo/var"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
+     "$ROOT/bin/config-lib.sh" "$ROOT/bin/demo-bundle.sh" "$sfrepo/bin/"
+  printf 'monitoring:\n  state_file: var/dedup.jsonl\nsubject:\n  name: Acme\n' > "$sfrepo/monitor-config.yaml"
+  printf '{"id":"i1","date":"2026-06-06","signal":"opportunity","title":"x","url":"https://x"}\n' \
+    > "$sfrepo/var/dedup.jsonl"
+  ( cd "$sfrepo" && bash bin/demo-bundle.sh --out "$sfout" >/dev/null 2>&1 )
+  if [ -f "$sfout/state/dedup.jsonl" ]; then pass "bundles the out-of-tree state_file under state/"; else fail "bundles the out-of-tree state_file under state/"; fi
+  assert_contains "repoints the demo config at the bundled state_file" \
+    "$(cat "$sfout/monitor-config.yaml" 2>/dev/null)" "state_file: state/dedup.jsonl"
 }
 test_demo_bundle
 

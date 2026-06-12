@@ -26,6 +26,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# The canonical dependency-light config readers (cfg_get) -- so we honor a custom
+# monitoring.state_file exactly as monitor.sh and portal.py do, instead of reimplementing
+# the parse. Optional: if it's somehow absent we degrade to the default state path.
+if [ -f "$ROOT/bin/config-lib.sh" ]; then
+  # shellcheck source=bin/config-lib.sh
+  . "$ROOT/bin/config-lib.sh"
+fi
+
 OUT="$ROOT/dist/vantage-point-demo"
 MAKE_TAR=0
 FORCE=0
@@ -74,6 +82,17 @@ case "$ROOT_ABS/" in
     exit 2 ;;
 esac
 
+# Refuse a destination inside a tree we copy wholesale (state/, kb/): cp -R would then
+# recurse the parent into its own descendant ("cannot copy a directory into itself"),
+# leaving a half-built bundle nested in the live data.
+for tree in state kb; do
+  case "$OUT/" in
+    "$ROOT_ABS/$tree"/*)
+      echo "demo-bundle.sh: refusing --out $OUT (inside the $tree/ tree this script copies)" >&2
+      exit 2 ;;
+  esac
+done
+
 # Refuse to clobber an existing destination unless --force (a bundle is cheap to
 # rebuild, but blowing away the wrong directory is not).
 if [ -e "$OUT" ]; then
@@ -81,10 +100,16 @@ if [ -e "$OUT" ]; then
     echo "demo-bundle.sh: $OUT already exists (use --force to overwrite)" >&2
     exit 1
   fi
-  # Even with --force, only replace a *previous bundle* (carrying our START-HERE.md
-  # signature) or an empty directory -- never an arbitrary populated directory we
-  # didn't create, in case --out points somewhere important by accident.
-  if [ -d "$OUT" ] && [ ! -f "$OUT/START-HERE.md" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
+  # A bundle is always a directory; refuse an existing file/symlink/other so a stray
+  # --force can't delete e.g. the live profile.yaml ('--out profile.yaml --force').
+  if [ ! -d "$OUT" ]; then
+    echo "demo-bundle.sh: refusing --force on $OUT (an existing non-directory; a bundle is a folder)" >&2
+    exit 1
+  fi
+  # And even for a directory, only replace a *previous bundle* (carrying our
+  # START-HERE.md signature) or an empty one -- never an arbitrary populated directory
+  # we didn't create, in case --out points somewhere important by accident.
+  if [ ! -f "$OUT/START-HERE.md" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
     echo "demo-bundle.sh: refusing to --force-overwrite $OUT (not empty and not a previous demo bundle)" >&2
     exit 1
   fi
@@ -133,6 +158,54 @@ for f in profile.summary.md profile.draft.yaml profile.draft.summary.md \
 done
 copy_dir state warn
 copy_dir kb warn
+
+# 2b) The dedup state file the portal scores against is monitoring.state_file (default
+# state/seen.jsonl); portal.py's resolve_state_file() honors a custom or absolute path.
+# A relative path under state/ rode along with the copy above and stays valid against
+# the bundle root. Anything else (an absolute path, or a relative path outside state/)
+# would, in the bundled config, still point at the ORIGINAL machine -- an empty Overview
+# off-machine, or live state read on the original. So copy that file into the bundle's
+# state/ and repoint the bundled config at a portable relative path.
+rewrite_state_file() {  # <config-file> <new-relative-value>
+  local cfg="$1" nv="$2" tmp
+  tmp="$(mktemp)"
+  awk -v nv="$nv" '
+    $0 ~ "^monitoring:[[:space:]]*(#.*)?$" { print; inblk=1; next }
+    inblk && /^[^[:space:]#]/ { inblk=0 }
+    inblk && $1 == "state_file:" {
+      match($0, /^[[:space:]]*/); print substr($0,1,RLENGTH) "state_file: " nv; next
+    }
+    { print }
+  ' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+}
+
+if command -v cfg_get >/dev/null 2>&1 && [ -f "$OUT/monitor-config.yaml" ]; then
+  sf="$(cfg_get monitoring state_file "$ROOT/monitor-config.yaml")"
+  [ -n "$sf" ] || sf="state/seen.jsonl"
+  case "$sf" in ./*) sf="${sf#./}" ;; esac
+  # Portable iff it's a relative path under state/ (already bundled, resolves against the
+  # bundle root). Absolute or outside-state/ paths need relocating.
+  portable=0
+  case "$sf" in
+    /*) ;;                      # absolute -> not portable
+    state/*) portable=1 ;;      # relative under state/ -> already in the bundle
+  esac
+  if [ "$portable" -eq 0 ]; then
+    case "$sf" in /*) sf_src="$sf" ;; *) sf_src="$ROOT/$sf" ;; esac
+    if [ -f "$sf_src" ]; then
+      base="$(basename "$sf_src")"
+      mkdir -p "$OUT/state"
+      cp "$sf_src" "$OUT/state/$base"
+      rewrite_state_file "$OUT/monitor-config.yaml" "state/$base"
+      copied_any=1
+      echo "demo-bundle.sh: NOTE: bundled the configured state_file ($sf) as state/$base" \
+           "and repointed the demo config" >&2
+    else
+      echo "demo-bundle.sh: WARNING: configured state_file ($sf) not found -" \
+           "the demo Overview's surfaced-items view may be empty" >&2
+    fi
+  fi
+fi
 
 if [ "$copied_any" -eq 0 ]; then
   echo "demo-bundle.sh: WARNING: no data found to bundle (state/, kb/, profile.yaml," \
