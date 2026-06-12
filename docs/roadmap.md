@@ -343,9 +343,13 @@ past `max(tracking.quiet_factor × median, 14 days)` (factor default 3; the floo
 constant). The agent verifies each against that run's sweep: activity found → record
 the observation as usual; genuinely quiet → a **Quiet on** entry citing the computed
 numbers and the last event's source. Reported silences are remembered in
-`state/quiet.jsonl` (marked only after the report ships, pruned at a constant 500) so
+`state/quiet.jsonl` (marked only after the report ships, and only for entities the
+shipped report names — an entry the agent dropped re-injects instead of vanishing;
+compacted latest-row-per-key past a constant 500-line bound, never tail-pruned) so
 the same silence never re-alarms; the flag self-voids when the entity resumes
-(`last_seen` advances), so a later quiet spell re-flags as a new episode. Each portal
+(`last_seen` advances), so a later quiet spell re-flags as a new episode. Baselines
+admit only sourced events (no source, no observation — an unsourced row can neither
+form a baseline nor advance `last_seen`). Each portal
 dossier shows the same arithmetic as a **Cadence** line on its event timeline.
 Mention-count metrics deliberately form no baselines (they'd measure our own sweep
 effort, not the entity); dailies are untouched; an empty weekly stays empty — quiet

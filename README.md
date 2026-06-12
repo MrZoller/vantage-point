@@ -592,9 +592,11 @@ on** section gets an entry citing the computed numbers — "no release in 8 week
 ~3-week norm" — and the last event's source. The arithmetic is deterministic; only the
 judgment is the agent's, the same division as trend detection and the radar.
 
-A reported silence is remembered in `state/quiet.jsonl` (only after the report actually
-shipped) so the *same* silence never re-alarms; the flag self-voids when the entity
-resumes, so a later quiet spell is a new episode. Each **entity dossier** in the portal
+A reported silence is remembered in `state/quiet.jsonl` — only after the report
+actually shipped, and only for entities the shipped report *names*, so a silence the
+agent left out re-injects next weekly instead of vanishing unseen — and the *same*
+silence never re-alarms; the flag self-voids when the entity resumes, so a later
+quiet spell is a new episode. Each **entity dossier** in the portal
 shows the same arithmetic as a **Cadence** line above its event timeline (rhythm, last
 event, days quiet when past threshold). Daily reports are untouched — a silence builds
 over weeks, and flagging it daily is noise. On by default with `tracking.enabled`; set

@@ -243,8 +243,19 @@ prune_state "$STATE_FILE" "$STATE_MAX_LINES"
 prune_state state/observations.jsonl "$OBS_MAX_LINES"
 # The expectation log is created by the agent on first record; prune only if it exists.
 [ -n "$HORIZON_ENABLED" ] && [ -f "$HORIZON" ] && prune_state "$HORIZON" "$HORIZON_MAX_LINES"
-# The quiet-flag log is created by cadence.py mark on first flag; prune only if it exists.
-[ -n "$QUIET_ENABLED" ] && [ -f "$QUIET_STATE" ] && prune_state "$QUIET_STATE" "$QUIET_STATE_MAX_LINES"
+# The quiet-flag log is COMPACTED (latest row per entity/event_type), not tail-pruned:
+# readers only ever use that latest row, so compaction loses nothing, while a line-
+# count tail-prune could evict an old-but-still-active flag and re-alarm a silence
+# that was already reported. Compaction only runs past the line bound (the file is
+# one row per flagged silence, so it normally stays tiny); afterwards it is exactly
+# as long as the number of distinct flagged silences.
+if [ -n "$QUIET_ENABLED" ] && [ -f "$QUIET_STATE" ] \
+   && [ "$(wc -l < "$QUIET_STATE")" -gt "$QUIET_STATE_MAX_LINES" ] \
+   && command -v python3 >/dev/null 2>&1 && [ -f bin/cadence.py ]; then
+  python3 bin/cadence.py compact "$QUIET_STATE" 2>/dev/null \
+    && echo "[monitor:$MODE] compacted $QUIET_STATE (latest flag per entity/event_type)" >&2 \
+    || echo "[monitor:$MODE] note: quiet-flag compaction failed (harmless)" >&2
+fi
 
 # ---- profile staleness (governance.profile_refresh_days) ----
 # Anchors drift; a stale profile silently mis-scores. Warn (don't refuse) when the
@@ -786,14 +797,15 @@ else
 fi
 
 # ---- quiet detection: remember what was flagged so the same silence never re-alarms ----
-# Only after a SHIPPED report: if the weekly stayed silent, the flagged silences were
-# never delivered and should re-inject next weekly. Marking is unconditional on the
-# agent's verdict - if it found activity instead, it recorded an observation, last_seen
-# advanced, and this flag never matches again (self-voiding). A failure here is
-# harmless: the worst case is one repeated flag next weekly.
+# Only after a SHIPPED report, and only for entities the shipped report actually
+# names (--report): a silence the agent left out of the report was never delivered,
+# so it must re-inject next weekly rather than be suppressed unseen. If the agent
+# found activity instead, the entity is in the report as a normal item - it gets
+# marked, AND the fresh observation advanced last_seen, so the flag self-voids
+# anyway. A failure here is harmless: the worst case is one repeated flag.
 if [ -n "$QUIET_ROWS" ] && [ -n "$REPORT_SHIPPED" ]; then
   printf '%s\n' "$QUIET_ROWS" \
-    | python3 bin/cadence.py mark --as-of "$TODAY" "$QUIET_STATE" 2>/dev/null \
+    | python3 bin/cadence.py mark --as-of "$TODAY" --report "$REPORT" "$QUIET_STATE" 2>/dev/null \
     || echo "[monitor:$MODE] note: quiet-flag bookkeeping failed (may re-flag next weekly)" >&2
 fi
 
