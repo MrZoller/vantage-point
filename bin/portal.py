@@ -257,6 +257,35 @@ def horizon_enabled():
         and cfg_get_bool("tracking", "horizon", True)
 
 
+def quiet_enabled():
+    """Whether quiet detection is on, exactly as bin/monitor.sh decides it: on by
+    default when tracking is enabled, off when tracking.enabled or tracking.quiet is
+    false -- so a disabled feature shows no Cadence line in the dossiers."""
+    return cfg_get_bool("tracking", "enabled", True) \
+        and cfg_get_bool("tracking", "quiet", True)
+
+
+_CADENCE_MOD = None
+
+def _cadence_mod():
+    """bin/cadence.py loaded as a module (cached), so the dossier's Cadence line shows
+    the same baseline arithmetic the monitor flags with. Loaded by path from this
+    file's directory -- robust to how portal.py itself was loaded -- and a standalone
+    portal.py copy (no sibling cadence.py) degrades to no Cadence line, not a crash."""
+    global _CADENCE_MOD
+    if _CADENCE_MOD is None:
+        try:
+            import importlib.util
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cadence.py")
+            spec = importlib.util.spec_from_file_location("vp_cadence", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _CADENCE_MOD = mod
+        except Exception:
+            _CADENCE_MOD = False
+    return _CADENCE_MOD or None
+
+
 def resolve_state_file():
     """monitoring.state_file (default state/seen.jsonl), normalized like monitor.sh."""
     value = cfg_get("monitoring", "state_file") or "state/seen.jsonl"
@@ -465,6 +494,45 @@ def entity_events(name):
               if r.get("entity") == name and r.get("metric") == "event"]
     events.sort(key=_ts, reverse=True)
     return events[:30]
+
+
+def entity_cadence(name):
+    """Cadence lines for a dossier: this entity's per-event_type baselines (from
+    bin/cadence.py, the same arithmetic the monitor flags with), each annotated with
+    its current silence and whether that silence passes the quiet threshold. Empty
+    when quiet detection is off, cadence.py isn't beside this file, or the entity
+    has too few events for a baseline."""
+    if not quiet_enabled():
+        return []
+    mod = _cadence_mod()
+    if mod is None:
+        return []
+    try:
+        factor = float(cfg_get("tracking", "quiet_factor") or 3)
+    except ValueError:
+        factor = 3.0
+    if not factor > 0:
+        factor = 3.0
+    try:
+        min_events = max(1, int(cfg_get("tracking", "quiet_min_events") or 4))
+    except ValueError:
+        min_events = 4
+    today = datetime.now(timezone.utc).date()
+    rows = []
+    for b in mod.baselines(OBS, min_events):
+        if b["entity"] != name:
+            continue
+        silence = (today - date.fromisoformat(b["last_seen"])).days
+        med = b["median_gap_days"]
+        rows.append({
+            "event_type": b["event_type"],
+            "n_events": b["n_events"],
+            "median_gap_days": int(med) if float(med).is_integer() else round(med, 1),
+            "last_seen": b["last_seen"],
+            "silence_days": silence,
+            "quiet": silence >= mod.quiet_threshold(med, factor),
+        })
+    return rows
 
 
 # ------------------------------------------------------------------ activity visuals
@@ -1540,7 +1608,19 @@ def entity_inner(query):
 
     events = entity_events(name)
     if events:
-        parts.append('<div class="card"><h2>Event timeline</h2><ul class="events">')
+        parts.append('<div class="card"><h2>Event timeline</h2>')
+        # The Cadence line (quiet detection): the entity's normal rhythm vs its current
+        # silence, from the same bin/cadence.py arithmetic the monitor flags with. The
+        # warning glyph (U+26A0) is built from its code point so this file stays ASCII.
+        for c in entity_cadence(name):
+            line = ('Cadence: ~%s-day %s rhythm (%d on record) &middot; last %s'
+                    % (esc(c["median_gap_days"]), esc(c["event_type"]),
+                       c["n_events"], esc(c["last_seen"])))
+            if c["quiet"]:
+                line += (' &middot; <span class="st-bad">%dd quiet %s</span>'
+                         % (c["silence_days"], chr(0x26A0)))
+            parts.append('<p class="sublabel">%s</p>' % line)
+        parts.append('<ul class="events">')
         for e in events:
             note = e.get("note")
             if not note:

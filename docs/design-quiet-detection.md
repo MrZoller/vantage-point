@@ -1,10 +1,17 @@
 # Design: dog-that-didn't-bark detection (cadence baselines)
 
-*Status: proposed (backlog — not started). Companion to the backlog entry in
-[`roadmap.md`](roadmap.md). The forward radar
-([`design-forward-radar.md`](design-forward-radar.md)) shipped the *stated*-date
-half of this idea; this design covers the implicit, cadence-derived half its v2
-notes deferred.*
+*Status: ✅ shipped (Phase 21) — `bin/cadence.py` plus the injection/marking wired
+through `bin/monitor.sh`, `monitor-prompt.md`, and the dossier Cadence line in
+`bin/portal.py`. This document is the design of record, updated to as-built; three
+refinements landed during review: the portal loads `cadence.py` by file path with a
+no-line fallback (a standalone `portal.py` copy can't crash); `mark` is gated on the
+shipped report actually naming the entity (an unreported silence re-injects instead
+of being suppressed unseen); and the flag log is bounded by latest-row-per-key
+*compaction*, not a tail-prune (which could evict an old-but-still-active flag).
+Companion to the Phase 21 entry in [`roadmap.md`](roadmap.md).
+The forward radar ([`design-forward-radar.md`](design-forward-radar.md)) shipped
+the *stated*-date half of this idea; this design covers the implicit,
+cadence-derived half its v2 notes deferred.*
 
 ## Problem
 
@@ -89,7 +96,10 @@ Mention-count metrics are deliberately **excluded** from v1: mention volume
 depends on how thoroughly each run swept, so a "mentions went quiet" baseline
 measures our own coverage as much as the entity. Event observations are
 sourced facts ("no source, no observation"), which makes their absence
-meaningful.
+meaningful — and the rule is enforced here too: a row without a non-empty
+`source` can neither form a baseline nor advance `last_seen` (it could
+otherwise suppress a real silence behind a bogus last event, and a quiet
+finding cites `last_source` as its evidence).
 
 Output of `quiet` — one JSON row per quiet entity, for injection:
 
@@ -122,12 +132,19 @@ there is no judgment in "this was flagged"):
 - `cadence.py quiet` drops any quiet row whose `(entity, event_type,
   last_seen)` matches a flag row — same silence, already reported.
 - `monitor.sh` runs `cadence.py mark` with the injected rows after the weekly
-  report is promoted, recording the flags. If the agent found activity instead,
-  it recorded an observation, `last_seen` advanced, and the stale flag simply
-  never matches again — the episode resets on resumption with no cleanup
-  logic. Self-healing, like the radar's "agent forgets to lapse" stance.
-- Pruned by `prune_state` at a constant 500 lines (it holds one row per
-  flagged silence; it cannot meaningfully grow).
+  report is promoted — but only rows whose entity the shipped report actually
+  **names** (`--report`): a silence the agent left out of the report was never
+  delivered, so it re-injects next weekly rather than being suppressed unseen.
+  If the agent found activity instead, the entity is in the report as a normal
+  item and gets marked — harmlessly, because the fresh observation advanced
+  `last_seen` and the stale flag simply never matches again. The episode
+  resets on resumption with no cleanup logic. Self-healing, like the radar's
+  "agent forgets to lapse" stance.
+- Bounded by **compaction**, not a tail-prune: past a constant 500-line bound,
+  `cadence.py compact` rewrites the log as the latest row per key (readers
+  only ever use that row, so nothing observable changes), whereas a tail-prune
+  could evict an old-but-still-active flag and re-alarm a silence that was
+  already reported.
 
 ### The injection (weekly only, `monitor.sh`)
 
@@ -197,10 +214,11 @@ $QUIET_ROWS
 fi
 # ...$QUIET_NOTE appended next to $HORIZON_NOTE...
 
-# after the report is promoted (weekly only): remember what was flagged
-if [ -n "$QUIET_ROWS" ]; then
+# after the report is promoted (weekly only): remember what was flagged --
+# only what the SHIPPED report actually names (see Re-alarm suppression)
+if [ -n "$QUIET_ROWS" ] && [ -n "$REPORT_SHIPPED" ]; then
   printf '%s\n' "$QUIET_ROWS" \
-    | python3 bin/cadence.py mark --as-of "$TODAY" state/quiet.jsonl 2>/dev/null \
+    | python3 bin/cadence.py mark --as-of "$TODAY" --report "$REPORT" state/quiet.jsonl 2>/dev/null \
     || echo "[monitor:$MODE] note: quiet-flag bookkeeping failed (harmless)" >&2
 fi
 ```
@@ -214,6 +232,7 @@ fi
 | corrupt observation/flag rows | skipped by `cadence.py`, counted to stderr |
 | `python3` missing | note, skip (the prompt's existing Quiet on guidance still applies) |
 | agent flags despite fresh activity | the prompt forbids it; worst case is one redundant line, corrected next run when `mark`'s flag suppresses it |
+| agent leaves a flagged entity out of the report | not marked (`--report` gate) — the silence re-injects next weekly instead of vanishing unseen |
 | `mark` fails | same silence re-flags next weekly — annoying, not wrong |
 | entity intentionally seasonal | `quiet_factor` is the user's lever; a thumbs-down on the finding feeds calibration like any other grade |
 

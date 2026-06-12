@@ -233,6 +233,17 @@ tracking:
   horizon: true
   horizon_max_lines: 2000         # cap state/horizon.jsonl; pruned each run (0 = off)
   horizon_upcoming_days: 14       # window for the weekly "Coming up" table
+  # Quiet detection (the dog that didn't bark): each entity's sourced event history
+  # in observations.jsonl gives it a normal rhythm; on weekly runs, entities silent
+  # well past that baseline (median gap between events) are flagged for the agent to
+  # verify against the sweep and surface under "Quiet on" — "no release in 8 weeks
+  # vs a ~3-week norm" is a finding even though nothing was published. A flagged
+  # silence is remembered (state/quiet.jsonl) so it never re-alarms; the flag resets
+  # when the entity resumes. On by default when tracking.enabled; quiet: false
+  # turns the whole feature off.
+  quiet: true
+  quiet_factor: 3                 # flag at this multiple of the median event gap
+  quiet_min_events: 4             # events on record before an entity has a "norm"
 
 output:
   # Reports always land in kb/. Set email_to to ALSO email each report via msmtp

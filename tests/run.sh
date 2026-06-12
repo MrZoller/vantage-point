@@ -737,7 +737,8 @@ make_fake_repo() {
   local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
   cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" \
-     "$ROOT/bin/webhook.py" "$ROOT/bin/fetch.py" "$ROOT/bin/horizon.py" "$repo/bin/"
+     "$ROOT/bin/webhook.py" "$ROOT/bin/fetch.py" "$ROOT/bin/horizon.py" \
+     "$ROOT/bin/cadence.py" "$repo/bin/"
   cp_libs "$repo/bin"
   cat > "$repo/monitor-config.yaml" <<YAML
 version: 1
@@ -2610,6 +2611,262 @@ PY
   kill "$srv" 2>/dev/null || true
 }
 test_portal_coming_up
+
+echo "== cadence.py: baselines, floor, min-events, suppression + episode reset =="
+test_cadence_py() {
+  local repo="$TMP/cadencepy" obs="$TMP/cadencepy/obs.jsonl" flags="$TMP/cadencepy/quiet.jsonl" out rc
+  mkdir -p "$repo"; cp "$ROOT/bin/cadence.py" "$repo/"
+  # Fixed dates + a fixed --as-of so the math is deterministic regardless of the day
+  # the suite runs. as-of = 2026-06-07.
+  # A: 4 release events 21 days apart (one same-day dup), last 2026-03-05 -> median 21,
+  #    silence 94 >= max(3*21, 14) -> quiet. B: 3 events, below --min-events -> never a
+  #    baseline. C: daily rhythm, 10d silent -> past 3x its median but under the 14-day
+  #    floor -> not quiet. D: metric (non-event) rows only -> ignored. Plus a corrupt row.
+  printf '%s\n' \
+    '{"timestamp":"2026-01-01T07:00:00Z","entity":"A","metric":"event","event_type":"release","value":"v1","source":"https://a/1"}' \
+    '{"timestamp":"2026-01-22T07:00:00Z","entity":"A","metric":"event","event_type":"release","value":"v2","source":"https://a/2"}' \
+    '{"timestamp":"2026-02-12T07:00:00Z","entity":"A","metric":"event","event_type":"release","value":"v3","source":"https://a/3"}' \
+    '{"timestamp":"2026-03-05T07:00:00Z","entity":"A","metric":"event","event_type":"release","value":"v4","source":"https://a/4"}' \
+    '{"timestamp":"2026-03-05T09:00:00Z","entity":"A","metric":"event","event_type":"release","value":"v4 again","source":"https://a/4b"}' \
+    '{"timestamp":"2026-01-01T07:00:00Z","entity":"B","metric":"event","event_type":"hire","value":"x","source":"https://b/1"}' \
+    '{"timestamp":"2026-02-01T07:00:00Z","entity":"B","metric":"event","event_type":"hire","value":"y","source":"https://b/2"}' \
+    '{"timestamp":"2026-03-01T07:00:00Z","entity":"B","metric":"event","event_type":"hire","value":"z","source":"https://b/3"}' \
+    '{"timestamp":"2026-05-25T07:00:00Z","entity":"C","metric":"event","event_type":"post","value":"p","source":"https://c/1"}' \
+    '{"timestamp":"2026-05-26T07:00:00Z","entity":"C","metric":"event","event_type":"post","value":"p","source":"https://c/2"}' \
+    '{"timestamp":"2026-05-27T07:00:00Z","entity":"C","metric":"event","event_type":"post","value":"p","source":"https://c/3"}' \
+    '{"timestamp":"2026-05-28T07:00:00Z","entity":"C","metric":"event","event_type":"post","value":"p","source":"https://c/4"}' \
+    '{"timestamp":"2026-06-01T07:00:00Z","entity":"D","metric":"price_usd","value":42,"source":"https://d/1"}' \
+    '{"timestamp":"2026-04-20T07:00:00Z","entity":"A","metric":"event","event_type":"release","value":"unsourced leak"}' \
+    '{"timestamp":"2026-01-01T07:00:00Z","entity":"E","metric":"event","event_type":"ship","value":"1"}' \
+    '{"timestamp":"2026-01-22T07:00:00Z","entity":"E","metric":"event","event_type":"ship","value":"2"}' \
+    '{"timestamp":"2026-02-12T07:00:00Z","entity":"E","metric":"event","event_type":"ship","value":"3"}' \
+    '{"timestamp":"2026-03-05T07:00:00Z","entity":"E","metric":"event","event_type":"ship","value":"4"}' \
+    'this is not json -- a corrupt hand-edited row' \
+    > "$obs"
+  out="$( python3 "$repo/cadence.py" quiet --as-of 2026-06-07 --factor 3 --min-events 4 "$obs" "$flags" )"; rc=$?
+  assert_eq "quiet exits 0 despite a corrupt row" "0" "$rc"
+  assert_contains "a long-silent entity is flagged" "$out" '"entity": "A"'
+  assert_contains "same-day repeats collapse (median stays 21)" "$out" '"median_gap_days": 21'
+  assert_contains "silence is counted from the last event" "$out" '"silence_days": 94'
+  assert_contains "an unsourced later event does not advance last_seen" "$out" '"last_seen": "2026-03-05"'
+  assert_contains "the silence/median ratio is reported" "$out" '"factor": 4.5'
+  assert_contains "the last event's source rides along" "$out" '"last_source": "https://a/4b"'
+  assert_not_contains "below min-events -> no baseline, never flagged" "$out" '"entity": "B"'
+  assert_not_contains "a short silence under the 14-day floor is not quiet" "$out" '"entity": "C"'
+  assert_not_contains "non-event metrics never form a baseline" "$out" '"entity": "D"'
+  assert_not_contains "unsourced events never form a baseline" "$out" '"entity": "E"'
+  # Suppression: mark the flagged silence, and the same silence stops re-alarming.
+  printf '%s\n' "$out" | python3 "$repo/cadence.py" mark --as-of 2026-06-07 "$flags"
+  assert_contains "mark records the flagged silence" "$(cat "$flags" 2>/dev/null)" '"entity": "A"'
+  assert_eq "a marked silence is suppressed" "" "$( python3 "$repo/cadence.py" quiet --as-of 2026-06-07 --factor 3 --min-events 4 "$obs" "$flags" )"
+  # Episode reset: the entity resumes (last_seen advances), goes quiet again later ->
+  # the stale flag no longer matches and the NEW silence is flagged.
+  printf '%s\n' '{"timestamp":"2026-03-26T07:00:00Z","entity":"A","metric":"event","event_type":"release","value":"v5","source":"https://a/5"}' >> "$obs"
+  out="$( python3 "$repo/cadence.py" quiet --as-of 2026-06-07 --factor 3 --min-events 4 "$obs" "$flags" )"
+  assert_contains "a resumed-then-quiet entity re-flags as a new episode" "$out" '"last_seen": "2026-03-26"'
+  # Fail-safe edges: a missing observations file emits nothing.
+  assert_eq "missing observations file emits nothing" "" "$( python3 "$repo/cadence.py" quiet --as-of 2026-06-07 "$TMP/nope.jsonl" )"
+
+  # mark --report: only entities the delivered report actually names get flagged --
+  # a silence the agent left out of the report must re-inject, not vanish unseen.
+  local mflags="$TMP/cadencepy/markreport.jsonl" mreport="$TMP/cadencepy/report.md"
+  printf '# weekly\n\n## Quiet on\n- **A** has gone dark (no release in 13 weeks)\n' > "$mreport"
+  printf '%s\n' \
+    '{"entity":"A","event_type":"release","last_seen":"2026-03-05"}' \
+    '{"entity":"Xylo","event_type":"release","last_seen":"2026-03-01"}' \
+    | python3 "$repo/cadence.py" mark --as-of 2026-06-07 --report "$mreport" "$mflags"
+  assert_contains "mark --report flags the reported entity" "$(cat "$mflags" 2>/dev/null)" '"entity": "A"'
+  assert_not_contains "mark --report skips entities absent from the report" "$(cat "$mflags" 2>/dev/null)" '"entity": "Xylo"'
+
+  # compact: the flag log is bounded by rewriting to the latest row per key -- never
+  # by a tail-prune, which could evict an old-but-still-active flag and re-alarm.
+  local cflags="$TMP/cadencepy/compact.jsonl"
+  printf '%s\n' \
+    '{"timestamp":"2026-01-01T00:00:00Z","entity":"X","event_type":"release","last_seen":"2026-01-01","flagged":"2026-01-01"}' \
+    '{"timestamp":"2026-02-01T00:00:00Z","entity":"Y","event_type":"hire","last_seen":"2026-01-15","flagged":"2026-02-01"}' \
+    '{"timestamp":"2026-03-01T00:00:00Z","entity":"X","event_type":"release","last_seen":"2026-02-20","flagged":"2026-03-01"}' \
+    > "$cflags"
+  python3 "$repo/cadence.py" compact "$cflags"
+  assert_eq "compact keeps one row per entity/event_type" "2" "$(wc -l < "$cflags" | tr -d ' ')"
+  assert_contains "compact keeps the newest flag per key" "$(cat "$cflags")" '"last_seen": "2026-02-20"'
+  assert_not_contains "compact drops superseded flags" "$(cat "$cflags")" '"2026-01-01T00:00:00Z"'
+  assert_contains "compact keeps unrelated keys" "$(cat "$cflags")" '"entity": "Y"'
+}
+test_cadence_py
+
+echo "== monitor.sh: quiet detection injects QUIET ENTITIES (weekly), marks, suppresses =="
+test_monitor_quiet() {
+  local repo="$TMP/quietrepo" out args0="$TMP/quiet_args0" args1="$TMP/quiet_args1" args2="$TMP/quiet_args2"
+  make_fake_repo "$repo"
+  # A stub that captures its prompt AND writes a weekly report that names Competitor Q
+  # in its Quiet on section -- but NOT Competitor R -- so the report-gated mark path
+  # is exercised both ways (daily runs ignore the weekly partial and stay silent).
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '# weekly report\n\n## Quiet on\n- **Competitor Q** - no release in 13 weeks vs a ~3-week norm\n' \
+  > "kb/.$(date +%F).weekly.partial.md"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  # The fixture config prunes observations to 5 lines; this test seeds 8 (two
+  # entities x 4 events), so widen the cap or the prune eats the first entity.
+  sed 's/observations_max_lines: 5/observations_max_lines: 50/' "$repo/monitor-config.yaml" \
+    > "$repo/monitor-config.yaml.tmp" && mv "$repo/monitor-config.yaml.tmp" "$repo/monitor-config.yaml"
+  # Competitor Q and Competitor R: 4 release events 21 days apart each, the last ~90
+  # days ago -> silence >= max(3*21, 14) = 63 -> both quiet. Dates are relative to
+  # today so the math holds whenever the suite runs.
+  python3 - "$repo/state/observations.jsonl" <<'PY'
+import json, sys
+from datetime import date, timedelta
+today = date.today()
+with open(sys.argv[1], "w") as f:
+    for entity, offsets in (("Competitor Q", (153, 132, 111, 90)),
+                            ("Competitor R", (152, 131, 110, 89))):
+        for d in offsets:
+            f.write(json.dumps({"timestamp": (today - timedelta(days=d)).isoformat() + "T07:00:00Z",
+                                "entity": entity, "metric": "event",
+                                "event_type": "release", "value": "release",
+                                "source": "https://example.test/releases"}) + "\n")
+PY
+  # Daily: quiet detection is weekly-only -- no injection, no flag bookkeeping.
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args0" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  assert_not_contains "a daily run never injects QUIET ENTITIES" "$(cat "$args0" 2>/dev/null)" "QUIET ENTITIES"
+  if [ -f "$repo/state/quiet.jsonl" ]; then fail "daily writes no quiet flags"; else pass "daily writes no quiet flags"; fi
+  # Weekly: both silences are injected; only the one the shipped report NAMES is
+  # marked -- the silence the agent left out must re-inject, not vanish unseen.
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args1" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" weekly 2>&1 )"
+  assert_contains "announces the quiet entities" "$out" "quiet detection: 2 entity(ies) silent past their baseline"
+  assert_contains "prompt carries the injected QUIET ENTITIES block" "$(cat "$args1" 2>/dev/null)" "QUIET ENTITIES - cadence baselines"
+  assert_contains "the quiet entities are injected" "$(cat "$args1" 2>/dev/null)" "Competitor Q"
+  assert_contains "the injected row carries the silence arithmetic" "$(cat "$args1" 2>/dev/null)" '"silence_days": 90'
+  assert_contains "the reported silence is marked" "$(cat "$repo/state/quiet.jsonl" 2>/dev/null)" '"entity": "Competitor Q"'
+  assert_not_contains "a silence absent from the report is NOT marked" "$(cat "$repo/state/quiet.jsonl" 2>/dev/null)" '"entity": "Competitor R"'
+  # Weekly again: the reported silence never re-alarms; the unreported one re-injects.
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args2" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" weekly 2>&1 )"
+  assert_contains "an unreported silence re-injects next weekly" "$(cat "$args2" 2>/dev/null)" "Competitor R"
+  assert_not_contains "a marked silence is not re-injected" "$(cat "$args2" 2>/dev/null)" '"entity": "Competitor Q"'
+
+  # Silence preserved: a weekly that ships NO report must not mark the flags (they
+  # were never delivered), so the silence re-injects next weekly.
+  local repo2="$TMP/quietrepo2" args3="$TMP/quiet_args3"
+  make_fake_repo "$repo2"                       # default stub writes no report
+  sed 's/observations_max_lines: 5/observations_max_lines: 50/' "$repo2/monitor-config.yaml" \
+    > "$repo2/monitor-config.yaml.tmp" && mv "$repo2/monitor-config.yaml.tmp" "$repo2/monitor-config.yaml"
+  cp "$repo/state/observations.jsonl" "$repo2/state/observations.jsonl"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" bash "$repo2/bin/monitor.sh" weekly 2>&1 )"
+  assert_contains "quiet rows are computed on the silent weekly" "$out" "quiet detection: 2"
+  assert_contains "the silent weekly stays silent" "$out" "nothing material"
+  if [ -f "$repo2/state/quiet.jsonl" ]; then fail "an unshipped report marks nothing"; else pass "an unshipped report marks nothing"; fi
+  # Disablement: tracking.quiet: false turns the whole feature off (no computation).
+  printf 'tracking:\n  quiet: false\n' >> "$repo2/monitor-config.yaml"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_ARGS="$args3" HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" \
+          bash "$repo2/bin/monitor.sh" weekly 2>&1 )"
+  assert_not_contains "tracking.quiet: false disables the injection" "$(cat "$args3" 2>/dev/null)" "QUIET ENTITIES"
+  assert_not_contains "tracking.quiet: false disables the computation" "$out" "quiet detection:"
+}
+test_monitor_quiet
+
+echo "== monitor.sh: quiet-flag log is compacted, never tail-pruned (active flags survive) =="
+test_monitor_quiet_compact() {
+  local repo="$TMP/quietcompact" out
+  make_fake_repo "$repo"
+  # Competitor Q is quiet and ALREADY flagged -- its flag row sits at the HEAD of an
+  # oversized log. A line-count tail-prune would evict it and wrongly re-alarm the
+  # same silence; compaction (latest row per key) must keep it suppressed.
+  python3 - "$repo/state/observations.jsonl" "$repo/state/quiet.jsonl" <<'PY'
+import json, sys
+from datetime import date, timedelta
+today = date.today()
+last = None
+with open(sys.argv[1], "w") as f:
+    for d in (153, 132, 111, 90):
+        day = (today - timedelta(days=d)).isoformat()
+        last = day
+        f.write(json.dumps({"timestamp": day + "T07:00:00Z", "entity": "Competitor Q",
+                            "metric": "event", "event_type": "release", "value": "release",
+                            "source": "https://example.test/releases"}) + "\n")
+with open(sys.argv[2], "w") as f:
+    f.write(json.dumps({"timestamp": "2026-01-01T00:00:00Z", "entity": "Competitor Q",
+                        "event_type": "release", "last_seen": last,
+                        "flagged": "2026-01-01"}) + "\n")
+    for _ in range(520):
+        f.write(json.dumps({"timestamp": "2026-01-02T00:00:00Z", "entity": "Other",
+                            "event_type": "x", "last_seen": "2026-01-01",
+                            "flagged": "2026-01-02"}) + "\n")
+PY
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
+  assert_contains "an oversized flag log is compacted" "$out" "compacted state/quiet.jsonl"
+  assert_eq "compaction keeps the latest row per key" "2" "$(wc -l < "$repo/state/quiet.jsonl" | tr -d ' ')"
+  assert_contains "the still-active flag survives compaction" "$(cat "$repo/state/quiet.jsonl")" '"entity": "Competitor Q"'
+  assert_not_contains "the suppressed silence stays suppressed" "$out" "quiet detection:"
+}
+test_monitor_quiet_compact
+
+echo "== portal.py: dossier Cadence line shows the baseline; quiet styled; off when disabled =="
+test_portal_cadence() {
+  local repo="$TMP/pcad" out
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/cadence.py" "$repo/bin/"
+  python3 - "$repo/state/observations.jsonl" <<'PY'
+import json, sys
+from datetime import date, timedelta
+today = date.today()
+with open(sys.argv[1], "w") as f:
+    for d in (153, 132, 111, 90):
+        f.write(json.dumps({"timestamp": (today - timedelta(days=d)).isoformat() + "T07:00:00Z",
+                            "entity": "Competitor Q", "metric": "event",
+                            "event_type": "release", "value": "release",
+                            "source": "https://q.example/releases"}) + "\n")
+PY
+  out="$(python3 - "$repo/bin/portal.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+page = m.entity_inner({"e": ["Competitor Q"]})
+print("LINE", "Cadence: ~21-day release rhythm (4 on record)" in page)
+print("QUIET", "90d quiet" in page and "st-bad" in page)
+PY
+)"
+  assert_contains "dossier shows the computed Cadence line" "$out" "LINE True"
+  assert_contains "a quiet entity is styled as a warning" "$out" "QUIET True"
+  # Disablement: tracking.quiet: false hides the line, matching the monitor.
+  printf 'tracking:\n  quiet: false\n' > "$repo/monitor-config.yaml"
+  out="$(python3 - "$repo/bin/portal.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("CAD", m.entity_cadence("Competitor Q"))
+PY
+)"
+  assert_contains "tracking.quiet: false hides the Cadence line" "$out" "CAD []"
+  rm -f "$repo/monitor-config.yaml"
+  # A standalone portal.py copy (no sibling cadence.py) degrades to no line, not a crash.
+  local solo="$TMP/pcadsolo"
+  mkdir -p "$solo/bin" "$solo/state" "$solo/kb"
+  cp "$ROOT/bin/portal.py" "$solo/bin/"
+  cp "$repo/state/observations.jsonl" "$solo/state/observations.jsonl"
+  out="$(python3 - "$solo/bin/portal.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+page = m.entity_inner({"e": ["Competitor Q"]})
+print("OK", "Event timeline" in page and "Cadence:" not in page)
+PY
+)"
+  assert_contains "a standalone portal copy degrades to no Cadence line" "$out" "OK True"
+}
+test_portal_cadence
 
 echo "== usage.sh: rolls up runs.log within the window =="
 test_usage() {

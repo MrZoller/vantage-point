@@ -98,6 +98,24 @@ HORIZON_DAYS="$(cfg_get tracking horizon_upcoming_days)"
 case "$HORIZON_MAX_LINES" in ''|*[!0-9]*) HORIZON_MAX_LINES=2000 ;; esac
 case "$HORIZON_DAYS"       in ''|*[!0-9]*) HORIZON_DAYS=14 ;; esac
 
+# ---- quiet detection (tracking.quiet; the dog that didn't bark) ----
+# Each entity's sourced event history (observations.jsonl) gives it a normal rhythm;
+# on WEEKLY runs, entities silent well past that baseline are injected as a QUIET
+# ENTITIES block for the agent to verify against the sweep and surface under "Quiet
+# on" - an absence is a finding when the entity's own history says it shouldn't be
+# quiet. On by default when tracking is on; tracking.quiet: false turns it off.
+# Flagged silences are remembered in state/quiet.jsonl so the same silence never
+# re-alarms; the flag self-voids when the entity resumes (last_seen advances).
+QUIET_ENABLED=""
+[ -n "$TRACKING_ENABLED" ] && QUIET_ENABLED="$(cfg_get_bool tracking quiet 1)"
+QUIET_STATE="state/quiet.jsonl"
+QUIET_STATE_MAX_LINES=500   # one row per flagged silence; a constant, not a knob
+QUIET_FACTOR="$(cfg_get tracking quiet_factor)"
+QUIET_MIN_EVENTS="$(cfg_get tracking quiet_min_events)"
+case "$QUIET_FACTOR"     in ''|*[!0-9.]*|*.*.*) QUIET_FACTOR=3 ;; esac
+awk -v f="$QUIET_FACTOR" 'BEGIN{exit !(f > 0)}' || QUIET_FACTOR=3
+case "$QUIET_MIN_EVENTS" in ''|0|*[!0-9]*) QUIET_MIN_EVENTS=4 ;; esac
+
 # ---- run budgets (budgets: block; all optional with the long-standing defaults) ----
 # On a Max subscription the spend is subscription headroom, not API billing, so the
 # real cost levers are run frequency and these per-pass turn caps (each is passed to
@@ -225,6 +243,19 @@ prune_state "$STATE_FILE" "$STATE_MAX_LINES"
 prune_state state/observations.jsonl "$OBS_MAX_LINES"
 # The expectation log is created by the agent on first record; prune only if it exists.
 [ -n "$HORIZON_ENABLED" ] && [ -f "$HORIZON" ] && prune_state "$HORIZON" "$HORIZON_MAX_LINES"
+# The quiet-flag log is COMPACTED (latest row per entity/event_type), not tail-pruned:
+# readers only ever use that latest row, so compaction loses nothing, while a line-
+# count tail-prune could evict an old-but-still-active flag and re-alarm a silence
+# that was already reported. Compaction only runs past the line bound (the file is
+# one row per flagged silence, so it normally stays tiny); afterwards it is exactly
+# as long as the number of distinct flagged silences.
+if [ -n "$QUIET_ENABLED" ] && [ -f "$QUIET_STATE" ] \
+   && [ "$(wc -l < "$QUIET_STATE")" -gt "$QUIET_STATE_MAX_LINES" ] \
+   && command -v python3 >/dev/null 2>&1 && [ -f bin/cadence.py ]; then
+  python3 bin/cadence.py compact "$QUIET_STATE" 2>/dev/null \
+    && echo "[monitor:$MODE] compacted $QUIET_STATE (latest flag per entity/event_type)" >&2 \
+    || echo "[monitor:$MODE] note: quiet-flag compaction failed (harmless)" >&2
+fi
 
 # ---- profile staleness (governance.profile_refresh_days) ----
 # Anchors drift; a stale profile silently mis-scores. Warn (don't refuse) when the
@@ -341,6 +372,41 @@ sparse row loses the entity link and drops out of its dossier.
   append the full row with \`status\`:\"lapsed\" so it never re-alarms on later runs.
 \`\`\`jsonl
 $DUE
+\`\`\`"
+  fi
+fi
+
+# ---- quiet detection: cadence silences (tracking.quiet; weekly only) ----
+# The deterministic half (baselines + who is past them) is bin/cadence.py; the agent
+# judges each flagged silence against THIS run's sweep - the same division as the
+# forward radar. Weekly only: a silence builds over weeks, and flagging it daily is
+# noise. Fail-safe: any problem here skips the injection, never the run.
+QUIET_NOTE=""
+QUIET_ROWS=""
+if [ "$MODE" = weekly ] && [ -n "$QUIET_ENABLED" ] && [ -s state/observations.jsonl ] \
+   && command -v python3 >/dev/null 2>&1 && [ -f bin/cadence.py ]; then
+  QUIET_ROWS="$(python3 bin/cadence.py quiet --as-of "$TODAY" --factor "$QUIET_FACTOR" \
+      --min-events "$QUIET_MIN_EVENTS" state/observations.jsonl "$QUIET_STATE" 2>/dev/null || true)"
+  if [ -n "$QUIET_ROWS" ]; then
+    n_quiet="$(printf '%s\n' "$QUIET_ROWS" | grep -c . || true)"
+    echo "[monitor:$MODE] quiet detection: $n_quiet entity(ies) silent past their baseline" >&2
+    QUIET_NOTE="
+
+QUIET ENTITIES - cadence baselines (the dog that didn't bark). Each row is a tracked
+entity whose sourced event history in ./state/observations.jsonl shows a normal rhythm
+(\`median_gap_days\` between its \`event_type\` events) that its current silence
+(\`silence_days\` since \`last_seen\`) now exceeds. The arithmetic ran on recorded
+history; you hold newer evidence - judge each row against THIS run's sweep:
+- ACTIVITY FOUND (or an announced reason for the pause): record the observation as
+  usual and do NOT flag the entity - the recorded history was simply behind.
+- GENUINELY QUIET: add an entry to the weekly 'Quiet on' section citing the numbers
+  (the baseline is the finding's credibility) and linking \`last_source\` as the last
+  event's citation. The silence is the sourced fact; your interpretation of it is a
+  judgment - mark its confidence accordingly.
+A quiet entity never justifies surfacing an unrelated marginal item, and an empty
+week stays empty - quiet entities only ADD to a weekly you were already writing.
+\`\`\`jsonl
+$QUIET_ROWS
 \`\`\`"
   fi
 fi
@@ -476,7 +542,7 @@ also append your highest-scoring surfaced items - those with score >= $DEEPDIVE_
 at most $DEEPDIVE_MAX of them, highest first - to ./$QUEUE, one JSON object per line:
 {\"url\":...,\"title\":...,\"signal\":...,\"score\":...,\"so_what\":...}. A separate
 stronger agent will investigate these and enrich them in the report; you just queue
-them. Do not write the queue when it's disabled.$CATCHUP_NOTE$CANDIDATES_NOTE$FEEDBACK_NOTE$HORIZON_NOTE" \
+them. Do not write the queue when it's disabled.$CATCHUP_NOTE$CANDIDATES_NOTE$FEEDBACK_NOTE$HORIZON_NOTE$QUIET_NOTE" \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
   --disallowedTools "Bash" \
@@ -679,8 +745,10 @@ email_report() {  # <report-file> <recipient>...
 # Promote this run's output to $REPORT only now - so a failed rerun never clobbers
 # an earlier report.
 # ---- deliver: plug in whatever channel you want ----
+REPORT_SHIPPED=""
 if [ -s "$RUN_REPORT" ]; then
   mv -f "$RUN_REPORT" "$REPORT"
+  REPORT_SHIPPED=1
   echo "[monitor:$MODE] report ready: $REPORT"
   # Email via msmtp when output.email_to is set (configure ~/.msmtprc - see README).
   # Failure to send never fails the run: the report is already safe in $REPORT.
@@ -726,6 +794,19 @@ else
   # $REPORT from an earlier successful run today in place.
   rm -f "$RUN_REPORT"
   echo "[monitor:$MODE] nothing material - no report written (silence is correct)."
+fi
+
+# ---- quiet detection: remember what was flagged so the same silence never re-alarms ----
+# Only after a SHIPPED report, and only for entities the shipped report actually
+# names (--report): a silence the agent left out of the report was never delivered,
+# so it must re-inject next weekly rather than be suppressed unseen. If the agent
+# found activity instead, the entity is in the report as a normal item - it gets
+# marked, AND the fresh observation advanced last_seen, so the flag self-voids
+# anyway. A failure here is harmless: the worst case is one repeated flag.
+if [ -n "$QUIET_ROWS" ] && [ -n "$REPORT_SHIPPED" ]; then
+  printf '%s\n' "$QUIET_ROWS" \
+    | python3 bin/cadence.py mark --as-of "$TODAY" --report "$REPORT" "$QUIET_STATE" 2>/dev/null \
+    || echo "[monitor:$MODE] note: quiet-flag bookkeeping failed (may re-flag next weekly)" >&2
 fi
 
 # Re-check the soft budget now that every pass's usage is in runs.log, so the run
