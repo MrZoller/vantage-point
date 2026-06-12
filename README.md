@@ -35,6 +35,7 @@ vantage-point/
 │   ├── usage.sh                  # roll up state/runs.log: cost/turns/tokens
 │   ├── portal.sh                 # launch the unified web portal (or --export kb/index.html)
 │   ├── portal.py                 # the portal app: overview, reports, entities, review, profile, config
+│   ├── demo-bundle.sh            # package the portal + accumulated data into a portable demo folder
 │   ├── fetch.py                  # deterministic feed pre-sweep (profile feeds -> candidates)
 │   ├── horizon.py                # forward radar: due/upcoming over state/horizon.jsonl
 │   ├── cadence.py                # quiet detection: cadence baselines over observations.jsonl
@@ -692,6 +693,29 @@ In **VS Code Remote**, running `./bin/portal.sh` in the integrated terminal trig
 VS Code's automatic port forwarding (click the toast). Reports render in the portal
 itself (via the same `pandoc`/`cmark` chain the email uses, with a built-in fallback),
 so you no longer need a separate markdown preview.
+
+### Taking the portal off-site (demo bundle)
+
+To show the portal somewhere you won't run the agent (a work laptop, a conference
+machine), `bin/demo-bundle.sh` packages the portal runtime plus the data it has
+accumulated into one self-contained folder. On the demo machine you just start the
+web server — no agent, no `claude` CLI, no network, only `python3`:
+
+```
+./bin/demo-bundle.sh                 # -> dist/vantage-point-demo/
+./bin/demo-bundle.sh --out /tmp/demo # ...to a chosen folder
+./bin/demo-bundle.sh --tar           # ...and also write <out>.tar.gz to carry
+# then, on the other machine:
+cd vantage-point-demo && ./start-demo.sh   # serve on http://localhost:8000
+```
+
+The bundle carries `bin/{portal.py,portal.sh,cadence.py}`, your `monitor-config.yaml`
+and `profile.yaml` (plus any summaries/drafts), and the whole `state/` and `kb/`
+trees, alongside a `start-demo.sh` launcher and a `START-HERE.md`. The portal still
+binds to `127.0.0.1` only, and the Review tab still records grades — into the bundle's
+own `state/`, so a demo never touches your live deployment. Note the bundle contains
+your real config and profile verbatim (recipient emails, any webhook URL, the
+profile's intel text), so treat it as sensitive.
 
 ## Deep dive (two-pass investigation)
 

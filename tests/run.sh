@@ -1268,6 +1268,65 @@ PY
 }
 test_portal_export
 
+echo "== demo-bundle.sh: packages the portal runtime + live data into a portable folder =="
+test_demo_bundle() {
+  local repo="$TMP/demorepo" out="$TMP/demoout"
+  mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
+     "$ROOT/bin/demo-bundle.sh" "$repo/bin/"
+  printf 'subject:\n  name: Acme Corp\noutput:\n  webhook_url: https://x/h\n' > "$repo/monitor-config.yaml"
+  printf 'subject:\n  name: Acme Corp\n' > "$repo/profile.yaml"
+  printf '{"timestamp":"2026-06-01T07:00:00Z","entity":"Acme","metric":"event","event_type":"x","value":"hi","source":"u"}\n' \
+    > "$repo/state/observations.jsonl"
+  printf 'r\n' > "$repo/kb/2026-06-06.daily.md"
+  ( cd "$repo" && bash bin/demo-bundle.sh --out "$out" --tar >/dev/null 2>&1 )
+  # The portal runtime travels with the bundle (portal.py is required; cadence.py is the
+  # one sibling it loads by path).
+  for f in bin/portal.py bin/portal.sh bin/cadence.py; do
+    if [ -f "$out/$f" ]; then pass "bundle ships $f"; else fail "bundle ships $f"; fi
+  done
+  # Live data is copied verbatim (we bundle everything as-is, no redaction).
+  if [ -f "$out/monitor-config.yaml" ]; then pass "bundle ships monitor-config.yaml"; else fail "bundle ships monitor-config.yaml"; fi
+  if [ -f "$out/profile.yaml" ]; then pass "bundle ships profile.yaml"; else fail "bundle ships profile.yaml"; fi
+  if [ -f "$out/state/observations.jsonl" ]; then pass "bundle ships state/"; else fail "bundle ships state/"; fi
+  if [ -f "$out/kb/2026-06-06.daily.md" ]; then pass "bundle ships kb/ reports"; else fail "bundle ships kb/ reports"; fi
+  # A one-command launcher and an orientation note land at the bundle root.
+  if [ -x "$out/start-demo.sh" ]; then pass "bundle has an executable start-demo.sh"; else fail "bundle has an executable start-demo.sh"; fi
+  if [ -f "$out/START-HERE.md" ]; then pass "bundle has START-HERE.md"; else fail "bundle has START-HERE.md"; fi
+  # --tar writes a carryable archive alongside the folder.
+  if [ -f "$out.tar.gz" ]; then pass "--tar writes a tarball"; else fail "--tar writes a tarball"; fi
+  # The bundle is self-serving: the portal renders the bundled data on its own.
+  ( cd "$out" && python3 bin/portal.py --export >/dev/null 2>&1 )
+  if [ -f "$out/kb/index.html" ]; then
+    pass "bundled portal renders its data (kb/index.html)"
+    assert_contains "bundle render names the tracked entity" "$(cat "$out/kb/index.html")" "Acme"
+  else
+    fail "bundled portal renders its data (kb/index.html)"
+  fi
+  # Without --force, an existing destination is refused (a bundle is cheap to rebuild,
+  # but clobbering the wrong folder is not).
+  local err
+  err="$( cd "$repo"; bash bin/demo-bundle.sh --out "$out" 2>&1 1>/dev/null )" || true
+  assert_contains "refuses to overwrite without --force" "$err" "already exists"
+  # --force replaces it cleanly.
+  if ( cd "$repo" && bash bin/demo-bundle.sh --out "$out" --force >/dev/null 2>&1 ); then
+    pass "--force overwrites an existing bundle"
+  else
+    fail "--force overwrites an existing bundle"
+  fi
+  # An empty source still produces a (warned) startable bundle rather than crashing.
+  local bare="$TMP/demobare" bareout="$TMP/demobareout"
+  mkdir -p "$bare/bin"
+  cp "$ROOT/bin/portal.py" "$ROOT/bin/portal.sh" "$ROOT/bin/cadence.py" \
+     "$ROOT/bin/demo-bundle.sh" "$bare/bin/"
+  if ( cd "$bare" && bash bin/demo-bundle.sh --out "$bareout" >/dev/null 2>&1 ); then
+    pass "bundles with no data without crashing"
+  else
+    fail "bundles with no data without crashing"
+  fi
+}
+test_demo_bundle
+
 echo "== portal.sh: argument handling =="
 test_portal_args() {
   local repo="$TMP/portalargs" rc
