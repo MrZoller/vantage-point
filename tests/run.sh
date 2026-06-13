@@ -1633,6 +1633,44 @@ PY
 }
 test_portal_light_table
 
+echo "== portal.py: the light-markdown fallback renders emphasis without leaking marks =="
+test_portal_light_emphasis() {
+  # The no-renderer path must turn *, _, ** and __ into <em>/<strong> instead of
+  # leaking the literal marks -- while leaving snake_case identifiers and the contents
+  # of `code spans` untouched (the GFM intra-word / code rules).
+  local out
+  out="$(python3 - "$ROOT/bin/portal.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m._light_md("This is _italic_ and *also* and __bold__ and **strong**."))
+print(m._light_md("A snake_case_name and `config_lib.sh` stay literal."))
+# Two short bold spans on one line must stay separate (not over-match into one).
+print(m._light_md("**A** and **B**"))
+# A link whose URL contains emphasis-like marks must keep its destination intact,
+# while emphasis still applies to the link text.
+print(m._light_md("[**x**](https://example.com/_id_/*p*)"))
+# A code span inside a link label must survive (nested placeholder restore).
+print(m._light_md("see [`config_lib.sh`](https://example.com)"))
+PY
+)"
+  assert_contains "underscore emphasis becomes <em>" "$out" "<em>italic</em>"
+  assert_contains "single-asterisk emphasis becomes <em>" "$out" "<em>also</em>"
+  assert_contains "double-underscore becomes <strong>" "$out" "<strong>bold</strong>"
+  assert_contains "double-asterisk becomes <strong>" "$out" "<strong>strong</strong>"
+  assert_contains "snake_case is not italicised" "$out" "snake_case_name"
+  assert_contains "underscores inside a code span stay literal" "$out" "<code>config_lib.sh</code>"
+  assert_contains "two short bold spans stay separate" "$out" "<strong>A</strong> and <strong>B</strong>"
+  assert_contains "a URL with emphasis marks keeps its destination" "$out" 'href="https://example.com/_id_/*p*"'
+  assert_contains "emphasis still applies to the link text" "$out" "<strong>x</strong></a>"
+  assert_contains "a code span inside a link label survives" "$out" '<a href="https://example.com"><code>config_lib.sh</code></a>'
+  case "$out" in
+    *"_italic_"*|*"__bold__"*) fail "no raw emphasis marks leak through" ;;
+    *) pass "no raw emphasis marks leak through" ;;
+  esac
+}
+test_portal_light_emphasis
+
 echo "== portal.py: data layer is robust to NaN / null-ts / multi-pass runs.log =="
 test_portal_data_robustness() {
   local repo="$TMP/pdr" out day

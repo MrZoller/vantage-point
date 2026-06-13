@@ -1214,16 +1214,43 @@ def _light_md(md):
     Everything is escaped first, so no raw HTML from the report can leak through."""
     def inline(s):
         s = esc(s)
-        s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
-        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        # Stash spans whose interior must survive verbatim past the emphasis pass, leaving
+        # an opaque placeholder behind; restored at the very end. Code spans protect their
+        # contents (`snake_case`/`*args`), and resolved links protect their href -- so a
+        # URL like https://example.com/_id_ can't be mangled by the underscore pass.
+        held = []
+
+        def hold(frag):
+            held.append(frag)
+            return "\x00%d\x00" % (len(held) - 1)
+        s = re.sub(r"`([^`]+)`", lambda m: hold("<code>%s</code>" % m.group(1)), s)
+
+        def emph(t):
+            # Bold before italic so the single-mark pass can't eat a `**`/`__` pair. For
+            # the underscore forms, `(?<!\w)`/`(?!\w)` keeps snake_case identifiers literal
+            # (GFM's intra-word rule); the `(?!\s)`/`(?<!\s)` guards skip stray ` * `.
+            t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+            t = re.sub(r"(?<!\w)__(?!\s)(.+?)(?<!\s)__(?!\w)", r"<strong>\1</strong>", t)
+            t = re.sub(r"\*(?!\s)([^*]+?)(?<!\s)\*", r"<em>\1</em>", t)
+            t = re.sub(r"(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)", r"<em>\1</em>", t)
+            return t
 
         def link(m):
             # The whole line was HTML-escaped first, so the captured URL has e.g. & as
             # &amp; already; unescape before validating/re-escaping so a query string
-            # isn't double-escaped into a broken `amp;` href.
+            # isn't double-escaped into a broken `amp;` href. Emphasis still applies to the
+            # link text; the resolved anchor is held so emphasis never rewrites the href.
             url = safe_url(html.unescape(m.group(2)))
-            return ('<a href="%s">%s</a>' % (esc(url), m.group(1))) if url else m.group(1)
-        return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, s)
+            text = emph(m.group(1))
+            return hold('<a href="%s">%s</a>' % (esc(url), text)) if url else text
+        s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, s)
+        s = emph(s)
+        # Restore held fragments. A held anchor can embed an earlier (lower-index) code
+        # placeholder in its text, so expand from highest index down -- each container is
+        # restored before the nested placeholder it references.
+        for i in range(len(held) - 1, -1, -1):
+            s = s.replace("\x00%d\x00" % i, held[i])
+        return s
 
     out, in_ul, in_bq = [], False, False
 
