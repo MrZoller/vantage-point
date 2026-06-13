@@ -1645,6 +1645,11 @@ spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 print(m._light_md("This is _italic_ and *also* and __bold__ and **strong**."))
 print(m._light_md("A snake_case_name and `config_lib.sh` stay literal."))
+# Two short bold spans on one line must stay separate (not over-match into one).
+print(m._light_md("**A** and **B**"))
+# A link whose URL contains emphasis-like marks must keep its destination intact,
+# while emphasis still applies to the link text.
+print(m._light_md("[**x**](https://example.com/_id_/*p*)"))
 PY
 )"
   assert_contains "underscore emphasis becomes <em>" "$out" "<em>italic</em>"
@@ -1653,6 +1658,9 @@ PY
   assert_contains "double-asterisk becomes <strong>" "$out" "<strong>strong</strong>"
   assert_contains "snake_case is not italicised" "$out" "snake_case_name"
   assert_contains "underscores inside a code span stay literal" "$out" "<code>config_lib.sh</code>"
+  assert_contains "two short bold spans stay separate" "$out" "<strong>A</strong> and <strong>B</strong>"
+  assert_contains "a URL with emphasis marks keeps its destination" "$out" 'href="https://example.com/_id_/*p*"'
+  assert_contains "emphasis still applies to the link text" "$out" "<strong>x</strong></a>"
   case "$out" in
     *"_italic_"*|*"__bold__"*) fail "no raw emphasis marks leak through" ;;
     *) pass "no raw emphasis marks leak through" ;;
