@@ -1633,6 +1633,33 @@ PY
 }
 test_portal_light_table
 
+echo "== portal.py: the light-markdown fallback renders emphasis without leaking marks =="
+test_portal_light_emphasis() {
+  # The no-renderer path must turn *, _, ** and __ into <em>/<strong> instead of
+  # leaking the literal marks -- while leaving snake_case identifiers and the contents
+  # of `code spans` untouched (the GFM intra-word / code rules).
+  local out
+  out="$(python3 - "$ROOT/bin/portal.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m._light_md("This is _italic_ and *also* and __bold__ and **strong**."))
+print(m._light_md("A snake_case_name and `config_lib.sh` stay literal."))
+PY
+)"
+  assert_contains "underscore emphasis becomes <em>" "$out" "<em>italic</em>"
+  assert_contains "single-asterisk emphasis becomes <em>" "$out" "<em>also</em>"
+  assert_contains "double-underscore becomes <strong>" "$out" "<strong>bold</strong>"
+  assert_contains "double-asterisk becomes <strong>" "$out" "<strong>strong</strong>"
+  assert_contains "snake_case is not italicised" "$out" "snake_case_name"
+  assert_contains "underscores inside a code span stay literal" "$out" "<code>config_lib.sh</code>"
+  case "$out" in
+    *"_italic_"*|*"__bold__"*) fail "no raw emphasis marks leak through" ;;
+    *) pass "no raw emphasis marks leak through" ;;
+  esac
+}
+test_portal_light_emphasis
+
 echo "== portal.py: data layer is robust to NaN / null-ts / multi-pass runs.log =="
 test_portal_data_robustness() {
   local repo="$TMP/pdr" out day

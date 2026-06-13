@@ -1214,8 +1214,21 @@ def _light_md(md):
     Everything is escaped first, so no raw HTML from the report can leak through."""
     def inline(s):
         s = esc(s)
-        s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
-        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        # Pull code spans out first so the emphasis/link passes never reach inside them
+        # (`snake_case` or `*args` in backticks must stay literal). Restored at the end.
+        codes = []
+
+        def stash(m):
+            codes.append("<code>%s</code>" % m.group(1))
+            return "\x00%d\x00" % (len(codes) - 1)
+        s = re.sub(r"`([^`]+)`", stash, s)
+        # Bold before italic so the single-mark pass can't eat a `**`/`__` pair. For the
+        # underscore forms, `(?<!\w)`/`(?!\w)` keeps snake_case identifiers literal (the
+        # GFM intra-word rule); the `(?!\s)`/`(?<!\s)` guards skip stray ` * ` markers.
+        s = re.sub(r"\*\*(\S(?:.*?\S)?)\*\*", r"<strong>\1</strong>", s)
+        s = re.sub(r"(?<!\w)__(?!\s)(.+?)(?<!\s)__(?!\w)", r"<strong>\1</strong>", s)
+        s = re.sub(r"\*(?!\s)([^*]+?)(?<!\s)\*", r"<em>\1</em>", s)
+        s = re.sub(r"(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)", r"<em>\1</em>", s)
 
         def link(m):
             # The whole line was HTML-escaped first, so the captured URL has e.g. & as
@@ -1223,7 +1236,8 @@ def _light_md(md):
             # isn't double-escaped into a broken `amp;` href.
             url = safe_url(html.unescape(m.group(2)))
             return ('<a href="%s">%s</a>' % (esc(url), m.group(1))) if url else m.group(1)
-        return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, s)
+        s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, s)
+        return re.sub(r"\x00(\d+)\x00", lambda m: codes[int(m.group(1))], s)
 
     out, in_ul, in_bq = [], False, False
 
