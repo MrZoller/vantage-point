@@ -1650,6 +1650,8 @@ print(m._light_md("**A** and **B**"))
 # A link whose URL contains emphasis-like marks must keep its destination intact,
 # while emphasis still applies to the link text.
 print(m._light_md("[**x**](https://example.com/_id_/*p*)"))
+# A code span inside a link label must survive (nested placeholder restore).
+print(m._light_md("see [`config_lib.sh`](https://example.com)"))
 PY
 )"
   assert_contains "underscore emphasis becomes <em>" "$out" "<em>italic</em>"
@@ -1661,6 +1663,7 @@ PY
   assert_contains "two short bold spans stay separate" "$out" "<strong>A</strong> and <strong>B</strong>"
   assert_contains "a URL with emphasis marks keeps its destination" "$out" 'href="https://example.com/_id_/*p*"'
   assert_contains "emphasis still applies to the link text" "$out" "<strong>x</strong></a>"
+  assert_contains "a code span inside a link label survives" "$out" '<a href="https://example.com"><code>config_lib.sh</code></a>'
   case "$out" in
     *"_italic_"*|*"__bold__"*) fail "no raw emphasis marks leak through" ;;
     *) pass "no raw emphasis marks leak through" ;;

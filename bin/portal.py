@@ -1245,7 +1245,12 @@ def _light_md(md):
             return hold('<a href="%s">%s</a>' % (esc(url), text)) if url else text
         s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, s)
         s = emph(s)
-        return re.sub(r"\x00(\d+)\x00", lambda m: held[int(m.group(1))], s)
+        # Restore held fragments. A held anchor can embed an earlier (lower-index) code
+        # placeholder in its text, so expand from highest index down -- each container is
+        # restored before the nested placeholder it references.
+        for i in range(len(held) - 1, -1, -1):
+            s = s.replace("\x00%d\x00" % i, held[i])
+        return s
 
     out, in_ul, in_bq = [], False, False
 
