@@ -629,4 +629,8 @@ echo "             cp $DRAFT profile.yaml"
 [ -s "$CHALLENGE_MD" ] && echo "             (adversarial challenge of the draft's claims: $CHALLENGE_MD)"
 # Optional: copy the digest too so the portal's Profile tab shows it for the approved
 # profile (it renders profile.summary.md like the bootstrap email; YAML stays the source).
-[ -f "$SUMMARY" ] && echo "             cp $SUMMARY profile.summary.md   # optional: nicer Profile tab"
+# An if, not `[ ] &&`: as the script's last command, that compound's status 1 on a
+# missing summary would become the exit status of an otherwise successful run.
+if [ -f "$SUMMARY" ]; then
+  echo "             cp $SUMMARY profile.summary.md   # optional: nicer Profile tab"
+fi

@@ -22,6 +22,7 @@ themselves are unusable. Stdlib only; http(s) feeds only.
 
 Candidate record: {"title", "url", "published", "source", "feed"}.
 """
+import http.client
 import json
 import os
 import re
@@ -167,13 +168,20 @@ def _parse_when(text):
 def fetch_feed(feed, timeout=20):
     """Pull a feed's bytes. Returns (data, None) on success or (None, error_string)
     on any network/OS error -- the single fetch path shared by the sweep and --verify
-    so they behave identically on a down or slow feed."""
+    so they behave identically on a down or slow feed. HTTPException covers the
+    protocol-level failures that are NOT OSError (IncompleteRead, BadStatusLine, ...):
+    one server closing the connection mid-body must stay a per-feed warning, not
+    a traceback that loses the whole sweep."""
     req = urllib.request.Request(feed, headers={"User-Agent": "vantage-point-fetch"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read(), None
     except (urllib.error.URLError, OSError) as exc:
         return None, str(exc)
+    except http.client.HTTPException as exc:
+        # str() of these is often bare (BadStatusLine prints just the line), so
+        # keep the class name in the health record / stderr warning.
+        return None, "%s: %s" % (type(exc).__name__, exc)
 
 
 def parse_entries(data):

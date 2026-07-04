@@ -155,9 +155,9 @@ proc_start() {  # normalized start time of pid $1 (empty if it isn't running)
   ps -o lstart= -p "$1" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'
 }
 
-lock_age_secs() {  # age (s) of the lock dir; huge if it's gone
-  local mtime
-  mtime="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || echo 0)"
+lock_age_secs() {  # age (s) of the dir in $1 (default: the lock); huge if it's gone
+  local path="${1:-$LOCK}" mtime
+  mtime="$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0)"
   echo "$(( $(date +%s) - mtime ))"
 }
 
@@ -178,11 +178,27 @@ acquire_lock() {
       return 1
     fi
   fi
-  echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown})" >&2
-  # Reclaim race-safely: rename the inspected dir out of the way (only one renamer
-  # of a given dir can win), then let the final mkdir be the sole ownership arbiter
-  # - concurrent reclaimers can't both end up owning.
-  mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"
+  # Reclaim race-safely. A bare rename/remove here acts on the PATH, not the dir we
+  # inspected - a faster concurrent reclaimer may have already won and re-created a
+  # FRESH lock there, and sweeping that away would leave two monitors running. So
+  # the removal happens under a reclaim mutex, and only after re-checking that the
+  # dir at the path is still the stale one we inspected (same owner token, or still
+  # past the setup grace when tokenless). The final mkdir stays the sole ownership
+  # arbiter. A mutex abandoned by a reclaimer that died inside this milliseconds-wide
+  # window is cleared once it outlives the same setup grace.
+  local mutex="$LOCK.reclaim" cur
+  if ! mkdir "$mutex" 2>/dev/null; then
+    if [ "$(lock_age_secs "$mutex")" -lt "$LOCK_SETUP_GRACE" ]; then return 1; fi
+    rm -rf "$mutex" 2>/dev/null || true
+    mkdir "$mutex" 2>/dev/null || return 1
+  fi
+  cur="$(cat "$LOCK/owner" 2>/dev/null || true)"
+  if [ "$cur" = "$owner" ] && \
+     { [ -n "$cur" ] || [ "$(lock_age_secs "$LOCK")" -ge "$LOCK_SETUP_GRACE" ]; }; then
+    echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown})" >&2
+    rm -rf "$LOCK" 2>/dev/null || true
+  fi
+  rmdir "$mutex" 2>/dev/null || true
   mkdir "$LOCK" 2>/dev/null
 }
 

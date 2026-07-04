@@ -820,6 +820,39 @@ test_lock_reused_pid() {
 }
 test_lock_reused_pid
 
+echo "== monitor.sh: reclaim mutex - a fresh one blocks, an abandoned one is cleared =="
+test_lock_reclaim_mutex() {
+  local repo="$TMP/mutexrepo" out rc
+  make_fake_repo "$repo"
+  mkdir -p "$repo/state/.lock"
+  printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"  # dead owner -> stale
+  mkdir -p "$repo/state/.lock.reclaim"                           # a reclaim in flight
+  local marker="$repo/claude_ran"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "fresh-mutex skip exits 0" "0" "$rc"
+  assert_contains "skips while another reclaim is in flight" "$out" "in progress - skipping"
+  if [ -f "$marker" ]; then fail "claude NOT invoked while a fresh mutex is held"; else pass "claude NOT invoked while a fresh mutex is held"; fi
+
+  # An abandoned mutex (older than the setup grace) must not wedge reclaim forever.
+  local repo2="$TMP/mutexrepo2" out2 rc2
+  make_fake_repo "$repo2"
+  mkdir -p "$repo2/state/.lock"
+  printf '%s %s\n' "2147483646" "x" > "$repo2/state/.lock/owner"
+  mkdir -p "$repo2/state/.lock.reclaim"
+  touch -t 202001010000 "$repo2/state/.lock.reclaim"
+  local marker2="$repo2/claude_ran"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out2="$( CLAUDE_RAN="$marker2" HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" \
+           bash "$repo2/bin/monitor.sh" daily 2>&1 )"; rc2=$?
+  assert_eq "abandoned-mutex run exits 0" "0" "$rc2"
+  assert_contains "clears the abandoned mutex and reclaims" "$out2" "reclaiming stale lock"
+  if [ -f "$marker2" ]; then pass "claude ran after clearing an abandoned mutex"; else fail "claude ran after clearing an abandoned mutex"; fi
+  if [ -d "$repo2/state/.lock.reclaim" ]; then fail "abandoned mutex removed"; else pass "abandoned mutex removed"; fi
+}
+test_lock_reclaim_mutex
+
 echo "== monitor.sh: reclaims stale lock, prunes state, warns on stale profile =="
 test_full_run() {
   local repo="$TMP/runrepo" out rc
@@ -2241,6 +2274,35 @@ PY
   assert_contains "truncation is marked" "$out" "CONTENT_MARKED True"
   assert_contains "text/report_markdown stay untruncated" "$out" "TEXT_FULL True"
 
+  # A redirecting webhook must FAIL loudly: urllib's default handler would replay
+  # the POST as a bodyless GET, silently dropping the report while the redirect
+  # target's 200 looked like a successful delivery.
+  local rsrv="$TMP/redir_httpd.py" rerr="$TMP/wh_redir.err" rport=8801 rpid
+  cat > "$rsrv" <<'PY'
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        self.send_response(302)
+        self.send_header("Location", "/final")
+        self.end_headers()
+    def do_GET(self):  # where a redirect-following client would land, body lost
+        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+  python3 "$rsrv" "$rport" >/dev/null 2>&1 &
+  rpid=$!
+  if wait_port "$rport"; then
+    printf 'r\n' | python3 "$ROOT/bin/webhook.py" "http://127.0.0.1:$rport/hook" h daily 2026-06-09 2> "$rerr"; rc=$?
+    kill "$rpid" 2>/dev/null || true
+    assert_eq "a redirected post exits 1 (payload would be dropped)" "1" "$rc"
+    assert_contains "explains the redirect instead of following it" "$(cat "$rerr")" "redirected"
+  else
+    fail "redirect server came up"; kill "$rpid" 2>/dev/null || true
+  fi
+
   # Failure modes: unreachable URL -> 1; non-http scheme -> 2. Both print to stderr.
   printf 'r\n' | python3 "$ROOT/bin/webhook.py" "http://127.0.0.1:1/hook" h daily 2026-06-09 2>/dev/null
   assert_eq "an unreachable webhook exits 1" "1" "$?"
@@ -2391,6 +2453,55 @@ YAML
   if [ -f "$TMP/none.jsonl" ]; then fail "writes no candidates file without feeds"; else pass "writes no candidates file without feeds"; fi
 }
 test_fetch_py
+
+echo "== fetch.py: a feed that dies mid-body is a per-feed warning, not a lost sweep =="
+test_fetch_liar_feed() {
+  local dir="$TMP/feeds-liar" err rc port=8802 lport=8803
+  mkdir -p "$dir"
+  write_feed_fixtures "$dir"
+  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) >/dev/null 2>&1 &
+  local srv=$!
+  # A server whose Content-Length promises more bytes than it sends: reading the
+  # body raises http.client.IncompleteRead - an HTTPException, NOT an OSError -
+  # which used to escape fetch_feed and take the whole sweep down with it.
+  cat > "$TMP/liar_httpd.py" <<'PY'
+import socket, sys, threading
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", int(sys.argv[1]))); srv.listen(5)
+def handle(c):
+    try:
+        c.recv(65536)
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 99999\r\n\r\nshort")
+    finally:
+        c.close()
+while True:
+    c, _ = srv.accept()
+    threading.Thread(target=handle, args=(c,), daemon=True).start()
+PY
+  python3 "$TMP/liar_httpd.py" "$lport" >/dev/null 2>&1 &
+  local liar=$!
+  if ! wait_port "$port" || ! wait_port "$lport"; then
+    fail "liar/feed servers came up"; kill "$srv" "$liar" 2>/dev/null; return
+  fi
+  # The liar feed comes FIRST: the healthy feed behind it must still be swept.
+  cat > "$TMP/liar-profile.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$lport/liar.xml
+      - http://127.0.0.1:$port/rss.xml
+YAML
+  err="$TMP/fetch-liar.err"
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-liar.jsonl" \
+    "$TMP/liar-profile.yaml" 2> "$err"; rc=$?
+  kill "$srv" "$liar" 2>/dev/null || true
+  assert_eq "exits 0 despite the mid-body hangup" "0" "$rc"
+  assert_contains "the healthy feed's items survive" \
+    "$(cat "$TMP/cand-liar.jsonl" 2>/dev/null)" "Fresh RSS story"
+  assert_contains "the broken feed is named in a warning" "$(cat "$err")" "IncompleteRead"
+}
+test_fetch_liar_feed
 
 echo "== fetch.py: --health tracks per-feed sweep health across runs =="
 test_fetch_health() {
@@ -3596,6 +3707,27 @@ test_bootstrap_model() {
   esac
 }
 test_bootstrap_model
+
+echo "== bootstrap.sh: a run whose model skips the summary still exits 0 =="
+test_bootstrap_no_summary_exit() {
+  local repo="$TMP/bootnosum" home="$TMP/boothome_ns" out rc
+  make_fake_bootstrap_repo "$repo" "$home"
+  # Model noncompliance the script explicitly tolerates: draft written, summary
+  # skipped. The trailing `cp profile.summary.md` hint is conditional on the
+  # summary existing, and used to leak its status 1 as the script's exit code.
+  cat > "$home/.npm-global/bin/claude" <<'SH'
+#!/usr/bin/env bash
+printf 'derived: {}\n' > profile.draft.yaml
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$home/.npm-global/bin/claude"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh 2>&1 )"; rc=$?
+  assert_eq "a summary-less run exits 0" "0" "$rc"
+  assert_contains "notes the missing summary" "$out" "no profile.draft.summary.md written"
+  if [ -f "$repo/profile.draft.yaml" ]; then pass "draft still written"; else fail "draft still written"; fi
+}
+test_bootstrap_no_summary_exit
 
 echo "== bootstrap.sh: budgets.bootstrap_max_turns drives --max-turns (default 80) =="
 test_bootstrap_budget_turns() {

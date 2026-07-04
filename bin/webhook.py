@@ -22,6 +22,15 @@ import urllib.request
 DISCORD_LIMIT = 2000
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib's default handler replays a redirected POST as a bodyless GET, so a
+    3xx would silently drop the report while the target's 200 looks like delivery.
+    Returning None turns any redirect into an HTTPError instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def build_payload(heading, mode, date, body):
     text = "%s\n\n%s" % (heading, body) if heading else body
     if len(text) > DISCORD_LIMIT:
@@ -47,10 +56,19 @@ def main():
                                  headers={"Content-Type": "application/json",
                                           "User-Agent": "vantage-point"})
     try:
-        # urlopen raises HTTPError (a URLError) for any non-2xx status, so reaching
-        # the body of the `with` means the post was accepted.
-        with urllib.request.urlopen(req, timeout=30):
+        # The opener raises HTTPError (a URLError) for any non-2xx status -- and,
+        # via _NoRedirect, for 3xx too -- so reaching the body of the `with` means
+        # THIS url accepted the post.
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=30):
             return 0
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            print("[webhook] post redirected (%s -> %s) - not following; point "
+                  "output.webhook_url at the final URL"
+                  % (exc.code, exc.headers.get("Location", "?")), file=sys.stderr)
+        else:
+            print("[webhook] post failed: %s" % exc, file=sys.stderr)
+        return 1
     except (urllib.error.URLError, OSError) as exc:
         print("[webhook] post failed: %s" % exc, file=sys.stderr)
         return 1
