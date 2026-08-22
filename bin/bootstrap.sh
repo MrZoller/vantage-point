@@ -116,21 +116,6 @@ if [ -n "$IF_STALE" ]; then
   fi
 fi
 
-# Past the gate: this is a real run. Retract the completion marker up front, so a run
-# that dies anywhere below leaves no claim that its draft is reviewable. Cleared here
-# rather than in the failure trap because a SIGKILL, a power cut, or a `launchctl bootout`
-# never runs a trap - and those leave exactly the half-written draft this guards against.
-# The draft goes with it. Nothing below reads the previous one (the refresh diff is
-# computed against $PROFILE, not against the old draft), and clearing it is what lets the
-# post-synthesis check below mean "THIS run produced a draft" rather than "some draft is
-# lying around" - otherwise a run whose synthesis exits 0 without writing would adopt a
-# previous run's partial file and mark it reviewable.
-mkdir -p state
-rm -f "$DRAFT_OK" "$DRAFT"
-
-# One clean stderr log per run; every pass below appends to it.
-: > bootstrap.err
-
 # Config knobs (shared cfg_get; no YAML library). Absent/blank -> empty string.
 MODEL="$(cfg_get models bootstrap)"
 EDITOR_MODEL="$(cfg_get models editor)"   # optional editorial polish of the summary
@@ -189,6 +174,26 @@ notify_failure() {
   exit "$rc"
 }
 trap notify_failure EXIT
+
+# Only NOW mutate anything. Every line below can fail on a read-only filesystem or after
+# a permissions change, and under `set -e` a failure here exits the script - which before
+# the trap existed above would have been another silent dead refresh, the exact class of
+# failure this PR exists to remove. (If the truncation itself fails, the notice tails a
+# previous run's bootstrap.err; stale context beats no notice at all.)
+#
+# Retract the completion marker up front, so a run that dies anywhere below leaves no
+# claim that its draft is reviewable. Up front rather than in the trap because a SIGKILL,
+# a power cut, or a `launchctl bootout` never runs a trap - and those leave exactly the
+# half-written draft this guards against. The draft goes with it: nothing below reads the
+# previous one (the refresh diff is computed against $PROFILE, not the old draft), and
+# clearing it is what lets the post-synthesis check mean "THIS run produced a draft"
+# rather than "some draft is lying around" - otherwise a run whose synthesis exits 0
+# without writing would adopt a previous run's partial file and mark it reviewable.
+mkdir -p state
+rm -f "$DRAFT_OK" "$DRAFT"
+
+# One clean stderr log per run; every pass below appends to it.
+: > bootstrap.err
 
 # Per-pass turn caps (budgets: block) - the cost lever for these claude calls.
 # 0/absent/non-numeric -> the long-standing defaults.

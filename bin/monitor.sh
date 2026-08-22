@@ -742,7 +742,7 @@ if [ -n "$STALE_NOTE" ] && [ -s "$RUN_REPORT" ]; then
   # bootstrap.sh there is actively harmful: a manual run is ungated, and its synthesis
   # overwrites the pending draft, discarding review edits and re-spending the research.
   # Same signal bootstrap.sh's --if-stale gate uses, for the same reason.
-  if [ -f state/.draft-complete ] && [ -f profile.draft.yaml ] && [ profile.draft.yaml -nt "$PROFILE" ]; then
+  if [ -f state/.draft-complete ] && [ -s profile.draft.yaml ] && [ profile.draft.yaml -nt "$PROFILE" ]; then
     # shellcheck disable=SC2016  # backticks are literal Markdown; %s is a printf placeholder
     printf '\n\n---\n\n> _**A refreshed profile is waiting for your approval** - the approved one is %s. The research is already done; do NOT run `./bin/bootstrap.sh` again, which would overwrite the draft. Review `profile.draft.yaml` on the host, then `cp profile.draft.yaml profile.yaml`._\n' \
       "$STALE_NOTE" >> "$RUN_REPORT" \

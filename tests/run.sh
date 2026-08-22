@@ -2949,6 +2949,18 @@ SH
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo5/stub:$PATH" bash "$repo5/bin/monitor.sh" daily 2>&1 )"
   assert_contains "an unmarked draft falls back to the refresh notice" "$out" "appended the profile-staleness notice"
+  # A draft TRUNCATED during the documented human-edit step must not be advertised for
+  # approval either - same nonempty bar the --if-stale gate applies.
+  : > "$repo5/profile.draft.yaml"
+  : > "$repo5/state/.draft-complete"
+  touch -t 202601010000 "$repo5/profile.yaml"
+  touch -t 202602010000 "$repo5/profile.draft.yaml"
+  rm -f "$rep5"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo5/stub:$PATH" bash "$repo5/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "an emptied draft is not advertised for approval" "$out" "appended the profile-staleness notice"
+  assert_not_contains "no approval instruction for an empty draft" \
+    "$(cat "$rep5" 2>/dev/null)" "waiting for your approval"
 
   # Silence still wins: like the forward radar, the notice rides along on a report, it
   # never causes one. (An instance that is mostly silent is covered by the monthly
@@ -3992,6 +4004,19 @@ YAML
   out="$( cd "$repo2" && SYNTH_EXIT=3 HOME="$home2" bash bin/bootstrap.sh 2>&1 )"; rc=$?
   assert_eq "still exits with the failing code when nobody is configured" "3" "$rc"
   assert_contains "still says it failed" "$out" "FAILED (exit 3)"
+
+  # The trap has to be armed before ANY mutation. A run that cannot create state/ or
+  # clear the previous draft - read-only filesystem, a permissions change - dies under
+  # set -e, and with the trap installed later that was another silent dead refresh.
+  local repo4="$TMP/boottrapearly" home4="$TMP/boothometrap" msg4="$TMP/boot_trap.eml"
+  make_fake_bootstrap_repo "$repo4" "$home4"
+  cat "$repo/monitor-config.yaml" > "$repo4/monitor-config.yaml"
+  rmdir "$repo4/state"
+  printf 'not a directory\n' > "$repo4/state"     # so the run's `mkdir -p state` fails
+  out="$( cd "$repo4" && MSG_OUT="$msg4" HOME="$home4" bash bin/bootstrap.sh 2>&1 )"; rc=$?
+  assert_eq "a setup failure exits non-zero" "1" "$rc"
+  assert_contains "a setup failure is reported, not silent" "$out" "FAILED (exit 1)"
+  assert_contains "and still emails the notice" "$out" "emailed the failure notice"
 
   # A SUCCESSFUL run sends no failure notice - including the run that writes no summary,
   # which used to leave a non-zero status behind as the script's last command.
