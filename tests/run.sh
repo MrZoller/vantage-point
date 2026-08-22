@@ -2189,28 +2189,61 @@ PY
 }
 
 # wait_port <port> [server-log] [server-pid]
-# Wait (max ~5s) for something to listen on 127.0.0.1:<port>. On giving up it DIAGNOSES
-# rather than just returning 1: the caller's `fail "... server came up"` on its own says
-# nothing about why, which is exactly why the macOS CI leg has been red with no way to
-# tell whether the server never started, died, or was simply never reached. Every spawn
-# site redirected the server's stderr to /dev/null, so the one artifact that would answer
-# it was thrown away. Pass the log (and pid) and this prints them.
+# Wait for something to listen on 127.0.0.1:<port>, then report.
+#
+# Polls from ONE python process instead of spawning a fresh one per iteration. The old
+# form spawned 25, which on the macOS runner is the difference between a nominal 5s budget
+# and a ~12s wall clock, and piles interpreter startups onto the machine that is already
+# the bottleneck.
+#
+# Built on what the previous commit's diagnostics reported from the macOS leg, identically
+# for all 7 failures: the server pid was still ALIVE, its log was EMPTY (no traceback),
+# lsof showed nothing bound on the port, and the last connect status was 35 - EWOULDBLOCK,
+# i.e. the probe TIMED OUT rather than being refused (61, which is what nothing-listening
+# gives locally). A live, silent, not-yet-bound server means the budget ran out before the
+# server finished starting - so stop spending that budget on interpreter startups, and
+# allow more of it.
+#
+# It still explains itself on failure, and now also when it succeeds LATE, so a runner
+# drifting back toward the limit is visible before it goes red again.
+WAIT_PORT_BUDGET="${WAIT_PORT_BUDGET:-30}"
 wait_port() {
-  local i last=""
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
-    : "$i"
-    if python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(0.2); sys.exit(s.connect_ex(("127.0.0.1", int(sys.argv[1]))))' "$1" 2>/dev/null; then
-      return 0
-    else
-      last=$?
-    fi
-    sleep 0.2
-  done
+  local out rc secs
+  out="$(python3 - "$1" "$WAIT_PORT_BUDGET" <<'PY'
+import socket, sys, time
+port, budget = int(sys.argv[1]), float(sys.argv[2])
+start = time.monotonic()
+last = "none"
+while time.monotonic() - start < budget:
+    s = socket.socket()
+    s.settimeout(0.5)
+    rc = s.connect_ex(("127.0.0.1", port))
+    s.close()
+    if rc == 0:
+        print("ok %.2f" % (time.monotonic() - start))
+        sys.exit(0)
+    last = rc
+    time.sleep(0.1)
+print("timeout %.2f last=%s" % (time.monotonic() - start, last))
+sys.exit(1)
+PY
+)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    secs="${out#ok }"
+    # Quiet under 2s; louder above, because silence is how this drifted to red unnoticed.
+    case "$secs" in
+      0.*|1.*) : ;;
+      *) printf '    wait_port: 127.0.0.1:%s took %ss to accept (budget %ss)\n' \
+           "$1" "$secs" "$WAIT_PORT_BUDGET" >&2 ;;
+    esac
+    return 0
+  fi
   {
-    printf '    wait_port: gave up on 127.0.0.1:%s after ~5s (last connect exit=%s)\n' "$1" "${last:-?}"
+    printf '    wait_port: gave up on 127.0.0.1:%s (%s)\n' "$1" "$out"
+    printf '    wait_port: connect status 61=refused (nothing listening), 35=timed out (no answer)\n'
     if [ -n "${3:-}" ]; then
       if kill -0 "$3" 2>/dev/null; then
-        printf '    wait_port: server pid %s is still alive (listening elsewhere? bound late?)\n' "$3"
+        printf '    wait_port: server pid %s is still alive (started, but never bound)\n' "$3"
       else
         printf '    wait_port: server pid %s is GONE (it exited instead of serving)\n' "$3"
       fi
@@ -2221,7 +2254,6 @@ wait_port() {
     elif [ -n "${2:-}" ]; then
       printf '    wait_port: server produced no output (log %s is empty)\n' "$2"
     fi
-    # Whatever else is on the port is worth knowing when a hard-coded one collides.
     if command -v lsof >/dev/null 2>&1; then
       printf '    wait_port: lsof for port %s --\n' "$1"
       lsof -nP -iTCP:"$1" 2>/dev/null | sed 's/^/      /' || true
