@@ -2169,10 +2169,43 @@ test_email_subject
 # A capturing webhook server: appends each POST body to the file in $2 and responds
 # 200. serve_forever (killed by the test) so a port-open probe connection can't
 # consume the one real request.
+# A static file server for the feed fixtures. Replaces `python3 -m http.server`, which
+# goes through the same reverse-DNS server_bind() described in _Quiet below.
+write_static_httpd() {  # <script-path>
+  cat > "$1" <<'PY'
+import sys, socketserver
+from http.server import SimpleHTTPRequestHandler, HTTPServer
+class _Quiet(HTTPServer):
+    # See the capture server: skip the socket.getfqdn() call in server_bind, so a stalled
+    # resolver cannot leave us bound-but-not-listening.
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+class H(SimpleHTTPRequestHandler):
+    def __init__(self, *a, **k):
+        super().__init__(*a, directory=sys.argv[1], **k)
+    def log_message(self, *a):
+        pass
+_Quiet(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
+PY
+}
+
 write_capture_httpd() {  # <script-path>
   cat > "$1" <<'PY'
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import socketserver
+class _Quiet(HTTPServer):
+    # http.server's server_bind() calls socket.getfqdn() - a REVERSE DNS lookup - between
+    # bind() and listen(). Where that resolver stalls, the socket sits BOUND BUT NOT
+    # LISTENING, which is precisely what the macOS runner reported: server process alive,
+    # no output, curl timing out, and netstat showing 127.0.0.1.<port> in state CLOSED
+    # rather than LISTEN. Nothing here needs a hostname, so skip the lookup.
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
 class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
@@ -2184,7 +2217,7 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(b"ok")
     def log_message(self, *args):
         pass
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+_Quiet(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
 }
 
@@ -2210,7 +2243,7 @@ WAIT_PORT_BUDGET="${WAIT_PORT_BUDGET:-30}"
 wait_port() {
   local out rc secs
   out="$(python3 - "$1" "$WAIT_PORT_BUDGET" <<'PY'
-import socket, sys, time
+import errno, os, socket, sys, time
 port, budget = int(sys.argv[1]), float(sys.argv[2])
 start = time.monotonic()
 last = "none"
@@ -2233,7 +2266,11 @@ while True:
         sys.exit(0)
     last = rc
     time.sleep(0.1)
-print("timeout %.2f last=%s" % (time.monotonic() - start, last))
+# Render the status symbolically: the numbers differ per platform (ECONNREFUSED is 61 on
+# macOS, 111 on Linux), so a fixed legend would misdiagnose the very failure this prints.
+name = errno.errorcode.get(last, "?") if isinstance(last, int) else "?"
+desc = os.strerror(last) if isinstance(last, int) else ""
+print("timeout %.2f last=%s (%s: %s)" % (time.monotonic() - start, last, name, desc))
 sys.exit(1)
 PY
 )"; rc=$?
@@ -2249,7 +2286,7 @@ PY
   fi
   {
     printf '    wait_port: gave up on 127.0.0.1:%s (%s)\n' "$1" "$out"
-    printf '    wait_port: connect status 61=refused (nothing listening), 35=timed out (no answer)\n'
+    printf '    wait_port: ECONNREFUSED=nothing listening; ETIMEDOUT/EWOULDBLOCK=bound but not accepting\n'
     if [ -n "${3:-}" ]; then
       if kill -0 "$3" 2>/dev/null; then
         printf '    wait_port: server pid %s is still alive (started, but never bound)\n' "$3"
@@ -2270,7 +2307,7 @@ PY
     # lsof can come back empty without privileges, so ask the kernel a second way.
     if command -v netstat >/dev/null 2>&1; then
       printf '    wait_port: netstat rows for port %s --\n' "$1"
-      netstat -an 2>/dev/null | grep "\.$1 " | sed 's/^/      /' || true
+      netstat -an 2>/dev/null | grep -E "[.:]$1[[:space:]]" | sed 's/^/      /' || true
     fi
     # THE decisive one. The portal tests reach their server on this same runner, in this
     # same port range, bound the same way (portal.py binds 127.0.0.1 too) - they just wait
@@ -2427,7 +2464,8 @@ test_fetch_py() {
   mkdir -p "$dir"
   write_feed_fixtures "$dir"
   local slog="$TMP/srv.feed.$port.log"
-  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) > "$slog" 2>&1 &
+  write_static_httpd "$TMP/statichttpd.py"
+  python3 "$TMP/statichttpd.py" "$dir" "$port" > "$slog" 2>&1 &
   local srv=$!
   if ! wait_port "$port" "$slog" "$srv"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
   cat > "$TMP/feeds-profile.yaml" <<YAML
@@ -2493,8 +2531,18 @@ test_fetch_308() {
   write_feed_fixtures "$dir"
   # python3 -m http.server cannot emit a 308, so serve one from a tiny handler.
   cat > "$TMP/srv308.py" <<'PYSRV'
-import os, sys
+import os, socketserver, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class _Quiet(HTTPServer):
+    # Skip the socket.getfqdn() reverse lookup http.server does between bind() and
+    # listen(); a stalled resolver otherwise leaves the socket bound but not listening.
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+
 
 ROOT, PORT = sys.argv[1], int(sys.argv[2])
 
@@ -2521,7 +2569,7 @@ class H(BaseHTTPRequestHandler):
         pass
 
 
-HTTPServer(("127.0.0.1", PORT), H).serve_forever()
+_Quiet(("127.0.0.1", PORT), H).serve_forever()
 PYSRV
   slog="$TMP/srv.308.$port.log"
   python3 "$TMP/srv308.py" "$dir" "$port" > "$slog" 2>&1 &
@@ -2553,7 +2601,8 @@ test_fetch_health() {
   mkdir -p "$dir"
   write_feed_fixtures "$dir"
   local slog="$TMP/srv.feed.$port.log"
-  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) > "$slog" 2>&1 &
+  write_static_httpd "$TMP/statichttpd.py"
+  python3 "$TMP/statichttpd.py" "$dir" "$port" > "$slog" 2>&1 &
   local srv=$!
   if ! wait_port "$port" "$slog" "$srv"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
   cat > "$TMP/health-profile.yaml" <<YAML
@@ -2637,7 +2686,8 @@ exit 0
 SH
   chmod +x "$repo/stub/claude"
   local slog="$TMP/srv.feed.$port.log"
-  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) > "$slog" 2>&1 &
+  write_static_httpd "$TMP/statichttpd.py"
+  python3 "$TMP/statichttpd.py" "$dir" "$port" > "$slog" 2>&1 &
   local srv=$!
   if ! wait_port "$port" "$slog" "$srv"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
@@ -3417,7 +3467,8 @@ test_fetch_verify() {
   printf '<?xml version="1.0"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://e/x</loc></url></urlset>\n' \
     > "$dir/sitemap.xml"
   local slog="$TMP/srv.verify.$port.log"
-  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) > "$slog" 2>&1 &
+  write_static_httpd "$TMP/statichttpd.py"
+  python3 "$TMP/statichttpd.py" "$dir" "$port" > "$slog" 2>&1 &
   local srv=$!
   if ! wait_port "$port" "$slog" "$srv"; then fail "verify feed server came up"; kill "$srv" 2>/dev/null; return; fi
   cat > "$TMP/verify-draft.yaml" <<YAML
