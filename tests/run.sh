@@ -2392,6 +2392,70 @@ YAML
 }
 test_fetch_py
 
+echo "== fetch.py: follows a 308 redirect on every python on the box =="
+# urllib only learned 308 in 3.11, and 3.9's redirect_request rejects the code
+# outright -- so a 308 feed verified clean under bootstrap.sh's python and then
+# failed every launchd monitor run under the system one. Guards bin/fetch.py's
+# _RedirectHandler; deleting either half of it must turn this red.
+test_fetch_308() {
+  local dir="$TMP/feeds-308" rc port=8801 srv py real seen=""
+  mkdir -p "$dir"
+  write_feed_fixtures "$dir"
+  # python3 -m http.server cannot emit a 308, so serve one from a tiny handler.
+  cat > "$TMP/srv308.py" <<'PYSRV'
+import os, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+ROOT, PORT = sys.argv[1], int(sys.argv[2])
+
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/redir.xml":
+            self.send_response(308)
+            self.send_header("Location", "/rss.xml")
+            self.end_headers()
+            return
+        try:
+            body = open(os.path.join(ROOT, os.path.basename(self.path)), "rb").read()
+        except OSError:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/xml")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+HTTPServer(("127.0.0.1", PORT), H).serve_forever()
+PYSRV
+  python3 "$TMP/srv308.py" "$dir" "$port" >/dev/null 2>&1 &
+  srv=$!
+  if ! wait_port "$port"; then fail "308 server came up"; kill "$srv" 2>/dev/null; return; fi
+  printf 'subject:\n  derived:\n    feeds: [http://127.0.0.1:%s/redir.xml]\n' "$port" > "$TMP/f308.yaml"
+  # The suite runs on PATH's python3 (often 3.11+, where 308 works unaided), but
+  # launchd runs monitor.sh under /usr/bin/python3 -- 3.9 on macOS. Only running
+  # both actually covers the version that broke.
+  for py in python3 /usr/bin/python3; do
+    real="$(command -v "$py" 2>/dev/null)" || continue
+    [ -n "$real" ] || continue
+    case " $seen " in *" $real "*) continue ;; esac
+    seen="$seen $real"
+    rm -f "$TMP/cand308.jsonl"
+    "$real" "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand308.jsonl" "$TMP/f308.yaml" 2>/dev/null; rc=$?
+    assert_eq "308 feed exits 0 ($("$real" -V 2>&1))" "0" "$rc"
+    assert_contains "308 redirect is followed to the feed ($("$real" -V 2>&1))" \
+      "$(cat "$TMP/cand308.jsonl" 2>/dev/null)" "Fresh RSS story"
+  done
+  kill "$srv" 2>/dev/null || true
+  wait "$srv" 2>/dev/null || true   # reap it quietly; bash otherwise prints "Terminated"
+}
+test_fetch_308
+
 echo "== fetch.py: --health tracks per-feed sweep health across runs =="
 test_fetch_health() {
   local dir="$TMP/feeds-h" err rc port=8799 fh="$TMP/feedhealth.json"

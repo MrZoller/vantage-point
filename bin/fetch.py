@@ -164,13 +164,36 @@ def _parse_when(text):
     return dt.astimezone(timezone.utc)
 
 
+class _RedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow 308 Permanent Redirect, which urllib only learned to handle in 3.11.
+
+    monitor.sh appends to launchd's minimal PATH (so a caller's stubs still win), which
+    resolves python3 to the macOS system 3.9; bootstrap.sh prepends and gets a newer one.
+    Without this, a feed that answers 308 verifies clean at bootstrap and then fails every
+    monitor run -- the split that hid a dead VentureBeat feed for 68 runs. Mirrors CPython
+    3.11+, which aliases 308 onto the 302 handler."""
+
+    http_error_308 = urllib.request.HTTPRedirectHandler.http_error_302
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # 3.9's redirect_request rejects any code outside (301, 302, 303, 307)
+        # before the handler above ever gets to follow it. 307 carries the same
+        # method-preserving semantics as 308, so present it as that.
+        if code == 308:
+            code = 307
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_RedirectHandler)
+
+
 def fetch_feed(feed, timeout=20):
     """Pull a feed's bytes. Returns (data, None) on success or (None, error_string)
     on any network/OS error -- the single fetch path shared by the sweep and --verify
-    so they behave identically on a down or slow feed."""
+    so they behave identically on a down or slow feed (and across python versions)."""
     req = urllib.request.Request(feed, headers={"User-Agent": "vantage-point-fetch"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _OPENER.open(req, timeout=timeout) as resp:
             return resp.read(), None
     except (urllib.error.URLError, OSError) as exc:
         return None, str(exc)
