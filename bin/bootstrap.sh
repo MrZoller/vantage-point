@@ -43,6 +43,12 @@ PROFILE="profile.yaml"               # the currently-approved profile (absent on
 DRAFT="profile.draft.yaml"
 SUMMARY="profile.draft.summary.md"   # human-readable digest the agent writes alongside
 DIFF_FILE="profile.draft.diff"       # on a refresh: what the draft changes vs the approved profile
+# Written as the LAST act of a successful run, cleared at the start of every real one.
+# Its presence means "the run that produced the current draft finished" - which the
+# draft's own mtime does NOT: a run that dies after the agent has Written the draft
+# leaves a newer-than-profile file behind, and without this marker --if-stale would read
+# that wreckage as a draft awaiting review and skip forever.
+DRAFT_OK="state/.draft-complete"
 
 [ -f "$CONFIG" ] || { echo "missing $CONFIG" >&2; exit 1; }
 [ -f "$PROMPT" ] || { echo "missing $PROMPT" >&2; exit 1; }
@@ -56,6 +62,8 @@ DIFF_FILE="profile.draft.diff"       # on a refresh: what the draft changes vs t
 #   unreviewed draft    -> skip. The gate is human approval, and a second draft would
 #                          overwrite the first without moving it any closer to approved.
 #   window unset or 0   -> skip. The operator turned the staleness contract off.
+#                          (A draft with no completion marker is NOT pending - it is
+#                          debris from a failed run, and refreshing over it is right.)
 #   profile still young -> skip. Not due.
 #   otherwise           -> run - INCLUDING an unparseable last_bootstrapped. Guessing
 #                          "fresh" from an unreadable date reproduces the exact silent
@@ -64,9 +72,11 @@ if [ -n "$IF_STALE" ]; then
   _skip=""
   if [ ! -f "$PROFILE" ]; then
     _skip="no approved $PROFILE yet - run ./bin/bootstrap.sh by hand for the first one"
-  elif [ -f "$DRAFT" ] && [ "$DRAFT" -nt "$PROFILE" ]; then
+  elif [ -f "$DRAFT_OK" ] && [ -f "$DRAFT" ] && [ "$DRAFT" -nt "$PROFILE" ]; then
     # An approval is `cp $DRAFT profile.yaml`, so an approved draft is always OLDER than
-    # the profile. Newer means it is still waiting for a human.
+    # the profile. Newer means it is still waiting for a human - but ONLY if the run that
+    # wrote it finished; see $DRAFT_OK. A draft from a failed run must never park the
+    # refresh, or one bad night disables the cadence permanently and silently.
     _skip="$DRAFT is newer than $PROFILE - a draft is already waiting for review"
   else
     _refresh_days="$(cfg_get governance profile_refresh_days)"
@@ -106,6 +116,13 @@ if [ -n "$IF_STALE" ]; then
   fi
 fi
 
+# Past the gate: this is a real run. Retract the completion marker up front, so a run
+# that dies anywhere below leaves no claim that its draft is reviewable. Cleared here
+# rather than in the failure trap because a SIGKILL, a power cut, or a `launchctl bootout`
+# never runs a trap - and those leave exactly the half-written draft this guards against.
+mkdir -p state
+rm -f "$DRAFT_OK"
+
 # One clean stderr log per run; every pass below appends to it.
 : > bootstrap.err
 
@@ -143,7 +160,8 @@ notify_failure() {
     body="$(mktemp)" || exit "$rc"
     # shellcheck disable=SC2016  # backticks are literal Markdown; %s are printf placeholders
     {
-      printf '> **The bootstrap run failed (exit %s).** No draft was produced, so the approved profile is unchanged and still in use.\n\n' "$rc"
+      printf '> **The bootstrap run failed (exit %s).** The approved profile is untouched and still in use.\n\n' "$rc"
+      printf 'Any `%s` in the checkout is from this failed run - treat it as incomplete. It is not marked reviewable, so the next scheduled refresh replaces it rather than mistaking it for a draft awaiting your approval.\n\n' "$DRAFT"
       printf 'Checkout: `%s`\n\n' "$ROOT"
       printf 'Re-run it on the host - a deep-research run can resume where it stopped:\n\n'
       printf '```sh\ncd %s && ./bin/bootstrap.sh --resume\n```\n\n' "$ROOT"
@@ -744,7 +762,13 @@ echo "             cp $DRAFT profile.yaml"
 # profile (it renders profile.summary.md like the bootstrap email; YAML stays the source).
 [ -f "$SUMMARY" ] && echo "             cp $SUMMARY profile.summary.md   # optional: nicer Profile tab"
 
-# The line above is a `[ -f ] && echo`, so with no summary it leaves a non-zero status -
-# which, as the script's LAST command, is what the run exits with. Harmless while nothing
-# read that code; now the failure notifier does. Be explicit about success.
+# Reached only on success, so the draft standing in the tree is a complete one: mark it
+# reviewable. This is what --if-stale trusts when it parks a refresh for human review.
+: > "$DRAFT_OK"
+
+# The `[ -f "$SUMMARY" ] && echo` further up leaves a non-zero status when no summary was
+# written. That used to be the script's LAST command, so it became the run's exit code -
+# harmless while nothing read it, a spurious failure email once the notifier does. The
+# marker write above happens to absorb it now; say so explicitly rather than depend on
+# which line happens to come last.
 exit 0

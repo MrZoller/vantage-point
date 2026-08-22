@@ -736,10 +736,23 @@ fi
 # instance whose runs are mostly silent; this is what tells you why the ones that do
 # arrive are getting thinner.)
 if [ -n "$STALE_NOTE" ] && [ -s "$RUN_REPORT" ]; then
-  # shellcheck disable=SC2016  # backticks are literal Markdown; %s is a printf placeholder
-  printf '\n\n---\n\n> _**The approved profile is stale** - %s. Its rubric and source list are drifting from the market, so scores drop and relevant items get missed. Refresh with `./bin/bootstrap.sh` on the host, then approve the draft._\n' \
-    "$STALE_NOTE" >> "$RUN_REPORT" \
-    && echo "[monitor:$MODE] appended the profile-staleness notice to the report" >&2
+  # Which advice depends on whether a COMPLETE refresh draft is already waiting. After a
+  # scheduled refresh succeeds, profile.yaml stays stale by design until a human approves,
+  # so the profile is stale AND the work is already done - and telling the operator to run
+  # bootstrap.sh there is actively harmful: a manual run is ungated, and its synthesis
+  # overwrites the pending draft, discarding review edits and re-spending the research.
+  # Same signal bootstrap.sh's --if-stale gate uses, for the same reason.
+  if [ -f state/.draft-complete ] && [ -f profile.draft.yaml ] && [ profile.draft.yaml -nt "$PROFILE" ]; then
+    # shellcheck disable=SC2016  # backticks are literal Markdown; %s is a printf placeholder
+    printf '\n\n---\n\n> _**A refreshed profile is waiting for your approval** - the approved one is %s. The research is already done; do NOT run `./bin/bootstrap.sh` again, which would overwrite the draft. Review `profile.draft.yaml` on the host, then `cp profile.draft.yaml profile.yaml`._\n' \
+      "$STALE_NOTE" >> "$RUN_REPORT" \
+      && echo "[monitor:$MODE] appended the pending-draft approval notice to the report" >&2
+  else
+    # shellcheck disable=SC2016  # backticks are literal Markdown; %s is a printf placeholder
+    printf '\n\n---\n\n> _**The approved profile is stale** - %s. Its rubric and source list are drifting from the market, so scores drop and relevant items get missed. Refresh with `./bin/bootstrap.sh` on the host, then approve the draft._\n' \
+      "$STALE_NOTE" >> "$RUN_REPORT" \
+      && echo "[monitor:$MODE] appended the profile-staleness notice to the report" >&2
+  fi
 fi
 
 # ---- email delivery ----

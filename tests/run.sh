@@ -2924,6 +2924,32 @@ SH
   assert_contains "an absent last_bootstrapped is called out, not read as fresh" \
     "$out" "couldn't parse profile last_bootstrapped"
 
+  # With a COMPLETE draft pending, the profile is stale by design until a human approves.
+  # Telling the operator to run bootstrap.sh there is the one instruction that destroys
+  # the finished work: a manual run is ungated and its synthesis overwrites the draft.
+  local repo5="$TMP/stalepending"
+  make_fake_repo "$repo5" "2000-01-01"
+  cp "$repo/stub/claude" "$repo5/stub/claude"
+  printf 'derived: {}\n' > "$repo5/profile.draft.yaml"
+  : > "$repo5/state/.draft-complete"
+  touch -t 202601010000 "$repo5/profile.yaml"
+  touch -t 202602010000 "$repo5/profile.draft.yaml"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo5/stub:$PATH" bash "$repo5/bin/monitor.sh" daily 2>&1 )"
+  local rep5; rep5="$repo5/kb/$(date +%F).daily.md"
+  assert_contains "announces the approval notice instead" "$out" "appended the pending-draft approval notice"
+  assert_contains "the report asks for approval, not another bootstrap" \
+    "$(cat "$rep5" 2>/dev/null)" "waiting for your approval"
+  assert_contains "and spells out the approval command" \
+    "$(cat "$rep5" 2>/dev/null)" "cp profile.draft.yaml profile.yaml"
+  assert_not_contains "it does NOT tell the operator to re-run bootstrap" \
+    "$(cat "$rep5" 2>/dev/null)" "Refresh with"
+  # An INCOMPLETE draft (no marker) is debris, not pending work: back to refresh advice.
+  rm -f "$repo5/state/.draft-complete" "$rep5"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo5/stub:$PATH" bash "$repo5/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "an unmarked draft falls back to the refresh notice" "$out" "appended the profile-staleness notice"
+
   # Silence still wins: like the forward radar, the notice rides along on a report, it
   # never causes one. (An instance that is mostly silent is covered by the monthly
   # refresh agent instead.)
@@ -3313,9 +3339,9 @@ make_fake_bootstrap_repo() {  # <repo> <home> [nomodel]
   fi
   printf 'bootstrap prompt (test fixture)\n' > "$repo/bootstrap-prompt.md"
   # Stub claude: the research call writes the draft + a summary and records its args;
-# SYNTH_EXIT drives that call's exit code (a failing synthesis is what aborts a real run,
-# so it's how the failure-notification path is reached) and NO_SUMMARY suppresses the
-# summary it writes (the "successful run, nothing to email" path);
+# SYNTH_EXIT drives that call's exit code, AFTER the draft is written (a failing synthesis
+# is what aborts a real run, and the real agent Writes the draft before the CLI errors) and
+# NO_SUMMARY suppresses the summary it writes (the "successful run, nothing to email" path);
   # the editorial call (prompt names a PROFILE-DRAFT SUMMARY) edits the summary per env;
   # the backtest call (prompt names a Backtest prompt) records its prompt and writes a
   # canned score file from $BT_JSONL (or garbage / nothing, to drive the failure paths).
@@ -3337,11 +3363,13 @@ case "$*" in
     exit "${BT_EXIT:-0}" ;;
   *)
     [ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+    printf 'derived: {}\n' > profile.draft.yaml
     if [ "${SYNTH_EXIT:-0}" != 0 ]; then
+      # Order matters: the real agent Writes the draft mid-session and the CLI fails
+      # afterwards, so a failed run DOES leave a newer-than-profile draft behind.
       echo "stub synthesis blew up" >&2
       exit "$SYNTH_EXIT"
     fi
-    printf 'derived: {}\n' > profile.draft.yaml
     [ -n "${NO_SUMMARY:-}" ] || printf '# Profile draft summary\nbottom line: test market\n' > profile.draft.summary.md
     printf '{"num_turns":1,"total_cost_usd":0.0}\n'
     exit 0 ;;
@@ -3855,6 +3883,33 @@ test_bootstrap_if_stale() {
   out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
   assert_contains "an absent last_bootstrapped is treated as stale" "$out" "treating it as stale"
   assert_contains "so it refreshes instead of skipping forever" "$out" "synthesizing the draft"
+
+  # A draft left behind by a FAILED run must NOT read as "awaiting review". Its mtime
+  # looks identical to a good draft's, so without a completion marker one bad night
+  # parks the monthly agent forever - silently, since the skip exits 0 and the failure
+  # trap never fires again. This is the whole cadence disabling itself.
+  rm -f "$repo/profile.draft.yaml" "$repo/state/.draft-complete"
+  printf 'subject:\n  last_bootstrapped: 2000-01-01\n' > "$repo/profile.yaml"
+  # Backdate it: `-nt` compares whole seconds on bash 3.2, so a profile written in the
+  # same second as the draft would tie and read as NOT newer, masking what this tests.
+  touch -t 202601010000 "$repo/profile.yaml"
+  out="$( cd "$repo" && SYNTH_EXIT=1 HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+  assert_eq "the failing refresh exits non-zero" "1" "$rc"
+  if [ -f "$repo/profile.draft.yaml" ] && [ "$repo/profile.draft.yaml" -nt "$repo/profile.yaml" ]; then
+    pass "the failed run did leave a newer draft behind (the trap this guards)"
+  else
+    fail "the failed run did leave a newer draft behind (the trap this guards)"
+  fi
+  if [ -f "$repo/state/.draft-complete" ]; then fail "a failed run leaves no completion marker"; else pass "a failed run leaves no completion marker"; fi
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
+  assert_not_contains "a failed run's draft is not mistaken for one awaiting review" \
+    "$out" "already waiting for review"
+  assert_contains "so the next refresh actually runs" "$out" "synthesizing the draft"
+  if [ -f "$repo/state/.draft-complete" ]; then pass "a successful run marks the draft reviewable"; else fail "a successful run marks the draft reviewable"; fi
+
+  # ...and with the marker in place, a COMPLETE draft does park it (the good case).
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
+  assert_contains "a complete draft still parks the refresh" "$out" "already waiting for review"
 
   # Operator opt-out: no refresh window configured -> the agent is a permanent no-op.
   local repo2="$TMP/ifstaleoff" home2="$TMP/ifstalehome2"
