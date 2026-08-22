@@ -2214,9 +2214,18 @@ import socket, sys, time
 port, budget = int(sys.argv[1]), float(sys.argv[2])
 start = time.monotonic()
 last = "none"
-while time.monotonic() - start < budget:
+while True:
+    left = budget - (time.monotonic() - start)
+    if left <= 0:
+        break
     s = socket.socket()
-    s.settimeout(0.5)
+    # Generous PER-ATTEMPT timeout, not a short one. errno 35 (EWOULDBLOCK) means the
+    # connect was still in progress when we gave up; nothing-listening answers 61
+    # (ECONNREFUSED) immediately instead. The macOS runner returned 35 on every attempt
+    # for 30s under a 0.5s per-attempt limit while curl - which imposes no such limit -
+    # fetched pages from servers started the same way. So a slow-completing loopback
+    # connect was being read as "not up yet" on every single poll.
+    s.settimeout(min(5.0, left))
     rc = s.connect_ex(("127.0.0.1", port))
     s.close()
     if rc == 0:
@@ -2257,6 +2266,22 @@ PY
     if command -v lsof >/dev/null 2>&1; then
       printf '    wait_port: lsof for port %s --\n' "$1"
       lsof -nP -iTCP:"$1" 2>/dev/null | sed 's/^/      /' || true
+    fi
+    # lsof can come back empty without privileges, so ask the kernel a second way.
+    if command -v netstat >/dev/null 2>&1; then
+      printf '    wait_port: netstat rows for port %s --\n' "$1"
+      netstat -an 2>/dev/null | grep "\.$1 " | sed 's/^/      /' || true
+    fi
+    # THE decisive one. The portal tests reach their server on this same runner, in this
+    # same port range, bound the same way (portal.py binds 127.0.0.1 too) - they just wait
+    # with curl instead of a socket probe, and they pass. So this asks the only question
+    # left: is the SERVER unreachable, or is this PROBE broken? If curl gets bytes where
+    # connect_ex timed out for 30s, the probe is the bug and the servers were never at
+    # fault.
+    if command -v curl >/dev/null 2>&1; then
+      printf '    wait_port: curl cross-check --\n'
+      curl -s -m 5 -o /dev/null -w '      curl exit ok, http=%{http_code}, connect=%{time_connect}s\n' \
+        "http://127.0.0.1:$1/" 2>&1 || printf '      curl also failed (exit %s)\n' "$?"
     fi
   } >&2
   return 1
