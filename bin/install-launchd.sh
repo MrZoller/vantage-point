@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# install-launchd.sh [uninstall] - (re)install the daily + weekly + monthly-refresh
-# launchd agents WITHOUT editing anything tracked in the repo.
+# install-launchd.sh [uninstall] - (re)install the daily + weekly + refresh launchd
+# agents WITHOUT editing anything tracked in the repo.
 #
 # It generates the real plists from the launchd/*.plist templates into
 # ~/Library/LaunchAgents, substituting this checkout's absolute path for __VP_ROOT__
 # and the agent label for __VP_LABEL__, then loads them. The committed templates are
 # never touched, so a fresh clone stays clean and `git status` never shows local edits.
 #
-# The refresh agent runs `bootstrap.sh --if-stale` monthly: a no-op unless the approved
+# The refresh agent runs `bootstrap.sh --if-stale` daily: a no-op unless the approved
 # profile is past governance.profile_refresh_days, so a forgotten refresh can't quietly
-# rot a profile for months (set profile_refresh_days blank/0 to turn it off entirely).
+# rot a profile (set profile_refresh_days blank/0 to turn it off entirely). Daily because
+# a coarser poll cannot honour the window it checks - see the plist template.
 #
 # Multiple instances on one machine: give each checkout a distinct
 # `deployment.instance` in its monitor-config.yaml and the agent labels/filenames are
@@ -64,12 +65,13 @@ else
 fi
 LABELS=("$PREFIX.daily" "$PREFIX.weekly" "$PREFIX.refresh")
 
-# Day-of-month for the monthly refresh, staggered per instance: a deep-research
-# bootstrap is the most expensive thing this repo runs, and several clones firing one
-# on the same morning is a spend and load spike. Hashing the label gives each checkout
-# a stable day (same on every reinstall) without another config knob. 1-28 only, so it
-# fires in February too.
-REFRESH_DAY=$(( $(printf '%s' "$PREFIX.refresh" | cksum | awk '{print $1}') % 28 + 1 ))
+# Hour for the DAILY refresh check, staggered per instance. The check itself is free;
+# what must not collide is the deep-research bootstrap it can start, which is the most
+# expensive thing this repo runs. Clones bootstrapped on the same day cross their refresh
+# windows on the same day, so they need separating in TIME, not by date. Hashing the label
+# gives each checkout a stable hour (identical on every reinstall) with nothing to
+# configure. 1-5, so every bucket lands before the 06:30 daily sweep.
+REFRESH_HOUR=$(( $(printf '%s' "$PREFIX.refresh" | cksum | awk '{print $1}') % 5 + 1 ))
 
 # A configured-but-unusable name must NOT silently become the default deployment.
 # Checked up front (before any LaunchAgents mutation) so a bad name can't leave the
@@ -198,7 +200,7 @@ for mode in daily weekly refresh; do
   template="$(cat "$src")"
   template="${template//__VP_ROOT__/$ROOT_XML}"
   template="${template//__VP_LABEL__/$label}"   # label is slug-safe; no XML escaping needed
-  template="${template//__VP_REFRESH_DAY__/$REFRESH_DAY}"   # refresh template only; a no-op elsewhere
+  template="${template//__VP_REFRESH_HOUR__/$REFRESH_HOUR}"   # refresh template only; a no-op elsewhere
   printf '%s\n' "$template" > "$dst"
 
   # Catch a malformed plist before launchd does (no-op if plutil is absent).
@@ -216,6 +218,6 @@ done
 # even if the path or instance name no longer matches.
 printf '%s\n' "${LABELS[@]}" > "$MARKER"
 
-echo "[install-launchd] profile refresh: monthly on day $REFRESH_DAY at 05:00 (a no-op unless the profile is past governance.profile_refresh_days)"
+echo "[install-launchd] profile refresh: daily at 0$REFRESH_HOUR:00 (a no-op unless the profile is past governance.profile_refresh_days)"
 echo "[install-launchd] done. Kick a run now to confirm wiring:"
 echo "  launchctl kickstart -k $DOMAIN/$PREFIX.daily"

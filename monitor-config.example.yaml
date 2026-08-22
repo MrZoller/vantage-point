@@ -283,8 +283,8 @@ governance:
   # Human-in-the-loop. Also your clean story when you take this to the gov group.
   require_profile_review: true     # monitor won't run until derived blocks are approved
   # Anchors drift; re-bootstrap on a slow cadence. Drives three things: the monitor's
-  # staleness warning (log + a notice appended to the report), and the monthly launchd
-  # refresh agent, which runs `bootstrap.sh --if-stale` and skips unless this window has
-  # been crossed. Blank or 0 turns all of it off.
+  # staleness warning (log + a notice appended to the report), and the launchd refresh
+  # agent, which checks daily and runs `bootstrap.sh --if-stale`, a no-op unless this
+  # window has been crossed. Blank or 0 turns all of it off.
   profile_refresh_days: 30
   flag_low_confidence: true        # surface the agent's own uncertainty for review

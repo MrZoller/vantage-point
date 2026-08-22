@@ -312,13 +312,13 @@ import sys, plistlib
 with open(sys.argv[1], "rb") as f:
     d = plistlib.load(f)
 key = sys.argv[2]
-print(" ".join(d["ProgramArguments"]) if key == "args" else d["StartCalendarInterval"][key])
+print(" ".join(d["ProgramArguments"]) if key == "args" else d["StartCalendarInterval"].get(key, ""))
 PY
 }
 
 echo "== install-launchd: installs a monthly, self-gating profile-refresh agent =="
 test_install_refresh_agent() {
-  local co="$TMP/refresh/checkout" home="$TMP/refreshhome" la day plist
+  local co="$TMP/refresh/checkout" home="$TMP/refreshhome" la hour plist
   la="$home/Library/LaunchAgents"
   mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$home"
   cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
@@ -332,22 +332,26 @@ test_install_refresh_agent() {
   assert_plist_ok "refresh" "$plist" "$co/bin/bootstrap.sh"
   assert_eq "the refresh agent runs bootstrap.sh behind its staleness gate" \
     "$co/bin/bootstrap.sh --if-stale" "$(plist_field "$plist" args)"
-  if grep -q '__VP_REFRESH_DAY__' "$plist"; then fail "refresh: no __VP_REFRESH_DAY__ token remains"; else pass "refresh: no __VP_REFRESH_DAY__ token remains"; fi
-  assert_eq "fires at 05:00, ahead of the 06:30 daily sweep" "5" "$(plist_field "$plist" Hour)"
-  day="$(plist_field "$plist" Day)"
-  # 29-31 would silently skip February (and three other months) - a "monthly" agent
-  # that doesn't fire monthly is worse than none.
-  if [ "$day" -ge 1 ] && [ "$day" -le 28 ]; then
-    pass "monthly on a day-of-month that every month has (got $day)"
+  if grep -q '__VP_REFRESH_HOUR__' "$plist"; then fail "refresh: no __VP_REFRESH_HOUR__ token remains"; else pass "refresh: no __VP_REFRESH_HOUR__ token remains"; fi
+  # DAILY: no Day key at all. A monthly poll cannot honour the window it checks - with
+  # profile_refresh_days=30, a profile refreshed on the 1st is 28d old at the next monthly
+  # check, is skipped, and reaches ~59d by the one after. The gate is free; polling is not
+  # the expensive part.
+  assert_eq "polls daily - no day-of-month pinning" "" "$(plist_field "$plist" Day)"
+  assert_eq "and no weekday pinning either" "" "$(plist_field "$plist" Weekday)"
+  hour="$(plist_field "$plist" Hour)"
+  # Every bucket must land before the 06:30 daily sweep.
+  if [ "$hour" -ge 1 ] && [ "$hour" -le 5 ]; then
+    pass "fires overnight, ahead of the 06:30 sweep (got 0$hour:00)"
   else
-    fail "monthly on a day-of-month that every month has (got $day)"
+    fail "fires overnight, ahead of the 06:30 sweep (got $hour)"
   fi
 }
 test_install_refresh_agent
 
-echo "== install-launchd: the refresh day is stable per checkout, staggered across instances =="
+echo "== install-launchd: the refresh hour is stable per checkout, staggered across instances =="
 test_install_refresh_day_stagger() {
-  local home="$TMP/staggerhome" la a b day_a day_a2 day_b
+  local home="$TMP/staggerhome" la a b hour_a hour_a2 hour_b
   la="$home/Library/LaunchAgents"; mkdir -p "$home"
   a="$TMP/stag-a/checkout"; b="$TMP/stag-b/checkout"
   local co
@@ -361,21 +365,22 @@ test_install_refresh_day_stagger() {
   printf 'version: 1\ndeployment:\n  instance: ai-conferences\n'  > "$a/monitor-config.yaml"
   printf 'version: 1\ndeployment:\n  instance: frontier-models\n' > "$b/monitor-config.yaml"
   ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
-  day_a="$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Day)"
-  # Reinstalling must not move the day around: it is derived from the label, not the clock.
+  hour_a="$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Hour)"
+  # Reinstalling must not move the hour around: it is derived from the label, not the clock.
   ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
-  day_a2="$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Day)"
-  assert_eq "a reinstall keeps the same refresh day" "$day_a" "$day_a2"
+  hour_a2="$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Hour)"
+  assert_eq "a reinstall keeps the same refresh hour" "$hour_a" "$hour_a2"
   ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )
-  day_b="$(plist_field "$la/ai.zoller.vantagepoint.frontier-models.refresh.plist" Day)"
-  # A deep-research bootstrap is the most expensive thing here; several clones firing
-  # one on the same morning is a spend spike. These two names hash apart - if this ever
-  # fails after a change to the hash, pick two that don't collide rather than dropping
-  # the check (collisions are possible in general, 28 buckets, just not for this pair).
-  if [ "$day_a" != "$day_b" ]; then
-    pass "two instances land on different days ($day_a vs $day_b)"
+  hour_b="$(plist_field "$la/ai.zoller.vantagepoint.frontier-models.refresh.plist" Hour)"
+  # Clones bootstrapped on the same day cross their windows on the same day, so what has
+  # to differ is the TIME - a deep-research bootstrap is the most expensive thing here and
+  # several must not start at once. Only 5 buckets, so collisions are possible in general;
+  # these two names hash apart. If this fails after a change to the hash, pick two that
+  # don't collide rather than dropping the check.
+  if [ "$hour_a" != "$hour_b" ]; then
+    pass "two instances land on different hours (0$hour_a:00 vs 0$hour_b:00)"
   else
-    fail "two instances land on different days (both $day_a)"
+    fail "two instances land on different hours (both 0$hour_a:00)"
   fi
 }
 test_install_refresh_day_stagger
@@ -3354,7 +3359,8 @@ make_fake_bootstrap_repo() {  # <repo> <home> [nomodel]
 # SYNTH_EXIT drives that call's exit code, AFTER the draft is written (a failing synthesis
 # is what aborts a real run, and the real agent Writes the draft before the CLI errors) and
 # NO_SUMMARY suppresses the summary it writes (the "successful run, nothing to email" path),
-# and NO_DRAFT models claude ending its turn cleanly without ever calling Write;
+# NO_DRAFT models claude ending its turn cleanly without ever calling Write, and
+# PARTIAL_DRAFT models a Write that got cut off - nonempty, so -s cannot tell it apart;
   # the editorial call (prompt names a PROFILE-DRAFT SUMMARY) edits the summary per env;
   # the backtest call (prompt names a Backtest prompt) records its prompt and writes a
   # canned score file from $BT_JSONL (or garbage / nothing, to drive the failure paths).
@@ -3376,7 +3382,11 @@ case "$*" in
     exit "${BT_EXIT:-0}" ;;
   *)
     [ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
-    [ -n "${NO_DRAFT:-}" ] || printf 'derived: {}\n' > profile.draft.yaml
+    if [ -n "${PARTIAL_DRAFT:-}" ]; then
+      printf 'derived: {}\n' > profile.draft.yaml     # nonempty, but cut off before last_bootstrapped
+    elif [ -z "${NO_DRAFT:-}" ]; then
+      printf 'derived: {}\nsubject:\n  last_bootstrapped: 2026-01-01\n' > profile.draft.yaml
+    fi
     if [ "${SYNTH_EXIT:-0}" != 0 ]; then
       # Order matters: the real agent Writes the draft mid-session and the CLI fails
       # afterwards, so a failed run DOES leave a newer-than-profile draft behind.
@@ -3459,7 +3469,7 @@ case "$prompt" in
   *)                                # SYNTHESIS pass
     [ -n "${THINK_LOG:-}" ] && printf 'synth:%s\n' "${MAX_THINKING_TOKENS:-unset}" >> "$THINK_LOG"
     [ -n "${SYNTH_ARGS:-}" ] && printf '%s\n' "$prompt" > "$SYNTH_ARGS"
-    printf 'derived: {}\n' > profile.draft.yaml
+    printf 'derived: {}\nsubject:\n  last_bootstrapped: 2026-01-01\n' > profile.draft.yaml
     printf '# Profile draft summary\nbottom line: test market\n' > profile.draft.summary.md
     emit_json; exit 0 ;;
 esac
@@ -3937,6 +3947,32 @@ test_bootstrap_if_stale() {
   out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
   assert_contains "so the next refresh still runs" "$out" "synthesizing the draft"
 
+  # Nonempty is not the same as complete. A synthesis that exits 0 having written only a
+  # truncated fragment leaves a file -s is happy with; vouching for that parks the refresh
+  # on garbage exactly as an empty draft would.
+  rm -f "$repo/profile.draft.yaml" "$repo/state/.draft-complete"
+  printf 'subject:\n  last_bootstrapped: 2000-01-01\n' > "$repo/profile.yaml"
+  touch -t 202601010000 "$repo/profile.yaml"
+  out="$( cd "$repo" && PARTIAL_DRAFT=1 HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+  assert_eq "a truncated draft fails the run" "1" "$rc"
+  assert_contains "and names the missing field" "$out" "no last_bootstrapped"
+  if [ -s "$repo/profile.draft.yaml" ]; then pass "the truncated draft is nonempty (what -s alone would accept)"; else fail "the truncated draft is nonempty (what -s alone would accept)"; fi
+  if [ -f "$repo/state/.draft-complete" ]; then fail "a truncated draft is not marked reviewable"; else pass "a truncated draft is not marked reviewable"; fi
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
+  assert_contains "so the refresh still runs next time" "$out" "synthesizing the draft"
+
+  # An UNREADABLE approved profile must not kill the run before the notifier is armed:
+  # cfg_get inherits awk's status, so this used to exit under set -e with no trap yet.
+  if [ "$(id -u)" != 0 ]; then
+    rm -f "$repo/profile.draft.yaml" "$repo/state/.draft-complete"
+    printf 'subject:\n  last_bootstrapped: 2000-01-01\n' > "$repo/profile.yaml"
+    chmod 000 "$repo/profile.yaml"
+    out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+    chmod 644 "$repo/profile.yaml"
+    assert_eq "an unreadable profile does not kill the run" "0" "$rc"
+    assert_contains "it is treated as stale rather than dying silently" "$out" "synthesizing the draft"
+  fi
+
   # A previous run's leftover draft must not be adopted: an EMPTY one never parks the
   # gate, and a stale one is cleared at run start so the check means "this run wrote it".
   rm -f "$repo/state/.draft-complete"
@@ -4145,7 +4181,7 @@ YAML
   # An identical draft: note it, leave no empty diff file behind.
   local repo3="$TMP/bootdiff3" home3="$TMP/boothome10" out3
   make_fake_bootstrap_repo "$repo3" "$home3"
-  printf 'derived: {}\n' > "$repo3/profile.yaml"     # exactly what the stub will draft
+  printf 'derived: {}\nsubject:\n  last_bootstrapped: 2026-01-01\n' > "$repo3/profile.yaml"   # exactly what the stub drafts
   out3="$( cd "$repo3" && HOME="$home3" bash bin/bootstrap.sh 2>&1 )"
   assert_contains "notes an identical draft" "$out3" "identical to the approved"
   if [ -f "$repo3/profile.draft.diff" ]; then fail "no diff file when draft is identical"; else pass "no diff file when draft is identical"; fi

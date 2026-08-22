@@ -44,7 +44,7 @@ vantage-point/
 └── launchd/
     ├── ai.zoller.vantagepoint.daily.plist    # templates; __VP_ROOT__ filled in at install
     ├── ai.zoller.vantagepoint.weekly.plist
-    └── ai.zoller.vantagepoint.refresh.plist  # monthly `bootstrap.sh --if-stale`
+    └── ai.zoller.vantagepoint.refresh.plist  # daily `bootstrap.sh --if-stale` check
 ```
 
 Created at runtime, gitignored (a specific deployment's data):
@@ -168,7 +168,7 @@ Three agents are installed:
 |---|---|---|
 | `…daily` | every day, 06:30 | `monitor.sh daily` |
 | `…weekly` | Mondays, 07:00 | `monitor.sh weekly` |
-| `…refresh` | monthly, 05:00 | `bootstrap.sh --if-stale` |
+| `…refresh` | daily, 01:00–05:00 | `bootstrap.sh --if-stale` |
 
 **The refresh agent is self-gating.** It fires unconditionally and then does nothing
 unless the approved profile is older than `governance.profile_refresh_days` — a
@@ -178,14 +178,19 @@ when there's a reason. It also stays out of the way when there isn't one: no
 waiting for review, or `profile_refresh_days` unset/`0` (the off switch) all skip. When
 it does run, you get the usual *profile draft ready for review* email; nothing is
 monitored differently until you `cp profile.draft.yaml profile.yaml`. It fires on a
-day-of-month hashed from the agent label (1–28, so February isn't skipped), which
-staggers several clones across the month instead of stacking their refreshes on one
-morning; the day is stable across reinstalls. Run it by hand any time with
-`./bin/bootstrap.sh` — a manual run is never gated.
+It polls **daily**, which is not the same as refreshing daily. A coarser poll cannot
+honour the window it is checking: on a monthly schedule with `profile_refresh_days: 30`,
+a profile refreshed on the 1st is 28 days old at the next check, gets skipped, and is
+~59 days old by the one after — twice its contract, and worse for the shorter windows
+(`frontier-models` uses 7). The check is a few file reads; only the refresh it can start
+is expensive. The hour is hashed from the agent label into 01:00–05:00 and is stable
+across reinstalls: clones bootstrapped on the same day cross their windows on the same
+day, so what has to differ is the time, and every bucket lands before the 06:30 sweep.
+Run it by hand any time with `./bin/bootstrap.sh` — a manual run is never gated.
 
 To change *when* runs fire, edit the `StartCalendarInterval` in the
 `launchd/*.plist` templates and re-run the installer. (In the refresh template, replace
-`__VP_REFRESH_DAY__` with a literal day to pin it instead of taking the hashed one.)
+`__VP_REFRESH_HOUR__` with a literal hour to pin it instead of taking the hashed one.)
 
 Kick one off immediately to confirm wiring:
 ```
@@ -239,9 +244,9 @@ Notes:
   owned by a different checkout is rejected rather than silently repointing it.
 - The locks are per-clone, so instances run independently (and can overlap). If you'd
   rather they not run at the same minute, stagger the times in each clone's
-  `launchd/*.plist`. The monthly refresh is already staggered for you: its day-of-month
-  is hashed from the agent label, so clones spread their (expensive) re-bootstraps
-  across the month.
+  `launchd/*.plist`. The refresh check is already staggered for you: its hour is hashed
+  from the agent label, so clones that come due on the same day don't start their
+  (expensive) re-bootstraps at the same moment.
 - `~/.msmtprc` and your Claude auth are shared across clones, which is fine. To view
   two portals at once, give each a distinct port (`./bin/portal.sh --port 8081`).
 
@@ -363,11 +368,12 @@ launchd is macOS-only. On the Ubuntu box, skip the plists and use cron (`crontab
 ```
 30 6 * * *  $HOME/vantage-point/bin/monitor.sh daily  >> $HOME/vantage-point/state/daily.log 2>&1
 0  7 * * 1  $HOME/vantage-point/bin/monitor.sh weekly >> $HOME/vantage-point/state/weekly.log 2>&1
-0  5 14 * * $HOME/vantage-point/bin/bootstrap.sh --if-stale >> $HOME/vantage-point/state/refresh.log 2>&1
+0  3 * * *  $HOME/vantage-point/bin/bootstrap.sh --if-stale >> $HOME/vantage-point/state/refresh.log 2>&1
 ```
-(The third line is the profile-refresh agent — a no-op unless the approved profile is
-past `governance.profile_refresh_days`. Pick your own day-of-month; the launchd
-installer derives one per instance, cron has no equivalent.)
+(The third line is the profile-refresh agent — a daily check that is a no-op unless the
+approved profile is past `governance.profile_refresh_days`. Daily because a coarser poll
+can overshoot the window by nearly 2x. Pick your own hour; the launchd installer derives
+one per instance so clones don't collide, cron has no equivalent.)
 cron also runs with a minimal PATH, so the same `which claude` caveat applies — make
 sure that path is in the `export PATH=` line in `bin/*.sh` (the `/opt/homebrew` entry
 is harmless on Linux; add your real npm-global bin if it differs).
@@ -525,9 +531,9 @@ monitor's economics are deliberately untouched.
   (default 5000, `0` to disable) each run so it can't grow without bound.
 - **Refresh.** Anchors drift — new awards, hires, capabilities — and a stale profile
   quietly mis-scores everything, so the `governance.profile_refresh_days` cadence is
-  enforced from two sides. The **monthly refresh agent** runs `bootstrap.sh --if-stale`
-  and produces a draft once the window is crossed, so a forgotten refresh refreshes
-  itself. And `monitor.sh` warns (it doesn't refuse) when the approved profile is past
+  enforced from two sides. The **refresh agent** checks daily, running
+  `bootstrap.sh --if-stale`, and produces a draft once the window is crossed, so a
+  forgotten refresh refreshes itself. And `monitor.sh` warns (it doesn't refuse) when the approved profile is past
   the window — in the run log *and* appended to the report itself, so the warning
   reaches the inbox rather than only `state/daily.err.log`. (Like the forward radar it
   rides along on a report and never causes one; a mostly-silent instance is what the

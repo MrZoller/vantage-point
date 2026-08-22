@@ -12,21 +12,28 @@
     <!-- Path is filled in by bin/install-launchd.sh; edit this template, not your copy. -->
     <string>__VP_ROOT__/bin/bootstrap.sh</string>
     <!-- The flag below is self-gating: the run is a no-op unless the approved profile
-         is past governance.profile_refresh_days. Firing monthly is how a forgotten
-         refresh stops being forgotten; the gate is how that costs nothing when a
-         refresh isn't due. (XML comments cannot contain a double hyphen, which is why
+         is past governance.profile_refresh_days. Firing on a schedule is how a
+         forgotten refresh stops being forgotten; the gate is how that costs nothing
+         on every day it isn't due. (XML comments cannot contain a double hyphen, which is why
          the flag is named in prose rather than quoted here.) -->
     <string>--if-stale</string>
   </array>
 
-  <!-- Monthly at 05:00, ahead of the 06:30 daily so a refresh that runs long doesn't
-       collide with the sweep. Day is filled in by bin/install-launchd.sh: it hashes the
-       agent label to 1-28, so clones on one machine spread their (expensive) refreshes
-       across the month instead of all firing on the same morning. -->
+  <!-- DAILY, not monthly. The gate below is a few file reads and a date comparison, so
+       polling costs nothing; the expensive part only happens when the window is actually
+       crossed. A monthly poll cannot honour the window it is checking: with the default
+       profile_refresh_days of 30, a profile refreshed on the 1st is 28 days old at the
+       next monthly check, gets skipped, and is ~59 days old by the one after - twice its
+       contract. Shorter windows fare worse still (frontier-models uses 7).
+
+       The hour is filled in by bin/install-launchd.sh, which hashes the agent label to
+       01:00-05:00. Clones bootstrapped on the same day cross their windows on the same
+       day, so without an offset they would all start an expensive deep-research run at
+       the same instant; an hour apart, each finishes long before the next begins. All
+       the buckets sit ahead of the 06:30 daily sweep. -->
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Day</key><integer>__VP_REFRESH_DAY__</integer>
-    <key>Hour</key><integer>5</integer>
+    <key>Hour</key><integer>__VP_REFRESH_HOUR__</integer>
     <key>Minute</key><integer>0</integer>
   </dict>
 

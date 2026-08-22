@@ -99,11 +99,11 @@ stays consistent instead of re-deriving them.
   non-`--resume` run); `kb/` (reports + dashboard).
 - Deployed on a macOS mini via **launchd**, running from a local checkout — changes
   reach it by `git pull`, not by merging to GitHub. `install-launchd.sh` regenerates the
-  plists (substituting `__VP_ROOT__`, `__VP_LABEL__`, `__VP_REFRESH_DAY__`) and retires
+  plists (substituting `__VP_ROOT__`, `__VP_LABEL__`, `__VP_REFRESH_HOUR__`) and retires
   old agents. Three agents per checkout: `daily`/`weekly` run `monitor.sh`, `refresh`
-  runs `bootstrap.sh --if-stale` monthly (a no-op unless the approved profile is past
-  `governance.profile_refresh_days`; its day-of-month is hashed from the label so clones
-  stagger). Multiple instances on one machine = one clone each with a distinct
+  runs `bootstrap.sh --if-stale` daily (a no-op unless the approved profile is past
+  `governance.profile_refresh_days` — daily because a coarser poll overshoots the window
+  it checks; its hour is hashed from the label so clones don't collide). Multiple instances on one machine = one clone each with a distinct
   `deployment.instance`, which namespaces the agent labels
   (`ai.zoller.vantagepoint.<instance>.{daily,weekly,refresh}`); unset = un-suffixed
   labels (single-deployment default).
