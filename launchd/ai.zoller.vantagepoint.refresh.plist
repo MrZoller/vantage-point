@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <!-- Label is filled in by bin/install-launchd.sh (instance-namespaced when set). -->
+  <string>__VP_LABEL__</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Path is filled in by bin/install-launchd.sh; edit this template, not your copy. -->
+    <string>__VP_ROOT__/bin/bootstrap.sh</string>
+    <!-- The flag below is self-gating: the run is a no-op unless the approved profile
+         is past governance.profile_refresh_days. Firing monthly is how a forgotten
+         refresh stops being forgotten; the gate is how that costs nothing when a
+         refresh isn't due. (XML comments cannot contain a double hyphen, which is why
+         the flag is named in prose rather than quoted here.) -->
+    <string>--if-stale</string>
+  </array>
+
+  <!-- Monthly at 05:00, ahead of the 06:30 daily so a refresh that runs long doesn't
+       collide with the sweep. Day is filled in by bin/install-launchd.sh: it hashes the
+       agent label to 1-28, so clones on one machine spread their (expensive) refreshes
+       across the month instead of all firing on the same morning. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key><integer>__VP_REFRESH_DAY__</integer>
+    <key>Hour</key><integer>5</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>__VP_ROOT__/state/refresh.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__VP_ROOT__/state/refresh.err.log</string>
+</dict>
+</plist>

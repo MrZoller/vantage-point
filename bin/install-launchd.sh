@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# install-launchd.sh [uninstall] - (re)install the daily + weekly launchd agents
-# WITHOUT editing anything tracked in the repo.
+# install-launchd.sh [uninstall] - (re)install the daily + weekly + monthly-refresh
+# launchd agents WITHOUT editing anything tracked in the repo.
 #
 # It generates the real plists from the launchd/*.plist templates into
 # ~/Library/LaunchAgents, substituting this checkout's absolute path for __VP_ROOT__
 # and the agent label for __VP_LABEL__, then loads them. The committed templates are
 # never touched, so a fresh clone stays clean and `git status` never shows local edits.
 #
+# The refresh agent runs `bootstrap.sh --if-stale` monthly: a no-op unless the approved
+# profile is past governance.profile_refresh_days, so a forgotten refresh can't quietly
+# rot a profile for months (set profile_refresh_days blank/0 to turn it off entirely).
+#
 # Multiple instances on one machine: give each checkout a distinct
 # `deployment.instance` in its monitor-config.yaml and the agent labels/filenames are
-# namespaced (ai.zoller.vantagepoint.<instance>.{daily,weekly}) so clones don't
+# namespaced (ai.zoller.vantagepoint.<instance>.{daily,weekly,refresh}) so clones don't
 # collide. Leave it unset for a single deployment (labels stay un-suffixed). Renaming
 # an instance (or converting a default deployment to a named one) is safe: a reinstall
 # retires this checkout's previously-installed agents before installing the new labels.
@@ -37,7 +41,11 @@ ROOT_XML="$ROOT"
 ROOT_XML="${ROOT_XML//&/&amp;}"
 ROOT_XML="${ROOT_XML//</&lt;}"
 ROOT_XML="${ROOT_XML//>/&gt;}"
-PROG_LINE="<string>$ROOT_XML/bin/monitor.sh</string>"   # ProgramArguments[0] in our plists
+# ProgramArguments[0] in our plists - monitor.sh for daily/weekly, bootstrap.sh for
+# refresh - so ownership is matched on the checkout's bin/ prefix, not one script name.
+# Only ProgramArguments carries a bin/ path (the log paths are under state/), so this
+# stays as specific as the full-line match it replaced.
+PROG_PREFIX="<string>$ROOT_XML/bin/"
 
 command -v launchctl >/dev/null 2>&1 || {
   echo "launchctl not found - launchd is macOS-only. On Linux use cron (see README)." >&2
@@ -54,7 +62,14 @@ if [ -n "$INSTANCE" ]; then
 else
   PREFIX="ai.zoller.vantagepoint"
 fi
-LABELS=("$PREFIX.daily" "$PREFIX.weekly")
+LABELS=("$PREFIX.daily" "$PREFIX.weekly" "$PREFIX.refresh")
+
+# Day-of-month for the monthly refresh, staggered per instance: a deep-research
+# bootstrap is the most expensive thing this repo runs, and several clones firing one
+# on the same morning is a spend and load spike. Hashing the label gives each checkout
+# a stable day (same on every reinstall) without another config knob. 1-28 only, so it
+# fires in February too.
+REFRESH_DAY=$(( $(printf '%s' "$PREFIX.refresh" | cksum | awk '{print $1}') % 28 + 1 ))
 
 # A configured-but-unusable name must NOT silently become the default deployment.
 # Checked up front (before any LaunchAgents mutation) so a bad name can't leave the
@@ -77,7 +92,7 @@ our_installed_labels() {
   local f base
   for f in "$LA_DIR"/ai.zoller.vantagepoint.*.plist; do
     [ -e "$f" ] || continue
-    grep -qF "$PROG_LINE" "$f" || continue
+    grep -qF "$PROG_PREFIX" "$f" || continue
     base="$(basename "$f")"
     printf '%s\n' "${base%.plist}"
   done
@@ -90,8 +105,8 @@ our_installed_labels() {
 label_is_ours() {
   local plist="$LA_DIR/$1.plist" prog
   [ -f "$plist" ] || return 1
-  grep -qF "$PROG_LINE" "$plist" && return 0
-  prog="$(sed -n 's#^[[:space:]]*<string>\(.*/bin/monitor.sh\)</string>[[:space:]]*$#\1#p' "$plist" | head -1)"
+  grep -qF "$PROG_PREFIX" "$plist" && return 0
+  prog="$(sed -n 's#^[[:space:]]*<string>\(.*/bin/[^/<]*\.sh\)</string>[[:space:]]*$#\1#p' "$plist" | head -1)"
   # The path is XML-escaped in the plist; decode it (amp last) before the -e test, or a
   # sibling whose path has &/</> would look "gone" and defeat the hijack guard.
   prog="${prog//&lt;/<}"; prog="${prog//&gt;/>}"; prog="${prog//&amp;/&}"
@@ -174,7 +189,7 @@ installed_labels | while IFS= read -r label; do
 done
 
 # Iterate modes (template filenames are fixed); the label is namespaced per instance.
-for mode in daily weekly; do
+for mode in daily weekly refresh; do
   label="$PREFIX.$mode"
   src="$ROOT/launchd/ai.zoller.vantagepoint.$mode.plist"
   dst="$LA_DIR/$label.plist"
@@ -183,6 +198,7 @@ for mode in daily weekly; do
   template="$(cat "$src")"
   template="${template//__VP_ROOT__/$ROOT_XML}"
   template="${template//__VP_LABEL__/$label}"   # label is slug-safe; no XML escaping needed
+  template="${template//__VP_REFRESH_DAY__/$REFRESH_DAY}"   # refresh template only; a no-op elsewhere
   printf '%s\n' "$template" > "$dst"
 
   # Catch a malformed plist before launchd does (no-op if plutil is absent).
@@ -200,5 +216,6 @@ done
 # even if the path or instance name no longer matches.
 printf '%s\n' "${LABELS[@]}" > "$MARKER"
 
+echo "[install-launchd] profile refresh: monthly on day $REFRESH_DAY at 05:00 (a no-op unless the profile is past governance.profile_refresh_days)"
 echo "[install-launchd] done. Kick a run now to confirm wiring:"
 echo "  launchctl kickstart -k $DOMAIN/$PREFIX.daily"

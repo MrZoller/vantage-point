@@ -43,7 +43,8 @@ vantage-point/
 │   └── dedupe-feedback.py        # collapse feedback.jsonl to latest-per-id (bootstrap + live calibration)
 └── launchd/
     ├── ai.zoller.vantagepoint.daily.plist    # templates; __VP_ROOT__ filled in at install
-    └── ai.zoller.vantagepoint.weekly.plist
+    ├── ai.zoller.vantagepoint.weekly.plist
+    └── ai.zoller.vantagepoint.refresh.plist  # monthly `bootstrap.sh --if-stale`
 ```
 
 Created at runtime, gitignored (a specific deployment's data):
@@ -155,14 +156,36 @@ One command — no editing of repo files:
 
 It generates the real plists from the `launchd/*.plist` templates into
 `~/Library/LaunchAgents`, baking in this checkout's path (so the schedules point at
-wherever you cloned), then loads both agents. The committed templates are never
+wherever you cloned), then loads all three agents. The committed templates are never
 touched, so `git status` stays clean and a fresh clone needs no re-editing. Re-run it
 any time to reinstall (it reloads idempotently); `./bin/install-launchd.sh uninstall`
-unloads and removes both. (It also retires any pre-rename `ai.zoller.marketmonitor.*`
+unloads and removes all of them. (It also retires any pre-rename `ai.zoller.marketmonitor.*`
 agents on every run, so upgrading from the old name won't double up your scheduled runs.)
 
+Three agents are installed:
+
+| Agent | Fires | Runs |
+|---|---|---|
+| `…daily` | every day, 06:30 | `monitor.sh daily` |
+| `…weekly` | Mondays, 07:00 | `monitor.sh weekly` |
+| `…refresh` | monthly, 05:00 | `bootstrap.sh --if-stale` |
+
+**The refresh agent is self-gating.** It fires unconditionally and then does nothing
+unless the approved profile is older than `governance.profile_refresh_days` — a
+re-bootstrap is expensive and its output needs your approval, so it only starts one
+when there's a reason. It also stays out of the way when there isn't one: no
+`profile.yaml` yet (a first bootstrap is your decision, not a timer's), a draft already
+waiting for review, or `profile_refresh_days` unset/`0` (the off switch) all skip. When
+it does run, you get the usual *profile draft ready for review* email; nothing is
+monitored differently until you `cp profile.draft.yaml profile.yaml`. It fires on a
+day-of-month hashed from the agent label (1–28, so February isn't skipped), which
+staggers several clones across the month instead of stacking their refreshes on one
+morning; the day is stable across reinstalls. Run it by hand any time with
+`./bin/bootstrap.sh` — a manual run is never gated.
+
 To change *when* runs fire, edit the `StartCalendarInterval` in the
-`launchd/*.plist` templates and re-run the installer.
+`launchd/*.plist` templates and re-run the installer. (In the refresh template, replace
+`__VP_REFRESH_DAY__` with a literal day to pin it instead of taking the hashed one.)
 
 Kick one off immediately to confirm wiring:
 ```
@@ -201,7 +224,7 @@ git clone <repo> ~/vp-ai-models   &&  cd ~/vp-ai-models   && ./bin/install-launc
 git clone <repo> ~/vp-devtools    &&  cd ~/vp-devtools    && ./bin/install-launchd.sh
 ```
 
-Each gets its own agents — `ai.zoller.vantagepoint.<instance>.{daily,weekly}` — so
+Each gets its own agents — `ai.zoller.vantagepoint.<instance>.{daily,weekly,refresh}` — so
 they coexist and `uninstall` only removes that checkout's agents. Leave
 `deployment.instance` unset for a single deployment (labels stay un-suffixed, exactly
 as before — no migration needed). Renaming an instance, or converting a single
@@ -216,7 +239,9 @@ Notes:
   owned by a different checkout is rejected rather than silently repointing it.
 - The locks are per-clone, so instances run independently (and can overlap). If you'd
   rather they not run at the same minute, stagger the times in each clone's
-  `launchd/*.plist`.
+  `launchd/*.plist`. The monthly refresh is already staggered for you: its day-of-month
+  is hashed from the agent label, so clones spread their (expensive) re-bootstraps
+  across the month.
 - `~/.msmtprc` and your Claude auth are shared across clones, which is fine. To view
   two portals at once, give each a distinct port (`./bin/portal.sh --port 8081`).
 
@@ -338,7 +363,11 @@ launchd is macOS-only. On the Ubuntu box, skip the plists and use cron (`crontab
 ```
 30 6 * * *  $HOME/vantage-point/bin/monitor.sh daily  >> $HOME/vantage-point/state/daily.log 2>&1
 0  7 * * 1  $HOME/vantage-point/bin/monitor.sh weekly >> $HOME/vantage-point/state/weekly.log 2>&1
+0  5 14 * * $HOME/vantage-point/bin/bootstrap.sh --if-stale >> $HOME/vantage-point/state/refresh.log 2>&1
 ```
+(The third line is the profile-refresh agent — a no-op unless the approved profile is
+past `governance.profile_refresh_days`. Pick your own day-of-month; the launchd
+installer derives one per instance, cron has no equivalent.)
 cron also runs with a minimal PATH, so the same `which claude` caveat applies — make
 sure that path is in the `export PATH=` line in `bin/*.sh` (the `/opt/homebrew` entry
 is harmless on Linux; add your real npm-global bin if it differs).
@@ -494,11 +523,16 @@ monitor's economics are deliberately untouched.
   hang the job, and a hard failure prints a `run FAILED` line instead of vanishing
   into the launchd log. `state/seen.jsonl` is pruned to `monitoring.state_max_lines`
   (default 5000, `0` to disable) each run so it can't grow without bound.
-- **Refresh.** Re-run `bootstrap.sh` on the `governance.profile_refresh_days`
-  cadence. Anchors drift — new awards, hires, capabilities — and a stale profile
-  quietly mis-scores everything. `monitor.sh` warns (it doesn't refuse) when the
-  approved profile's `last_bootstrapped` is older than `profile_refresh_days`, so a
-  forgotten refresh is visible in the run log. On a refresh the review is a skim,
+- **Refresh.** Anchors drift — new awards, hires, capabilities — and a stale profile
+  quietly mis-scores everything, so the `governance.profile_refresh_days` cadence is
+  enforced from two sides. The **monthly refresh agent** runs `bootstrap.sh --if-stale`
+  and produces a draft once the window is crossed, so a forgotten refresh refreshes
+  itself. And `monitor.sh` warns (it doesn't refuse) when the approved profile is past
+  the window — in the run log *and* appended to the report itself, so the warning
+  reaches the inbox rather than only `state/daily.err.log`. (Like the forward radar it
+  rides along on a report and never causes one; a mostly-silent instance is what the
+  refresh agent covers.) A scheduled bootstrap that dies mid-run emails a failure
+  notice with the tail of `bootstrap.err`, so a broken refresh isn't silence either. On a refresh the review is a skim,
   not a re-read: bootstrap writes **`profile.draft.diff`** (the draft vs the
   approved profile — what your grades re-ranked, which sources moved), folds it
   into the review email as a *What changed* section, and the portal's draft view

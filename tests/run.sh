@@ -96,7 +96,7 @@ test_install_launchd() {
 }
 test_install_launchd
 
-echo "== install-launchd uninstall: removes both agents =="
+echo "== install-launchd uninstall: removes all three agents =="
 test_uninstall() {
   local co="$TMP/uninst/checkout"
   mkdir -p "$co/bin" "$co/launchd" "$co/stub"
@@ -108,10 +108,11 @@ test_uninstall() {
   ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
   ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" uninstall >/dev/null 2>&1 )
   local la="$home/Library/LaunchAgents"
-  if [ -f "$la/ai.zoller.vantagepoint.daily.plist" ] || [ -f "$la/ai.zoller.vantagepoint.weekly.plist" ]; then
-    fail "uninstall removed both plists"
+  if [ -f "$la/ai.zoller.vantagepoint.daily.plist" ] || [ -f "$la/ai.zoller.vantagepoint.weekly.plist" ] \
+     || [ -f "$la/ai.zoller.vantagepoint.refresh.plist" ]; then
+    fail "uninstall removed all three plists"
   else
-    pass "uninstall removed both plists"
+    pass "uninstall removed all three plists"
   fi
 }
 test_uninstall
@@ -244,11 +245,15 @@ test_install_cleanup_after_move() {
   # matches; only the recorded marker (state/.launchd-labels) can now find the labels.
   for p in "$la"/ai.zoller.vantagepoint.mover.*.plist; do
     [ -e "$p" ] || continue
-    sed 's#'"$co"'/bin/monitor.sh#/moved/elsewhere/bin/monitor.sh#' "$p" > "$p.tmp" && mv "$p.tmp" "$p"
+    sed 's#'"$co"'/bin/#/moved/elsewhere/bin/#' "$p" > "$p.tmp" && mv "$p.tmp" "$p"
   done
   ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" uninstall >/dev/null 2>&1 ); rc=$?
   assert_eq "uninstall exits 0 after a move" "0" "$rc"
-  if [ -f "$la/ai.zoller.vantagepoint.mover.daily.plist" ]; then fail "the marker-recorded labels are removed after a move"; else pass "the marker-recorded labels are removed after a move"; fi
+  if [ -f "$la/ai.zoller.vantagepoint.mover.daily.plist" ] || [ -f "$la/ai.zoller.vantagepoint.mover.refresh.plist" ]; then
+    fail "the marker-recorded labels are removed after a move"
+  else
+    pass "the marker-recorded labels are removed after a move"
+  fi
 }
 test_install_cleanup_after_move
 
@@ -298,6 +303,82 @@ test_install_copied_marker() {
   if [ -f "$la/ai.zoller.vantagepoint.devtools.daily.plist" ]; then pass "the copied checkout installs its own agent"; else fail "the copied checkout installs its own agent"; fi
 }
 test_install_copied_marker
+
+# Read one field out of a generated plist for the refresh-agent tests: "args" joins
+# ProgramArguments with spaces; anything else names a StartCalendarInterval key.
+plist_field() {  # <plist> <args|Day|Hour|Minute>
+  python3 - "$1" "$2" <<'PY'
+import sys, plistlib
+with open(sys.argv[1], "rb") as f:
+    d = plistlib.load(f)
+key = sys.argv[2]
+print(" ".join(d["ProgramArguments"]) if key == "args" else d["StartCalendarInterval"][key])
+PY
+}
+
+echo "== install-launchd: installs a monthly, self-gating profile-refresh agent =="
+test_install_refresh_agent() {
+  local co="$TMP/refresh/checkout" home="$TMP/refreshhome" la day plist
+  la="$home/Library/LaunchAgents"
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$home"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
+  plist="$la/ai.zoller.vantagepoint.refresh.plist"
+  # Installed by DEFAULT, alongside daily/weekly: an opt-in refresh agent is one an
+  # operator forgets to opt into, which is the whole failure being fixed.
+  assert_plist_ok "refresh" "$plist" "$co/bin/bootstrap.sh"
+  assert_eq "the refresh agent runs bootstrap.sh behind its staleness gate" \
+    "$co/bin/bootstrap.sh --if-stale" "$(plist_field "$plist" args)"
+  if grep -q '__VP_REFRESH_DAY__' "$plist"; then fail "refresh: no __VP_REFRESH_DAY__ token remains"; else pass "refresh: no __VP_REFRESH_DAY__ token remains"; fi
+  assert_eq "fires at 05:00, ahead of the 06:30 daily sweep" "5" "$(plist_field "$plist" Hour)"
+  day="$(plist_field "$plist" Day)"
+  # 29-31 would silently skip February (and three other months) - a "monthly" agent
+  # that doesn't fire monthly is worse than none.
+  if [ "$day" -ge 1 ] && [ "$day" -le 28 ]; then
+    pass "monthly on a day-of-month that every month has (got $day)"
+  else
+    fail "monthly on a day-of-month that every month has (got $day)"
+  fi
+}
+test_install_refresh_agent
+
+echo "== install-launchd: the refresh day is stable per checkout, staggered across instances =="
+test_install_refresh_day_stagger() {
+  local home="$TMP/staggerhome" la a b day_a day_a2 day_b
+  la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  a="$TMP/stag-a/checkout"; b="$TMP/stag-b/checkout"
+  local co
+  for co in "$a" "$b"; do
+    mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+    cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+    cp "$ROOT"/launchd/*.plist "$co/launchd/"
+    chmod +x "$co/bin/install-launchd.sh"
+    make_install_stubs "$co/stub"
+  done
+  printf 'version: 1\ndeployment:\n  instance: ai-conferences\n'  > "$a/monitor-config.yaml"
+  printf 'version: 1\ndeployment:\n  instance: frontier-models\n' > "$b/monitor-config.yaml"
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  day_a="$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Day)"
+  # Reinstalling must not move the day around: it is derived from the label, not the clock.
+  ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
+  day_a2="$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Day)"
+  assert_eq "a reinstall keeps the same refresh day" "$day_a" "$day_a2"
+  ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )
+  day_b="$(plist_field "$la/ai.zoller.vantagepoint.frontier-models.refresh.plist" Day)"
+  # A deep-research bootstrap is the most expensive thing here; several clones firing
+  # one on the same morning is a spend spike. These two names hash apart - if this ever
+  # fails after a change to the hash, pick two that don't collide rather than dropping
+  # the check (collisions are possible in general, 28 buckets, just not for this pair).
+  if [ "$day_a" != "$day_b" ]; then
+    pass "two instances land on different days ($day_a vs $day_b)"
+  else
+    fail "two instances land on different days (both $day_a)"
+  fi
+}
+test_install_refresh_day_stagger
 
 echo "== install-launchd: rejects a broken instance name before mutating LaunchAgents =="
 test_install_broken_keeps_legacy() {
@@ -2796,6 +2877,70 @@ SH
 }
 test_monitor_horizon_weekly
 
+echo "== monitor.sh: a stale profile says so in the report, not only in the log =="
+test_monitor_stale_in_report() {
+  local repo="$TMP/stalereport" out report msg="$TMP/stale.eml"
+  make_fake_repo "$repo" "2000-01-01" 0 "me@example.com"   # far past profile_refresh_days (30)
+  # A stub that writes a report, so the post-editor append path is exercised.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '# daily report\n* item\n' > "kb/.$(date +%F).daily.partial.md"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( MSG_OUT="$msg" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"
+  report="$repo/kb/$(date +%F).daily.md"
+  assert_contains "still warns in the run log" "$out" "WARNING: profile is"
+  assert_contains "announces the appended notice" "$out" "appended the profile-staleness notice"
+  assert_contains "the delivered report carries the notice" \
+    "$(cat "$report" 2>/dev/null)" "The approved profile is stale"
+  assert_contains "the notice names the configured window" \
+    "$(cat "$report" 2>/dev/null)" "governance.profile_refresh_days"
+  # Appending to the report FILE (not just the log) is the point: it has to reach the
+  # inbox, which is the only channel anyone actually reads.
+  assert_contains "the emailed report carries it too" "$(cat "$msg" 2>/dev/null)" "approved profile is stale"
+
+  # A fresh profile adds nothing.
+  local repo2="$TMP/freshreport"
+  make_fake_repo "$repo2" "2099-01-01"
+  cp "$repo/stub/claude" "$repo2/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" bash "$repo2/bin/monitor.sh" daily 2>&1 )"
+  assert_not_contains "a fresh profile appends nothing" "$out" "appended the profile-staleness notice"
+  assert_not_contains "no notice in a fresh run's report" \
+    "$(cat "$repo2/kb/$(date +%F).daily.md" 2>/dev/null)" "The approved profile is stale"
+
+  # The same empty-date hole on the monitor side: an absent last_bootstrapped must be
+  # REPORTED as unparseable, not silently read as "today" (GNU date) and so never stale.
+  # Passes on macOS either way; it guards the Linux leg.
+  local repo4="$TMP/staleblank"
+  make_fake_repo "$repo4" "2000-01-01"
+  printf 'subject:\n  derived:\n    name: no-date-here\n' > "$repo4/profile.yaml"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo4/stub:$PATH" bash "$repo4/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "an absent last_bootstrapped is called out, not read as fresh" \
+    "$out" "couldn't parse profile last_bootstrapped"
+
+  # Silence still wins: like the forward radar, the notice rides along on a report, it
+  # never causes one. (An instance that is mostly silent is covered by the monthly
+  # refresh agent instead.)
+  local repo3="$TMP/stalesilent"
+  make_fake_repo "$repo3" "2000-01-01"        # default stub writes no report
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo3/stub:$PATH" bash "$repo3/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "a silent run stays silent" "$out" "nothing material"
+  assert_not_contains "nothing appended without a report" "$out" "appended the profile-staleness notice"
+  if [ -f "$repo3/kb/$(date +%F).daily.md" ]; then
+    fail "the staleness notice never causes a report"
+  else
+    pass "the staleness notice never causes a report"
+  fi
+}
+test_monitor_stale_in_report
+
 echo "== portal.py: forward-radar Coming up card + dossier Expected list + export =="
 test_portal_coming_up() {
   local repo="$TMP/pcu" out py="$TMP/pcu.py" port=8794 page
@@ -3168,6 +3313,9 @@ make_fake_bootstrap_repo() {  # <repo> <home> [nomodel]
   fi
   printf 'bootstrap prompt (test fixture)\n' > "$repo/bootstrap-prompt.md"
   # Stub claude: the research call writes the draft + a summary and records its args;
+# SYNTH_EXIT drives that call's exit code (a failing synthesis is what aborts a real run,
+# so it's how the failure-notification path is reached) and NO_SUMMARY suppresses the
+# summary it writes (the "successful run, nothing to email" path);
   # the editorial call (prompt names a PROFILE-DRAFT SUMMARY) edits the summary per env;
   # the backtest call (prompt names a Backtest prompt) records its prompt and writes a
   # canned score file from $BT_JSONL (or garbage / nothing, to drive the failure paths).
@@ -3189,8 +3337,12 @@ case "$*" in
     exit "${BT_EXIT:-0}" ;;
   *)
     [ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+    if [ "${SYNTH_EXIT:-0}" != 0 ]; then
+      echo "stub synthesis blew up" >&2
+      exit "$SYNTH_EXIT"
+    fi
     printf 'derived: {}\n' > profile.draft.yaml
-    printf '# Profile draft summary\nbottom line: test market\n' > profile.draft.summary.md
+    [ -n "${NO_SUMMARY:-}" ] || printf '# Profile draft summary\nbottom line: test market\n' > profile.draft.summary.md
     printf '{"num_turns":1,"total_cost_usd":0.0}\n'
     exit 0 ;;
 esac
@@ -3642,6 +3794,138 @@ test_bootstrap_gates() {
   assert_contains "names the missing prompt" "$out" "bootstrap-prompt.md"
 }
 test_bootstrap_gates
+
+echo "== bootstrap.sh: --if-stale only runs when the approved profile is past its window =="
+test_bootstrap_if_stale() {
+  local repo="$TMP/ifstale" home="$TMP/ifstalehome" out rc
+  make_fake_bootstrap_repo "$repo" "$home"
+  printf 'governance:\n  profile_refresh_days: 30\n' >> "$repo/monitor-config.yaml"
+
+  # Nothing approved yet: a FIRST bootstrap is a human decision, not a timer's.
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+  assert_eq "no approved profile exits 0" "0" "$rc"
+  assert_contains "skips when nothing is approved" "$out" "no approved profile.yaml yet"
+  assert_not_contains "no claude call when nothing is approved" "$out" "synthesizing the draft"
+
+  # A profile inside the window: not due.
+  printf 'subject:\n  last_bootstrapped: %s\n' "$(date +%F)" > "$repo/profile.yaml"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+  assert_eq "a fresh profile exits 0" "0" "$rc"
+  assert_contains "skips a profile inside the refresh window" "$out" "0d old (<= profile_refresh_days=30)"
+  assert_not_contains "no claude call for a fresh profile" "$out" "synthesizing the draft"
+
+  # Past the window: this is the case that went unnoticed for ~70 days.
+  printf 'subject:\n  last_bootstrapped: 2000-01-01\n' > "$repo/profile.yaml"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+  assert_eq "a stale profile exits 0" "0" "$rc"
+  assert_contains "explains why it is refreshing" "$out" "> profile_refresh_days=30) - refreshing"
+  assert_contains "actually runs the bootstrap" "$out" "synthesizing the draft"
+
+  # The run above left an unreviewed draft. A second one would overwrite it without
+  # moving it any closer to approved - and re-spend a deep-research run to do it.
+  touch -t 202601010000 "$repo/profile.yaml"
+  touch -t 202602010000 "$repo/profile.draft.yaml"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+  assert_eq "a pending draft exits 0" "0" "$rc"
+  assert_contains "skips while a draft is awaiting review" "$out" "already waiting for review"
+  assert_not_contains "no claude call while a draft is pending" "$out" "synthesizing the draft"
+
+  # Approving the draft (cp draft -> profile.yaml) makes the profile the newer file,
+  # so the next window crossing is free to refresh again.
+  touch -t 202603010000 "$repo/profile.yaml"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+  assert_eq "an approved draft unblocks the next refresh" "0" "$rc"
+  assert_contains "refreshes once the draft is approved" "$out" "synthesizing the draft"
+
+  # An unreadable last_bootstrapped counts as STALE. Guessing "fresh" from a date we
+  # can't read reproduces exactly the silent rot the agent exists to prevent.
+  printf 'subject:\n  last_bootstrapped: sometime\n' > "$repo/profile.yaml"
+  rm -f "$repo/profile.draft.yaml"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
+  assert_contains "an unparseable date is treated as stale" "$out" "treating it as stale"
+  assert_contains "and the refresh runs" "$out" "synthesizing the draft"
+
+  # A profile with NO last_bootstrapped at all is unreadable too - and this one only
+  # bites on Linux: GNU `date -d ""` SUCCEEDS and answers "today", so the profile would
+  # read as 0d old and the monthly agent would skip forever. BSD date already rejects
+  # it, so this assertion passes on macOS either way; it guards the Linux CI leg and the
+  # cron recipe in the README.
+  rm -f "$repo/profile.draft.yaml"
+  printf 'subject:\n  name: no-date-here\n' > "$repo/profile.yaml"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
+  assert_contains "an absent last_bootstrapped is treated as stale" "$out" "treating it as stale"
+  assert_contains "so it refreshes instead of skipping forever" "$out" "synthesizing the draft"
+
+  # Operator opt-out: no refresh window configured -> the agent is a permanent no-op.
+  local repo2="$TMP/ifstaleoff" home2="$TMP/ifstalehome2"
+  make_fake_bootstrap_repo "$repo2" "$home2"     # config has no governance block
+  printf 'subject:\n  last_bootstrapped: 2000-01-01\n' > "$repo2/profile.yaml"
+  out="$( cd "$repo2" && HOME="$home2" bash bin/bootstrap.sh --if-stale 2>&1 )"
+  assert_contains "no refresh window configured -> permanently off" "$out" "periodic refresh is off"
+  assert_not_contains "no claude call when the window is off" "$out" "synthesizing the draft"
+
+  # A human running it by hand is never gated, however fresh the profile is.
+  printf 'subject:\n  last_bootstrapped: %s\n' "$(date +%F)" > "$repo/profile.yaml"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh 2>&1 )"
+  assert_not_contains "a bare run is never gated" "$out" "--if-stale"
+  assert_contains "a bare run always bootstraps" "$out" "synthesizing the draft"
+
+  # An unknown flag is still rejected rather than silently ignored.
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --nope 2>&1 )"; rc=$?
+  assert_eq "an unknown flag exits 2" "2" "$rc"
+  assert_contains "the usage line lists both flags" "$out" "only --resume, --if-stale"
+}
+test_bootstrap_if_stale
+
+echo "== bootstrap.sh: a failed run emails a failure notice instead of dying silently =="
+test_bootstrap_failure_email() {
+  local repo="$TMP/bootfail" home="$TMP/boothomefail" out rc msg="$TMP/boot_fail.eml"
+  make_fake_bootstrap_repo "$repo" "$home"
+  cat > "$repo/monitor-config.yaml" <<YAML
+version: 1
+models:
+  bootstrap: opus
+subject:
+  name: "Test Market & Co"
+output:
+  email_to: "me@example.com"
+YAML
+  out="$( cd "$repo" && SYNTH_EXIT=7 MSG_OUT="$msg" HOME="$home" bash bin/bootstrap.sh 2>&1 )"; rc=$?
+  assert_eq "the failing exit code is preserved" "7" "$rc"
+  assert_contains "says it failed, with the code" "$out" "FAILED (exit 7)"
+  assert_contains "reports it emailed the notice" "$out" "emailed the failure notice"
+  if [ -f "$msg" ]; then
+    assert_contains "the Subject says the bootstrap failed" "$(grep -i '^Subject:' "$msg")" "bootstrap FAILED (exit 7)"
+    assert_contains "the Subject names the instance" "$(grep -i '^Subject:' "$msg")" "Test Market & Co"
+    # The stderr tail is the whole point: a notice with no explanation just moves the
+    # silence into the inbox.
+    assert_contains "the body carries the bootstrap.err tail" "$(cat "$msg")" "stub synthesis blew up"
+    assert_contains "the body says the approved profile is untouched" "$(cat "$msg")" "approved profile is unchanged"
+    assert_contains "the body gives the resume command" "$(cat "$msg")" "bootstrap.sh --resume"
+  else
+    fail "a failure email was sent"
+  fi
+
+  # A failure with no configured recipient must still exit correctly and not blow up
+  # inside the handler.
+  local repo2="$TMP/bootfailnomail" home2="$TMP/boothomefail2"
+  make_fake_bootstrap_repo "$repo2" "$home2"     # config has no output.email_to
+  out="$( cd "$repo2" && SYNTH_EXIT=3 HOME="$home2" bash bin/bootstrap.sh 2>&1 )"; rc=$?
+  assert_eq "still exits with the failing code when nobody is configured" "3" "$rc"
+  assert_contains "still says it failed" "$out" "FAILED (exit 3)"
+
+  # A SUCCESSFUL run sends no failure notice - including the run that writes no summary,
+  # which used to leave a non-zero status behind as the script's last command.
+  local repo3="$TMP/bootok" home3="$TMP/boothomeok" msg3="$TMP/boot_ok.eml"
+  make_fake_bootstrap_repo "$repo3" "$home3"
+  cat "$repo/monitor-config.yaml" > "$repo3/monitor-config.yaml"
+  out="$( cd "$repo3" && NO_SUMMARY=1 MSG_OUT="$msg3" HOME="$home3" bash bin/bootstrap.sh 2>&1 )"; rc=$?
+  assert_eq "a successful run with no summary exits 0" "0" "$rc"
+  assert_contains "notes there was no summary to email" "$out" "no profile.draft.summary.md written"
+  assert_not_contains "no failure line on a successful run" "$out" "FAILED"
+  assert_not_contains "no failure email on a successful run" "$(cat "$msg3" 2>/dev/null)" "bootstrap FAILED"
+}
+test_bootstrap_failure_email
 
 echo "== bootstrap.sh: models.bootstrap drives --model (else CLI default) =="
 test_bootstrap_model() {

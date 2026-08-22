@@ -8,11 +8,17 @@ set -euo pipefail
 # Optional flags. --resume keeps any state/.research notes from an interrupted deep-
 # research run and redoes only the missing facets (these runs are long + expensive);
 # without it the scratch dir is cleared at start (stale-run hygiene).
+# --if-stale turns the whole run into a no-op unless the approved profile is past
+# governance.profile_refresh_days. It exists so the monthly launchd refresh agent can
+# fire unconditionally and cost nothing when a refresh isn't due; a human running
+# bootstrap.sh by hand is always deliberate and is never gated.
 RESUME=""
+IF_STALE=""
 for _arg in "$@"; do
   case "$_arg" in
     --resume) RESUME=1 ;;
-    *) echo "bootstrap.sh: unknown argument '$_arg' (only --resume)" >&2; exit 2 ;;
+    --if-stale) IF_STALE=1 ;;
+    *) echo "bootstrap.sh: unknown argument '$_arg' (only --resume, --if-stale)" >&2; exit 2 ;;
   esac
 done
 
@@ -41,6 +47,65 @@ DIFF_FILE="profile.draft.diff"       # on a refresh: what the draft changes vs t
 [ -f "$CONFIG" ] || { echo "missing $CONFIG" >&2; exit 1; }
 [ -f "$PROMPT" ] || { echo "missing $PROMPT" >&2; exit 1; }
 
+# ---- --if-stale: the monthly refresh agent's no-op gate ----
+# Runs before anything else touches the tree (bootstrap.err from the last real run is
+# still evidence). SKIPPING is the default: a bootstrap is the most expensive thing here
+# and its output needs human approval, so a timer may only start one for a reason.
+#   no profile.yaml     -> skip. Nothing is approved; a FIRST bootstrap is a deliberate
+#                          human act, not something a schedule should kick off.
+#   unreviewed draft    -> skip. The gate is human approval, and a second draft would
+#                          overwrite the first without moving it any closer to approved.
+#   window unset or 0   -> skip. The operator turned the staleness contract off.
+#   profile still young -> skip. Not due.
+#   otherwise           -> run - INCLUDING an unparseable last_bootstrapped. Guessing
+#                          "fresh" from an unreadable date reproduces the exact silent
+#                          rot this agent exists to prevent, so it counts as stale.
+if [ -n "$IF_STALE" ]; then
+  _skip=""
+  if [ ! -f "$PROFILE" ]; then
+    _skip="no approved $PROFILE yet - run ./bin/bootstrap.sh by hand for the first one"
+  elif [ -f "$DRAFT" ] && [ "$DRAFT" -nt "$PROFILE" ]; then
+    # An approval is `cp $DRAFT profile.yaml`, so an approved draft is always OLDER than
+    # the profile. Newer means it is still waiting for a human.
+    _skip="$DRAFT is newer than $PROFILE - a draft is already waiting for review"
+  else
+    _refresh_days="$(cfg_get governance profile_refresh_days)"
+    case "$_refresh_days" in ''|0|*[!0-9]*) _refresh_days="" ;; esac
+    if [ -z "$_refresh_days" ]; then
+      _skip="governance.profile_refresh_days is unset or 0 - periodic refresh is off"
+    else
+      _last_boot="$(cfg_get subject last_bootstrapped "$PROFILE")"
+      case "$_last_boot" in ''|null) _last_boot="$(cfg_get anchor last_bootstrapped "$PROFILE")" ;; esac
+      case "$_last_boot" in null) _last_boot="" ;; esac
+      # GNU `date -d` vs BSD `date -j -f`; try both, same as monitor.sh's staleness check.
+      # An ABSENT date is rejected before either: GNU `date -d ""` succeeds and reports
+      # today, which would make a profile with no last_bootstrapped look 0d old and skip
+      # the refresh forever - the exact silent rot this gate exists to prevent, on the
+      # platform the cron recipe in the README targets. BSD already fails it; this makes
+      # both platforms agree.
+      if [ -z "$_last_boot" ]; then
+        _boot_epoch=""
+      else
+        _boot_epoch="$(date -d "$_last_boot" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$_last_boot" +%s 2>/dev/null || true)"
+      fi
+      if [ -z "$_boot_epoch" ]; then
+        echo "[bootstrap] --if-stale: can't read last_bootstrapped ('$_last_boot') from $PROFILE - treating it as stale" >&2
+      else
+        _age_days=$(( ( $(date +%s) - _boot_epoch ) / 86400 ))
+        if [ "$_age_days" -le "$_refresh_days" ]; then
+          _skip="profile is ${_age_days}d old (<= profile_refresh_days=$_refresh_days)"
+        else
+          echo "[bootstrap] --if-stale: profile is ${_age_days}d old (> profile_refresh_days=$_refresh_days) - refreshing" >&2
+        fi
+      fi
+    fi
+  fi
+  if [ -n "$_skip" ]; then
+    echo "[bootstrap] --if-stale: nothing to do - $_skip"
+    exit 0
+  fi
+fi
+
 # One clean stderr log per run; every pass below appends to it.
 : > bootstrap.err
 
@@ -54,6 +119,49 @@ done < <(cfg_get_list output email_to)
 EMAIL_IMAGES="$(cfg_get_bool output email_images 0)"   # embed the logo in email headers; default off
 LOGO_ASSET="$ROOT/assets/logo-email.png"               # brand logo used when EMAIL_IMAGES is on
 SUBJECT_NAME="$(cfg_get_text subject name)"
+
+# ---- failure notification ----
+# A scheduled bootstrap that dies mid-run is otherwise pure silence: nothing is emailed,
+# nothing is written, and the only trace is a launchd log nobody reads. Every pass below
+# appends to bootstrap.err, so a failure has an explanation to send. Installed here (not
+# earlier) because it needs output.email_to; the two checks above it - a missing config or
+# prompt - are the only failures it can't report, and neither survives a first install.
+# Fail-safe by construction: it never changes the exit code and never fails the run.
+# shellcheck disable=SC2329  # invoked indirectly, by the `trap ... EXIT` below
+notify_failure() {
+  local rc=$?
+  trap - EXIT                       # a failure inside this handler must not re-enter it
+  [ "$rc" -eq 0 ] && exit 0
+  echo "[bootstrap] FAILED (exit $rc) - see bootstrap.err" >&2
+  if [ "${#EMAIL_TO[@]}" -gt 0 ] && command -v msmtp >/dev/null 2>&1; then
+    local body VP_TITLE VP_SUBTITLE VP_PREHEADER VP_FOOTER VP_LOGO=""
+    body="$(mktemp)" || exit "$rc"
+    # shellcheck disable=SC2016  # backticks are literal Markdown; %s are printf placeholders
+    {
+      printf '> **The bootstrap run failed (exit %s).** No draft was produced, so the approved profile is unchanged and still in use.\n\n' "$rc"
+      printf 'Checkout: `%s`\n\n' "$ROOT"
+      printf 'Re-run it on the host - a deep-research run can resume where it stopped:\n\n'
+      printf '```sh\ncd %s && ./bin/bootstrap.sh --resume\n```\n\n' "$ROOT"
+      printf -- '---\n\n## Last 60 lines of `bootstrap.err`\n\n```\n'
+      if [ -s bootstrap.err ]; then tail -n 60 bootstrap.err; else printf '(empty - the run died without writing to stderr)\n'; fi
+      printf '```\n'
+    } > "$body" 2>/dev/null || true
+    VP_TITLE="${SUBJECT_NAME:-Market intelligence}"
+    VP_SUBTITLE="Bootstrap failed"
+    VP_PREHEADER="Bootstrap exited $rc - the approved profile is unchanged"
+    VP_FOOTER="Generated by Vantage Point (bootstrap)"
+    [ -n "${EMAIL_IMAGES:-}" ] && VP_LOGO="${LOGO_ASSET:-}"
+    if send_email "[Vantage Point: ${SUBJECT_NAME:-bootstrap}] bootstrap FAILED (exit $rc)" "$body" "${EMAIL_TO[@]}"; then
+      echo "[bootstrap] emailed the failure notice" >&2
+    else
+      echo "[bootstrap] WARNING: could not email the failure notice" >&2
+    fi
+    rm -f "$body"
+  fi
+  exit "$rc"
+}
+trap notify_failure EXIT
+
 # Per-pass turn caps (budgets: block) - the cost lever for these claude calls.
 # 0/absent/non-numeric -> the long-standing defaults.
 BOOTSTRAP_MAX_TURNS="$(cfg_get budgets bootstrap_max_turns)"
@@ -630,3 +738,8 @@ echo "             cp $DRAFT profile.yaml"
 # Optional: copy the digest too so the portal's Profile tab shows it for the approved
 # profile (it renders profile.summary.md like the bootstrap email; YAML stays the source).
 [ -f "$SUMMARY" ] && echo "             cp $SUMMARY profile.summary.md   # optional: nicer Profile tab"
+
+# The line above is a `[ -f ] && echo`, so with no summary it leaves a non-zero status -
+# which, as the script's LAST command, is what the run exits with. Harmless while nothing
+# read that code; now the failure notifier does. Be explicit about success.
+exit 0

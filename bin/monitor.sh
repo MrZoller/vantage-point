@@ -259,14 +259,26 @@ fi
 
 # ---- profile staleness (governance.profile_refresh_days) ----
 # Anchors drift; a stale profile silently mis-scores. Warn (don't refuse) when the
-# approved profile is older than the refresh window.
+# approved profile is older than the refresh window. The warning goes to stderr AND -
+# via STALE_NOTE, appended to the report further down - to whoever actually reads the
+# output: a warning that only ever lands in state/daily.err.log is a warning nobody
+# sees, which is how a profile can sit 70 days past its refresh window unnoticed.
+STALE_NOTE=""
 if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
   # GNU `date -d` and BSD `date -j -f` differ; try both, give up quietly if neither parses.
-  boot_epoch="$(date -d "$LAST_BOOT" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$LAST_BOOT" +%s 2>/dev/null || true)"
+  # An ABSENT date is rejected up front: GNU `date -d ""` succeeds and reports today, so
+  # a profile with no last_bootstrapped would compute as 0d old and silently disable this
+  # whole check on Linux. BSD already fails it; this makes both platforms agree.
+  if [ -z "$LAST_BOOT" ]; then
+    boot_epoch=""
+  else
+    boot_epoch="$(date -d "$LAST_BOOT" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$LAST_BOOT" +%s 2>/dev/null || true)"
+  fi
   if [ -n "$boot_epoch" ]; then
     age_days=$(( ( $(date +%s) - boot_epoch ) / 86400 ))
     if [ "$age_days" -gt "$REFRESH_DAYS" ]; then
       echo "[monitor:$MODE] WARNING: profile is ${age_days}d old (> profile_refresh_days=$REFRESH_DAYS) - re-run bin/bootstrap.sh to refresh" >&2
+      STALE_NOTE="${age_days}d old (\`governance.profile_refresh_days\` is $REFRESH_DAYS)"
     fi
   else
     echo "[monitor:$MODE] note: couldn't parse profile last_bootstrapped ('$LAST_BOOT') - skipping staleness check" >&2
@@ -714,6 +726,20 @@ if [ "$MODE" = weekly ] && [ -n "$HORIZON_ENABLED" ] && [ -s "$RUN_REPORT" ] \
     printf '\n\n## Coming up\n\n%s\n' "$UPCOMING" >> "$RUN_REPORT" \
       && echo "[monitor:$MODE] forward radar: appended the Coming up section" >&2
   fi
+fi
+
+# ---- profile staleness: carry the warning into the report itself ----
+# Same placement rule as the radar above: after the editor pass, so the caveat can't be
+# polished away, and into the report FILE so kb/, email, webhook and the portal all
+# carry it. Deliberately does NOT create a report - a silent run stays silent, exactly
+# like the radar. (The monthly `bootstrap.sh --if-stale` agent is what covers an
+# instance whose runs are mostly silent; this is what tells you why the ones that do
+# arrive are getting thinner.)
+if [ -n "$STALE_NOTE" ] && [ -s "$RUN_REPORT" ]; then
+  # shellcheck disable=SC2016  # backticks are literal Markdown; %s is a printf placeholder
+  printf '\n\n---\n\n> _**The approved profile is stale** - %s. Its rubric and source list are drifting from the market, so scores drop and relevant items get missed. Refresh with `./bin/bootstrap.sh` on the host, then approve the draft._\n' \
+    "$STALE_NOTE" >> "$RUN_REPORT" \
+    && echo "[monitor:$MODE] appended the profile-staleness notice to the report" >&2
 fi
 
 # ---- email delivery ----
