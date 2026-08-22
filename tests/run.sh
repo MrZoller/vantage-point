@@ -3341,7 +3341,8 @@ make_fake_bootstrap_repo() {  # <repo> <home> [nomodel]
   # Stub claude: the research call writes the draft + a summary and records its args;
 # SYNTH_EXIT drives that call's exit code, AFTER the draft is written (a failing synthesis
 # is what aborts a real run, and the real agent Writes the draft before the CLI errors) and
-# NO_SUMMARY suppresses the summary it writes (the "successful run, nothing to email" path);
+# NO_SUMMARY suppresses the summary it writes (the "successful run, nothing to email" path),
+# and NO_DRAFT models claude ending its turn cleanly without ever calling Write;
   # the editorial call (prompt names a PROFILE-DRAFT SUMMARY) edits the summary per env;
   # the backtest call (prompt names a Backtest prompt) records its prompt and writes a
   # canned score file from $BT_JSONL (or garbage / nothing, to drive the failure paths).
@@ -3363,7 +3364,7 @@ case "$*" in
     exit "${BT_EXIT:-0}" ;;
   *)
     [ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
-    printf 'derived: {}\n' > profile.draft.yaml
+    [ -n "${NO_DRAFT:-}" ] || printf 'derived: {}\n' > profile.draft.yaml
     if [ "${SYNTH_EXIT:-0}" != 0 ]; then
       # Order matters: the real agent Writes the draft mid-session and the CLI fails
       # afterwards, so a failed run DOES leave a newer-than-profile draft behind.
@@ -3911,6 +3912,29 @@ test_bootstrap_if_stale() {
   out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
   assert_contains "a complete draft still parks the refresh" "$out" "already waiting for review"
 
+  # A synthesis that exits 0 without producing a draft is a FAILED run, not a quiet one.
+  # Left unchecked it would mark an absent-or-empty draft reviewable and park the monthly
+  # refresh on nothing - the same wedge as above, through a clean exit instead of a crash.
+  rm -f "$repo/profile.draft.yaml" "$repo/state/.draft-complete"
+  printf 'subject:\n  last_bootstrapped: 2000-01-01\n' > "$repo/profile.yaml"
+  touch -t 202601010000 "$repo/profile.yaml"
+  out="$( cd "$repo" && NO_DRAFT=1 HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+  assert_eq "a synthesis that writes no draft fails the run" "1" "$rc"
+  assert_contains "and says why" "$out" "produced no usable profile.draft.yaml"
+  if [ -f "$repo/state/.draft-complete" ]; then fail "nothing is marked reviewable"; else pass "nothing is marked reviewable"; fi
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
+  assert_contains "so the next refresh still runs" "$out" "synthesizing the draft"
+
+  # A previous run's leftover draft must not be adopted: an EMPTY one never parks the
+  # gate, and a stale one is cleared at run start so the check means "this run wrote it".
+  rm -f "$repo/state/.draft-complete"
+  : > "$repo/profile.draft.yaml"
+  touch -t 202602010000 "$repo/profile.draft.yaml"
+  : > "$repo/state/.draft-complete"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
+  assert_not_contains "an empty draft never parks the refresh" "$out" "already waiting for review"
+  assert_contains "it refreshes over the empty draft" "$out" "synthesizing the draft"
+
   # Operator opt-out: no refresh window configured -> the agent is a permanent no-op.
   local repo2="$TMP/ifstaleoff" home2="$TMP/ifstalehome2"
   make_fake_bootstrap_repo "$repo2" "$home2"     # config has no governance block
@@ -3955,7 +3979,7 @@ YAML
     # The stderr tail is the whole point: a notice with no explanation just moves the
     # silence into the inbox.
     assert_contains "the body carries the bootstrap.err tail" "$(cat "$msg")" "stub synthesis blew up"
-    assert_contains "the body says the approved profile is untouched" "$(cat "$msg")" "approved profile is unchanged"
+    assert_contains "the body says the approved profile is untouched" "$(cat "$msg")" "untouched and still in use"
     assert_contains "the body gives the resume command" "$(cat "$msg")" "bootstrap.sh --resume"
   else
     fail "a failure email was sent"
