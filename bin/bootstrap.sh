@@ -127,7 +127,12 @@ SUBJECT_NAME="$(cfg_get_text subject name)"
 # earlier) because it needs output.email_to; the two checks above it - a missing config or
 # prompt - are the only failures it can't report, and neither survives a first install.
 # Fail-safe by construction: it never changes the exit code and never fails the run.
-# shellcheck disable=SC2329  # invoked indirectly, by the `trap ... EXIT` below
+# Both codes on purpose: shellcheck 0.10 split "function is never invoked" out of SC2317
+# into SC2329, so naming only one leaves the other version red - and CI's Linux leg pins
+# an older shellcheck than a current Homebrew one. An unknown code is silently ignored,
+# so naming both is portable. It fires at all because shellcheck does not model an EXIT
+# trap running at `exit`, and this script now ends with an unconditional `exit 0`.
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, by the `trap ... EXIT` below
 notify_failure() {
   local rc=$?
   trap - EXIT                       # a failure inside this handler must not re-enter it
