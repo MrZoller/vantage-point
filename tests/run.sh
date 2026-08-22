@@ -635,6 +635,32 @@ PY
 }
 test_email_logo
 
+echo "== cfg_get: an absent key returns 0, an unreadable FILE does not =="
+test_cfg_get_io_failure() {
+  # These two must stay distinguishable. A reader that swallows I/O errors lets a run
+  # continue with an empty config - no delivery settings, no rubric - while still writing
+  # state, which is worse than stopping. A caller that genuinely wants tolerance (the
+  # --if-stale profile read in bootstrap.sh) opts in with `|| true` at the call site.
+  local dir="$TMP/cfgio" rc
+  mkdir -p "$dir"
+  printf 'subject:\n  name: present\n' > "$dir/ok.yaml"
+  ( set -e; . "$ROOT/bin/config-lib.sh"; v="$(cfg_get subject nosuchkey "$dir/ok.yaml")"; [ -z "$v" ] ) ; rc=$?
+  assert_eq "an absent key in a readable file returns 0" "0" "$rc"
+  ( set -e; . "$ROOT/bin/config-lib.sh"; cfg_get subject name "$dir/nope.yaml" >/dev/null 2>&1 ) ; rc=$?
+  if [ "$rc" -ne 0 ]; then pass "a missing file propagates a failure"; else fail "a missing file propagates a failure"; fi
+  if [ "$(id -u)" != 0 ]; then
+    printf 'subject:\n  name: hidden\n' > "$dir/locked.yaml"; chmod 000 "$dir/locked.yaml"
+    ( set -e; . "$ROOT/bin/config-lib.sh"; cfg_get subject name "$dir/locked.yaml" >/dev/null 2>&1 ) ; rc=$?
+    chmod 644 "$dir/locked.yaml"
+    if [ "$rc" -ne 0 ]; then pass "an unreadable file propagates a failure"; else fail "an unreadable file propagates a failure"; fi
+    # ...and the opt-in form is what makes that survivable where it is wanted.
+    ( set -e; . "$ROOT/bin/config-lib.sh"; chmod 000 "$dir/locked.yaml"; v="$(cfg_get subject name "$dir/locked.yaml" 2>/dev/null || true)"; [ -z "$v" ] ) ; rc=$?
+    chmod 644 "$dir/locked.yaml"
+    assert_eq "|| true at the call site makes it tolerant on purpose" "0" "$rc"
+  fi
+}
+test_cfg_get_io_failure
+
 echo "== cfg_get_bool: truthy parsing + default =="
 test_cfg_get_bool() {
   # shellcheck source=bin/config-lib.sh
@@ -3382,10 +3408,15 @@ case "$*" in
     exit "${BT_EXIT:-0}" ;;
   *)
     [ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
-    if [ -n "${PARTIAL_DRAFT:-}" ]; then
-      printf 'derived: {}\n' > profile.draft.yaml     # nonempty, but cut off before last_bootstrapped
-    elif [ -z "${NO_DRAFT:-}" ]; then
+    if [ "${PARTIAL_DRAFT:-}" = late ]; then
+      # Truncated AFTER last_bootstrapped but before relevance.rubric - what a
+      # top-to-bottom synthesis cut short actually looks like. The earlier check passed
+      # this, because last_bootstrapped sits near the TOP of the schema.
       printf 'derived: {}\nsubject:\n  last_bootstrapped: 2026-01-01\n' > profile.draft.yaml
+    elif [ -n "${PARTIAL_DRAFT:-}" ]; then
+      printf 'derived: {}\n' > profile.draft.yaml     # cut off before last_bootstrapped
+    elif [ -z "${NO_DRAFT:-}" ]; then
+      printf 'derived: {}\nsubject:\n  last_bootstrapped: 2026-01-01\nrelevance:\n  rubric: test rubric\n' > profile.draft.yaml
     fi
     if [ "${SYNTH_EXIT:-0}" != 0 ]; then
       # Order matters: the real agent Writes the draft mid-session and the CLI fails
@@ -3461,6 +3492,7 @@ case "$prompt" in
   *"drafted intelligence profile"*) # CHALLENGE pass
     [ -n "${THINK_LOG:-}" ] && printf 'challenge:%s\n' "${MAX_THINKING_TOKENS:-unset}" >> "$THINK_LOG"
     [ -n "${CH_EMPTY:-}" ] && : > profile.draft.yaml
+    [ -n "${CH_TRUNC:-}" ] && printf 'derived: {}\n' > profile.draft.yaml   # nonempty, not reviewable
     [ -n "${CH_EXIT:-}" ] && exit "${CH_EXIT}"
     printf '## Challenge report\n- claim X - verdict: confirmed [src](https://e/x)\n' > profile.draft.challenge.md
     emit_json; exit 0 ;;
@@ -3469,7 +3501,7 @@ case "$prompt" in
   *)                                # SYNTHESIS pass
     [ -n "${THINK_LOG:-}" ] && printf 'synth:%s\n' "${MAX_THINKING_TOKENS:-unset}" >> "$THINK_LOG"
     [ -n "${SYNTH_ARGS:-}" ] && printf '%s\n' "$prompt" > "$SYNTH_ARGS"
-    printf 'derived: {}\nsubject:\n  last_bootstrapped: 2026-01-01\n' > profile.draft.yaml
+    printf 'derived: {}\nsubject:\n  last_bootstrapped: 2026-01-01\nrelevance:\n  rubric: test rubric\n' > profile.draft.yaml
     printf '# Profile draft summary\nbottom line: test market\n' > profile.draft.summary.md
     emit_json; exit 0 ;;
 esac
@@ -3799,6 +3831,16 @@ YAML
   assert_contains "the draft is restored from backup" "$(cat "$repo/profile.draft.yaml" 2>/dev/null)" "derived: {}"
   if [ -f "$repo/profile.draft.challenge.md" ]; then fail "no challenge report when the pass empties the draft"; else pass "no challenge report when the pass empties the draft"; fi
   assert_not_contains "no challenge section in the email" "$(cat "$msg" 2>/dev/null)" "Challenge report"
+
+  # A challenge that leaves the draft NONEMPTY but not reviewable is corruption too: the
+  # old -s gate accepted it and then deleted the backup, shipping the fragment as a draft.
+  local repo2="$TMP/bootchaltrunc" home2="$TMP/boothomechal2" msg2="$TMP/boot_msg_chal2.eml"
+  make_research_bootstrap_repo "$repo2" "$home2"     # only this stub HAS a challenge branch
+  cat "$repo/monitor-config.yaml" > "$repo2/monitor-config.yaml"
+  out="$( cd "$repo2" && CH_TRUNC=1 MSG_OUT="$msg2" HOME="$home2" bash bin/bootstrap.sh 2>&1 )"
+  assert_contains "warns the truncated challenge result was restored" "$out" "challenge pass failed/emptied the draft"
+  assert_contains "a nonempty-but-unreviewable challenge result is restored too" \
+    "$(cat "$repo2/profile.draft.yaml" 2>/dev/null)" "rubric"
 }
 test_bootstrap_challenge_failsafe
 
@@ -3960,6 +4002,16 @@ test_bootstrap_if_stale() {
   if [ -f "$repo/state/.draft-complete" ]; then fail "a truncated draft is not marked reviewable"; else pass "a truncated draft is not marked reviewable"; fi
   out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
   assert_contains "so the refresh still runs next time" "$out" "synthesizing the draft"
+
+  # ...and one truncated AFTER last_bootstrapped, which the single-field check accepted.
+  rm -f "$repo/profile.draft.yaml" "$repo/state/.draft-complete"
+  printf 'subject:\n  last_bootstrapped: 2000-01-01\n' > "$repo/profile.yaml"
+  touch -t 202601010000 "$repo/profile.yaml"
+  out="$( cd "$repo" && PARTIAL_DRAFT=late HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+  assert_eq "a draft truncated after last_bootstrapped also fails" "1" "$rc"
+  assert_contains "that draft really does carry last_bootstrapped" \
+    "$(cat "$repo/profile.draft.yaml" 2>/dev/null)" "last_bootstrapped"
+  if [ -f "$repo/state/.draft-complete" ]; then fail "a late-truncated draft is not marked reviewable"; else pass "a late-truncated draft is not marked reviewable"; fi
 
   # An UNREADABLE approved profile must not kill the run before the notifier is armed:
   # cfg_get inherits awk's status, so this used to exit under set -e with no trap yet.
@@ -4181,7 +4233,7 @@ YAML
   # An identical draft: note it, leave no empty diff file behind.
   local repo3="$TMP/bootdiff3" home3="$TMP/boothome10" out3
   make_fake_bootstrap_repo "$repo3" "$home3"
-  printf 'derived: {}\nsubject:\n  last_bootstrapped: 2026-01-01\n' > "$repo3/profile.yaml"   # exactly what the stub drafts
+  printf 'derived: {}\nsubject:\n  last_bootstrapped: 2026-01-01\nrelevance:\n  rubric: test rubric\n' > "$repo3/profile.yaml"   # exactly what the stub drafts
   out3="$( cd "$repo3" && HOME="$home3" bash bin/bootstrap.sh 2>&1 )"
   assert_contains "notes an identical draft" "$out3" "identical to the approved"
   if [ -f "$repo3/profile.draft.diff" ]; then fail "no diff file when draft is identical"; else pass "no diff file when draft is identical"; fi

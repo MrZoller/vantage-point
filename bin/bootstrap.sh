@@ -123,9 +123,15 @@ trap notify_failure EXIT
 draft_looks_complete() {
   [ -s "$DRAFT" ] || return 1
   local lb
-  lb="$(cfg_get subject last_bootstrapped "$DRAFT")"
-  case "$lb" in ''|null) lb="$(cfg_get anchor last_bootstrapped "$DRAFT")" ;; esac
+  # An EARLY required field and a LATE one, so the pair spans the document: checking only
+  # last_bootstrapped was too weak, because it sits near the top of the schema and a write
+  # truncated just after it still passed. relevance.rubric is the last thing
+  # bootstrap-prompt.md asks the agent to produce.
+  lb="$(cfg_get subject last_bootstrapped "$DRAFT" || true)"
+  case "$lb" in ''|null) lb="$(cfg_get anchor last_bootstrapped "$DRAFT" || true)" ;; esac
   case "$lb" in ''|null) return 1 ;; esac
+  grep -q '^relevance:' "$DRAFT" || return 1
+  grep -q '[[:space:]]rubric:' "$DRAFT" || return 1
   return 0
 }
 
@@ -162,8 +168,13 @@ if [ -n "$IF_STALE" ]; then
     if [ -z "$_refresh_days" ]; then
       _skip="governance.profile_refresh_days is unset or 0 - periodic refresh is off"
     else
-      _last_boot="$(cfg_get subject last_bootstrapped "$PROFILE")"
-      case "$_last_boot" in ''|null) _last_boot="$(cfg_get anchor last_bootstrapped "$PROFILE")" ;; esac
+      # The ONLY tolerant config read in this script, opted in here rather than by
+      # weakening cfg_get for everyone: an approved profile that exists but cannot be read
+      # must not kill the run before the failure notifier can report it. Empty falls
+      # through to the "unparseable -> treat as stale" branch below, which refreshes -
+      # the safe direction. Every other read still dies loudly on an I/O failure.
+      _last_boot="$(cfg_get subject last_bootstrapped "$PROFILE" || true)"
+      case "$_last_boot" in ''|null) _last_boot="$(cfg_get anchor last_bootstrapped "$PROFILE" || true)" ;; esac
       case "$_last_boot" in null) _last_boot="" ;; esac
       # GNU `date -d` vs BSD `date -j -f`; try both, same as monitor.sh's staleness check.
       # An ABSENT date is rejected before either: GNU `date -d ""` succeeds and reports
@@ -573,7 +584,7 @@ corrections to ./$DRAFT (downgrade, don't delete, what you can't verify)." \
     --max-turns "$CHALLENGE_MAX_TURNS" \
     --output-format json \
     2>> bootstrap.err)" || ch_rc=$?
-  if [ "$ch_rc" -eq 0 ] && [ -s "$DRAFT" ]; then
+  if [ "$ch_rc" -eq 0 ] && draft_looks_complete; then
     log_usage challenge "$CH_RUN_JSON"
     rm -f "$DRAFT.pre-challenge"
     if [ -s "$CHALLENGE_MD" ]; then
@@ -809,7 +820,11 @@ echo "             cp $DRAFT profile.yaml"
 if draft_looks_complete; then
   : > "$DRAFT_OK"
 else
-  echo "[bootstrap] note: $DRAFT does not look complete - not marking anything reviewable" >&2
+  # The review email has already gone out by here, so exiting 0 would advertise a draft
+  # nothing vouches for and leave the next daily refresh free to overwrite it silently.
+  # Fail instead: the notifier says so, and the marker's absence keeps the cadence alive.
+  echo "[bootstrap] $DRAFT is not reviewable at the end of the run - failing rather than advertising it" >&2
+  exit 1
 fi
 
 # The `[ -f "$SUMMARY" ] && echo` further up leaves a non-zero status when no summary was
