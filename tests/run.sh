@@ -318,14 +318,15 @@ PY
 
 echo "== install-launchd: installs a monthly, self-gating profile-refresh agent =="
 test_install_refresh_agent() {
-  local co="$TMP/refresh/checkout" home="$TMP/refreshhome" la hour plist
+  local co="$TMP/refresh/checkout" home="$TMP/refreshhome" la hour minute plist
   la="$home/Library/LaunchAgents"
   mkdir -p "$co/bin" "$co/launchd" "$co/stub" "$home"
   cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
   cp "$ROOT"/launchd/*.plist "$co/launchd/"
   chmod +x "$co/bin/install-launchd.sh"
   make_install_stubs "$co/stub"
-  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
+  local out
+  out="$( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" 2>/dev/null )"
   plist="$la/ai.zoller.vantagepoint.refresh.plist"
   # Installed by DEFAULT, alongside daily/weekly: an opt-in refresh agent is one an
   # operator forgets to opt into, which is the whole failure being fixed.
@@ -333,6 +334,7 @@ test_install_refresh_agent() {
   assert_eq "the refresh agent runs bootstrap.sh behind its staleness gate" \
     "$co/bin/bootstrap.sh --if-stale" "$(plist_field "$plist" args)"
   if grep -q '__VP_REFRESH_HOUR__' "$plist"; then fail "refresh: no __VP_REFRESH_HOUR__ token remains"; else pass "refresh: no __VP_REFRESH_HOUR__ token remains"; fi
+  if grep -q '__VP_REFRESH_MINUTE__' "$plist"; then fail "refresh: no __VP_REFRESH_MINUTE__ token remains"; else pass "refresh: no __VP_REFRESH_MINUTE__ token remains"; fi
   # DAILY: no Day key at all. A monthly poll cannot honour the window it checks - with
   # profile_refresh_days=30, a profile refreshed on the 1st is 28d old at the next monthly
   # check, is skipped, and reaches ~59d by the one after. The gate is free; polling is not
@@ -340,18 +342,35 @@ test_install_refresh_agent() {
   assert_eq "polls daily - no day-of-month pinning" "" "$(plist_field "$plist" Day)"
   assert_eq "and no weekday pinning either" "" "$(plist_field "$plist" Weekday)"
   hour="$(plist_field "$plist" Hour)"
+  minute="$(plist_field "$plist" Minute)"
   # Every bucket must land before the 06:30 daily sweep.
   if [ "$hour" -ge 1 ] && [ "$hour" -le 5 ]; then
-    pass "fires overnight, ahead of the 06:30 sweep (got 0$hour:00)"
+    pass "fires overnight, ahead of the 06:30 sweep (got 0$hour:$minute)"
   else
     fail "fires overnight, ahead of the 06:30 sweep (got $hour)"
   fi
+  # Range/type check only: a reverted literal 0 would pass this. The stagger test below
+  # is what actually guards the widening.
+  if [ -n "$minute" ] && [ "$minute" -ge 0 ] && [ "$minute" -le 59 ]; then
+    pass "the minute is a hashed value in range (got $minute)"
+  else
+    fail "the minute is a hashed value in range (got '$minute')"
+  fi
+  # The operator's readback must name the slot that was ACTUALLY installed. This drifted
+  # once already: the minute was threaded through the plist but the status line kept
+  # printing ":00", so an install reported a time it had not scheduled.
+  local want
+  want="$(printf 'daily at %02d:%02d' "$hour" "$minute")"
+  case "$out" in
+    *"$want"*) pass "the status line names the installed slot ($want)" ;;
+    *)         fail "the status line names the installed slot (want '$want', got: $(printf '%s' "$out" | grep -i 'profile refresh' || echo '<no such line>'))" ;;
+  esac
 }
 test_install_refresh_agent
 
-echo "== install-launchd: the refresh hour is stable per checkout, staggered across instances =="
+echo "== install-launchd: the refresh slot is stable per checkout, staggered across instances =="
 test_install_refresh_day_stagger() {
-  local home="$TMP/staggerhome" la a b hour_a hour_a2 hour_b
+  local home="$TMP/staggerhome" la a b slot_a slot_a2 slot_b hour_a hour_b
   la="$home/Library/LaunchAgents"; mkdir -p "$home"
   a="$TMP/stag-a/checkout"; b="$TMP/stag-b/checkout"
   local co
@@ -362,28 +381,96 @@ test_install_refresh_day_stagger() {
     chmod +x "$co/bin/install-launchd.sh"
     make_install_stubs "$co/stub"
   done
-  printf 'version: 1\ndeployment:\n  instance: ai-conferences\n'  > "$a/monitor-config.yaml"
-  printf 'version: 1\ndeployment:\n  instance: frontier-models\n' > "$b/monitor-config.yaml"
+  # These two are a REAL collision, not a hypothetical: under the original hour-only
+  # hash both live deployments landed on 01:00. They are the regression this test
+  # exists for, so do not swap them for a pair that happens to differ by hour.
+  printf 'version: 1\ndeployment:\n  instance: ai-conferences\n' > "$a/monitor-config.yaml"
+  printf 'version: 1\ndeployment:\n  instance: defense-primes\n' > "$b/monitor-config.yaml"
   ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
   hour_a="$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Hour)"
-  # Reinstalling must not move the hour around: it is derived from the label, not the clock.
+  slot_a="$hour_a:$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Minute)"
+  # Reinstalling must not move the slot around: it is derived from the label, not the clock.
   ( HOME="$home" PATH="$a/stub:$PATH" bash "$a/bin/install-launchd.sh" >/dev/null 2>&1 )
-  hour_a2="$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Hour)"
-  assert_eq "a reinstall keeps the same refresh hour" "$hour_a" "$hour_a2"
+  # Re-read BOTH fields. Reusing $hour_a here would compare the hour to itself and
+  # quietly check only the minute - the drift this assertion exists to catch.
+  slot_a2="$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Hour)"
+  slot_a2="$slot_a2:$(plist_field "$la/ai.zoller.vantagepoint.ai-conferences.refresh.plist" Minute)"
+  assert_eq "a reinstall keeps the same refresh slot" "$slot_a" "$slot_a2"
   ( HOME="$home" PATH="$b/stub:$PATH" bash "$b/bin/install-launchd.sh" >/dev/null 2>&1 )
-  hour_b="$(plist_field "$la/ai.zoller.vantagepoint.frontier-models.refresh.plist" Hour)"
+  hour_b="$(plist_field "$la/ai.zoller.vantagepoint.defense-primes.refresh.plist" Hour)"
+  slot_b="$hour_b:$(plist_field "$la/ai.zoller.vantagepoint.defense-primes.refresh.plist" Minute)"
+  # Same hour is the POINT here: it is what makes this a regression test rather than a
+  # coincidence. If the hash ever moves these two apart by hour the test still passes,
+  # but it stops guarding the minute widening - so assert the shared hour loudly.
+  assert_eq "the pair still shares an hour (so the minute is what separates them)" "$hour_a" "$hour_b"
   # Clones bootstrapped on the same day cross their windows on the same day, so what has
   # to differ is the TIME - a deep-research bootstrap is the most expensive thing here and
-  # several must not start at once. Only 5 buckets, so collisions are possible in general;
-  # these two names hash apart. If this fails after a change to the hash, pick two that
-  # don't collide rather than dropping the check.
-  if [ "$hour_a" != "$hour_b" ]; then
-    pass "two instances land on different hours (0$hour_a:00 vs 0$hour_b:00)"
+  # several must not start at once.
+  if [ "$slot_a" != "$slot_b" ]; then
+    pass "two instances that share an hour still land on different minutes ($slot_a vs $slot_b)"
   else
-    fail "two instances land on different hours (both 0$hour_a:00)"
+    fail "two instances that share an hour still land on different minutes (both $slot_a)"
   fi
 }
 test_install_refresh_day_stagger
+
+echo "== install-launchd: deployment.refresh_time pins the slot the hash would pick =="
+test_install_refresh_time_override() {
+  local co="$TMP/rtime/checkout" home="$TMP/rtimehome" la plist rc before
+  la="$home/Library/LaunchAgents"; mkdir -p "$home"
+  mkdir -p "$co/bin" "$co/launchd" "$co/stub"
+  cp "$ROOT/bin/install-launchd.sh" "$co/bin/"; cp_libs "$co/bin"
+  cp "$ROOT"/launchd/*.plist "$co/launchd/"
+  chmod +x "$co/bin/install-launchd.sh"
+  make_install_stubs "$co/stub"
+  # Zero-padded on purpose: "08" must be read as decimal, not rejected as bad octal.
+  printf 'version: 1\ndeployment:\n  instance: pinned\n  refresh_time: "08:05"\n' > "$co/monitor-config.yaml"
+  local out
+  out="$( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" 2>/dev/null )"
+  plist="$la/ai.zoller.vantagepoint.pinned.refresh.plist"
+  assert_eq "an explicit refresh_time sets the hour" "8" "$(plist_field "$plist" Hour)"
+  assert_eq "an explicit refresh_time sets the minute" "5" "$(plist_field "$plist" Minute)"
+  # Zero-padded readback of the pinned value - an operator who pinned a slot to dodge a
+  # collision has to be able to READ BACK the slot they pinned.
+  case "$out" in
+    *"daily at 08:05"*) pass "the status line names the pinned slot (08:05)" ;;
+    *)                  fail "the status line names the pinned slot (got: $(printf '%s' "$out" | grep -i 'profile refresh' || echo '<no such line>'))" ;;
+  esac
+  # A two-digit hour must not come out as "012:45" - the old hard-coded leading zero.
+  printf 'version: 1\ndeployment:\n  instance: pinned2\n  refresh_time: "12:45"\n' > "$co/monitor-config.yaml"
+  out="$( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" 2>/dev/null )"
+  case "$out" in
+    *"daily at 12:45"*) pass "a two-digit hour is not zero-prefixed (12:45)" ;;
+    *)                  fail "a two-digit hour is not zero-prefixed (got: $(printf '%s' "$out" | grep -i 'profile refresh' || echo '<no such line>'))" ;;
+  esac
+  # Put the pinned instance back so the rejection loop below tests what it says it does.
+  printf 'version: 1\ndeployment:\n  instance: pinned\n  refresh_time: "08:05"\n' > "$co/monitor-config.yaml"
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 )
+
+  # A bad value must fail loudly BEFORE touching LaunchAgents - a silently-ignored
+  # typo would put the instance back on the hashed slot it was pinned away from.
+  before="$(cat "$plist")"
+  local bad
+  for bad in "0830" "24:00" "01:60" "aa:bb" "1:2:3" "01:" "18446744073709551617:30"; do
+    printf 'version: 1\ndeployment:\n  instance: pinned\n  refresh_time: "%s"\n' "$bad" > "$co/monitor-config.yaml"
+    rc=0
+    ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" >/dev/null 2>&1 ) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      pass "rejects refresh_time '$bad' (exit $rc)"
+    else
+      fail "rejects refresh_time '$bad' (exited 0)"
+    fi
+  done
+  assert_eq "a rejected refresh_time leaves the installed plist untouched" "$before" "$(cat "$plist")"
+
+  # ...but uninstall must still work with a config that install would reject, or a
+  # since-broken value would strand the agents with no way to remove them.
+  rc=0
+  ( HOME="$home" PATH="$co/stub:$PATH" bash "$co/bin/install-launchd.sh" uninstall >/dev/null 2>&1 ) || rc=$?
+  assert_eq "uninstall still works with an invalid refresh_time" "0" "$rc"
+  if [ -f "$plist" ]; then fail "uninstall removed the refresh agent"; else pass "uninstall removed the refresh agent"; fi
+}
+test_install_refresh_time_override
 
 echo "== install-launchd: rejects a broken instance name before mutating LaunchAgents =="
 test_install_broken_keeps_legacy() {

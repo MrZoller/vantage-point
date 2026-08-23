@@ -26,15 +26,17 @@
        next monthly check, gets skipped, and is ~59 days old by the one after - twice its
        contract. Shorter windows fare worse still (frontier-models uses 7).
 
-       The hour is filled in by bin/install-launchd.sh, which hashes the agent label to
-       01:00-05:00. Clones bootstrapped on the same day cross their windows on the same
-       day, so without an offset they would all start an expensive deep-research run at
-       the same instant; an hour apart, each finishes long before the next begins. All
-       the buckets sit ahead of the 06:30 daily sweep. -->
+       The time is filled in by bin/install-launchd.sh, which hashes the agent label into
+       one of 300 slots across 01:00-05:59. Clones bootstrapped on the same day cross
+       their windows on the same day, so without an offset they would all start an
+       expensive deep-research run at the same instant. All the buckets sit ahead of the
+       06:30 daily sweep. Set deployment.refresh_time (HH:MM) to pin a slot instead of
+       hashing one, which is the only way to GUARANTEE two instances differ: separate
+       checkouts share no state, so nothing can detect a sibling's choice. -->
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key><integer>__VP_REFRESH_HOUR__</integer>
-    <key>Minute</key><integer>0</integer>
+    <key>Minute</key><integer>__VP_REFRESH_MINUTE__</integer>
   </dict>
 
   <key>StandardOutPath</key>

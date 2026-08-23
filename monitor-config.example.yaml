@@ -25,8 +25,15 @@ version: 1
 # ai.zoller.vantagepoint.<instance>.{daily,weekly}. Leave it unset for a single
 # deployment (labels stay un-suffixed). Read by bin/install-launchd.sh; slugified
 # (lowercased, non [a-z0-9-] -> '-'). See "Running multiple instances" in the README.
+#
+# `refresh_time` (HH:MM, 24h) pins when the daily refresh check runs. Leave it unset
+# and the time is hashed from the agent label into 01:00-05:59, which spreads clones
+# without any configuration - but a hash cannot see what a sibling picked, so it can
+# only make a collision unlikely. Set it on one of the pair if two instances do land
+# together, or to move the check out of 01:00-05:59 entirely.
 # deployment:
 #   instance: ai-models
+#   refresh_time: "03:20"
 
 # Which Claude model each agent runs on. bootstrap is infrequent and depth
 # matters, so it's worth spending Opus there; monitor runs daily doing shallow

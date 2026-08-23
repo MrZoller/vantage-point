@@ -244,9 +244,18 @@ Notes:
   owned by a different checkout is rejected rather than silently repointing it.
 - The locks are per-clone, so instances run independently (and can overlap). If you'd
   rather they not run at the same minute, stagger the times in each clone's
-  `launchd/*.plist`. The refresh check is already staggered for you: its hour is hashed
-  from the agent label, so clones that come due on the same day don't start their
-  (expensive) re-bootstraps at the same moment.
+  `launchd/*.plist`. The refresh check is already staggered for you: its time is hashed
+  from the agent label into one of 300 slots across `01:00-05:59`, so clones that come
+  due on the same day don't start their (expensive) re-bootstraps at the same moment.
+  Hashing spreads them but cannot *guarantee* separation — independent checkouts share
+  no state, so nothing can detect what a sibling chose. Pin one explicitly when it
+  matters:
+
+  ```yaml
+  deployment:
+    instance: ai-models
+    refresh_time: "03:20"   # HH:MM; overrides the hashed slot
+  ```
 - `~/.msmtprc` and your Claude auth are shared across clones, which is fine. To view
   two portals at once, give each a distinct port (`./bin/portal.sh --port 8081`).
 
