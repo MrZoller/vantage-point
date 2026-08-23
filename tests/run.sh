@@ -933,7 +933,10 @@ test_encode_header
 # config/profile/prompt + a stub `claude` that records its invocation and prints a
 # JSON envelope without writing a report (so the run ends "nothing material").
 make_fake_repo() {
-  local repo="$1" lastboot="${2:-2099-01-01}" run_timeout="${3:-0}" email_to="${4:-}"
+  # Default "fresh" = TODAY, not a far-future date. A future last_bootstrapped yields a
+  # negative age, and until that was fixed a negative age read as "inside the window" -
+  # so 2099 worked here only by relying on the bug. Now it warns, as it should.
+  local repo="$1" lastboot="${2:-$(date +%F)}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
   cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" \
      "$ROOT/bin/webhook.py" "$ROOT/bin/fetch.py" "$ROOT/bin/horizon.py" \
@@ -1054,7 +1057,7 @@ test_full_run
 echo "== monitor.sh: wraps the claude run in timeout when run_timeout_seconds > 0 =="
 test_run_timeout_wrap() {
   local repo="$TMP/torepo" out rc marker="$TMP/timeout_used"
-  make_fake_repo "$repo" "2099-01-01" 1800     # run_timeout_seconds = 1800 (> 0)
+  make_fake_repo "$repo" "$(date +%F)" 1800     # run_timeout_seconds = 1800 (> 0)
   # A stub `timeout` (first on PATH) that records it was used, then runs the wrapped cmd.
   cat > "$repo/stub/timeout" <<'SH'
 #!/usr/bin/env bash
@@ -1074,7 +1077,7 @@ test_run_timeout_wrap
 echo "== monitor.sh: a wall-clock timeout fails the run and cleanup surfaces it =="
 test_run_timeout_expiry() {
   local repo="$TMP/toexprepo" out rc
-  make_fake_repo "$repo" "2099-01-01" 1800
+  make_fake_repo "$repo" "$(date +%F)" 1800
   # A stub `timeout` that simulates expiry: exit 124 (timeout's convention) without claude.
   printf '#!/usr/bin/env bash\nexit 124\n' > "$repo/stub/timeout"
   chmod +x "$repo/stub/timeout"
@@ -2343,7 +2346,7 @@ test_feedback_latest_verdict
 echo "== monitor.sh: email Subject names the monitored subject =="
 test_email_subject() {
   local repo="$TMP/subjrepo" out rc msg="$TMP/subj.eml"
-  make_fake_repo "$repo" "2099-01-01" 0 "me@example.com"   # email enabled; subject.name set
+  make_fake_repo "$repo" "$(date +%F)" 0 "me@example.com"   # email enabled; subject.name set
   # A stub claude that writes a report, so the email actually sends.
   cat > "$repo/stub/claude" <<'SH'
 #!/usr/bin/env bash
@@ -2870,12 +2873,12 @@ test_monitor_fetch() {
   cat > "$repo/profile.yaml" <<YAML
 subject:
   derived:
-    last_bootstrapped: 2099-01-01
+    last_bootstrapped: $(date +%F)
     feeds:
       - http://127.0.0.1:$port/rss.xml
 anchor:
   derived:
-    last_bootstrapped: 2099-01-01
+    last_bootstrapped: $(date +%F)
 YAML
   cat > "$repo/stub/claude" <<'SH'
 #!/usr/bin/env bash
@@ -2914,15 +2917,15 @@ SH
   # An unreachable feed must not fail the run.
   local repo3="$TMP/fetchrepo3"
   make_fake_repo "$repo3"
-  cat > "$repo3/profile.yaml" <<'YAML'
+  cat > "$repo3/profile.yaml" <<YAML
 subject:
   derived:
-    last_bootstrapped: 2099-01-01
+    last_bootstrapped: $(date +%F)
     feeds:
       - http://127.0.0.1:1/dead.xml
 anchor:
   derived:
-    last_bootstrapped: 2099-01-01
+    last_bootstrapped: $(date +%F)
 YAML
   local rc
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
@@ -3166,7 +3169,7 @@ SH
 
   # A fresh profile adds nothing.
   local repo2="$TMP/freshreport"
-  make_fake_repo "$repo2" "2099-01-01"
+  make_fake_repo "$repo2" "$(date +%F)"
   cp "$repo/stub/claude" "$repo2/stub/claude"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo2/stub:$PATH" bash "$repo2/bin/monitor.sh" daily 2>&1 )"
@@ -3184,6 +3187,19 @@ SH
   out="$( HOME="$TMP/fakehome" PATH="$repo4/stub:$PATH" bash "$repo4/bin/monitor.sh" daily 2>&1 )"
   assert_contains "an absent last_bootstrapped is called out, not read as fresh" \
     "$out" "couldn't parse profile last_bootstrapped"
+
+  # A FUTURE date is the third way into the same hole: it parses, so it never reaches the
+  # "couldn't parse" branch, but its negative age is never -gt the window either - so the
+  # warning would silently switch off for as long as the date stays ahead of the clock.
+  local repo4b="$TMP/stalefuture"
+  make_fake_repo "$repo4b" "2099-06-01"
+  cp "$repo/stub/claude" "$repo4b/stub/claude"   # report-writing stub; the notice rides a report
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo4b/stub:$PATH" bash "$repo4b/bin/monitor.sh" daily 2>&1 )"
+  assert_contains "a future last_bootstrapped warns rather than reading as fresh" \
+    "$out" "is in the future"
+  assert_contains "and the notice reaches the report" \
+    "$(cat "$repo4b/kb/$(date +%F).daily.md" 2>/dev/null)" "dated in the future"
 
   # With a COMPLETE draft pending, the profile is stale by design until a human approves.
   # Telling the operator to run bootstrap.sh there is the one instruction that destroys
@@ -4180,6 +4196,19 @@ test_bootstrap_if_stale() {
   out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"
   assert_contains "an absent last_bootstrapped is treated as stale" "$out" "treating it as stale"
   assert_contains "so it refreshes instead of skipping forever" "$out" "synthesizing the draft"
+
+  # A FUTURE date parses fine but yields a NEGATIVE age, which is <= any window and so
+  # reads as "fresh" - parking the refresh until that date plus the window. With a typo'd
+  # year that is a multi-year outage of the exact cadence this agent enforces, and it is
+  # silent: every run exits 0 saying there is nothing to do.
+  rm -f "$repo/profile.draft.yaml"
+  printf 'subject:\n  last_bootstrapped: 2099-06-01\n' > "$repo/profile.yaml"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh --if-stale 2>&1 )"; rc=$?
+  assert_eq "a future-dated profile exits 0" "0" "$rc"
+  assert_contains "a future last_bootstrapped is called out" "$out" "is in the future"
+  assert_contains "and is treated as stale, not fresh" "$out" "treating it as stale"
+  assert_contains "so the refresh actually runs" "$out" "synthesizing the draft"
+  assert_not_contains "it never reports a negative age as within the window" "$out" "d old (<= profile_refresh_days"
 
   # A draft left behind by a FAILED run must NOT read as "awaiting review". Its mtime
   # looks identical to a good draft's, so without a completion marker one bad night

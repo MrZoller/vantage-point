@@ -276,7 +276,14 @@ if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
   fi
   if [ -n "$boot_epoch" ]; then
     age_days=$(( ( $(date +%s) - boot_epoch ) / 86400 ))
-    if [ "$age_days" -gt "$REFRESH_DAYS" ]; then
+    # A future date parses but goes negative, which is never -gt the window, so it would
+    # silently disable this warning for as long as the date stays ahead of the clock -
+    # the same hole the absent-date guard above closes, reached a different way. Warn on
+    # it explicitly rather than letting it read as "not stale yet".
+    if [ "$age_days" -lt 0 ]; then
+      echo "[monitor:$MODE] WARNING: profile last_bootstrapped ('$LAST_BOOT') is in the future - re-run bin/bootstrap.sh to refresh" >&2
+      STALE_NOTE="dated in the future (\`$LAST_BOOT\`), so its age can't be trusted"
+    elif [ "$age_days" -gt "$REFRESH_DAYS" ]; then
       echo "[monitor:$MODE] WARNING: profile is ${age_days}d old (> profile_refresh_days=$REFRESH_DAYS) - re-run bin/bootstrap.sh to refresh" >&2
       STALE_NOTE="${age_days}d old (\`governance.profile_refresh_days\` is $REFRESH_DAYS)"
     fi

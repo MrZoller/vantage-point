@@ -191,7 +191,15 @@ if [ -n "$IF_STALE" ]; then
         echo "[bootstrap] --if-stale: can't read last_bootstrapped ('$_last_boot') from $PROFILE - treating it as stale" >&2
       else
         _age_days=$(( ( $(date +%s) - _boot_epoch ) / 86400 ))
-        if [ "$_age_days" -le "$_refresh_days" ]; then
+        # A date in the FUTURE (clock skew, or a typo'd year) parses fine but yields a
+        # negative age, which is <= any window and so reads as "fresh" - parking the
+        # refresh until that date plus the window, potentially years. Same failure as an
+        # unparseable date, so it takes the same branch: unusable means stale, because
+        # guessing "fresh" from a date we cannot trust is the silent rot this gate exists
+        # to prevent.
+        if [ "$_age_days" -lt 0 ]; then
+          echo "[bootstrap] --if-stale: last_bootstrapped ('$_last_boot') is in the future - treating it as stale" >&2
+        elif [ "$_age_days" -le "$_refresh_days" ]; then
           _skip="profile is ${_age_days}d old (<= profile_refresh_days=$_refresh_days)"
         else
           echo "[bootstrap] --if-stale: profile is ${_age_days}d old (> profile_refresh_days=$_refresh_days) - refreshing" >&2
