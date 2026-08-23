@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# install-launchd.sh [uninstall] - (re)install the daily + weekly launchd agents
-# WITHOUT editing anything tracked in the repo.
+# install-launchd.sh [uninstall] - (re)install the daily + weekly + refresh launchd
+# agents WITHOUT editing anything tracked in the repo.
 #
 # It generates the real plists from the launchd/*.plist templates into
 # ~/Library/LaunchAgents, substituting this checkout's absolute path for __VP_ROOT__
 # and the agent label for __VP_LABEL__, then loads them. The committed templates are
 # never touched, so a fresh clone stays clean and `git status` never shows local edits.
 #
+# The refresh agent runs `bootstrap.sh --if-stale` daily: a no-op unless the approved
+# profile is past governance.profile_refresh_days, so a forgotten refresh can't quietly
+# rot a profile (set profile_refresh_days blank/0 to turn it off entirely). Daily because
+# a coarser poll cannot honour the window it checks - see the plist template.
+#
 # Multiple instances on one machine: give each checkout a distinct
 # `deployment.instance` in its monitor-config.yaml and the agent labels/filenames are
-# namespaced (ai.zoller.vantagepoint.<instance>.{daily,weekly}) so clones don't
+# namespaced (ai.zoller.vantagepoint.<instance>.{daily,weekly,refresh}) so clones don't
 # collide. Leave it unset for a single deployment (labels stay un-suffixed). Renaming
 # an instance (or converting a default deployment to a named one) is safe: a reinstall
 # retires this checkout's previously-installed agents before installing the new labels.
@@ -37,7 +42,11 @@ ROOT_XML="$ROOT"
 ROOT_XML="${ROOT_XML//&/&amp;}"
 ROOT_XML="${ROOT_XML//</&lt;}"
 ROOT_XML="${ROOT_XML//>/&gt;}"
-PROG_LINE="<string>$ROOT_XML/bin/monitor.sh</string>"   # ProgramArguments[0] in our plists
+# ProgramArguments[0] in our plists - monitor.sh for daily/weekly, bootstrap.sh for
+# refresh - so ownership is matched on the checkout's bin/ prefix, not one script name.
+# Only ProgramArguments carries a bin/ path (the log paths are under state/), so this
+# stays as specific as the full-line match it replaced.
+PROG_PREFIX="<string>$ROOT_XML/bin/"
 
 command -v launchctl >/dev/null 2>&1 || {
   echo "launchctl not found - launchd is macOS-only. On Linux use cron (see README)." >&2
@@ -54,7 +63,58 @@ if [ -n "$INSTANCE" ]; then
 else
   PREFIX="ai.zoller.vantagepoint"
 fi
-LABELS=("$PREFIX.daily" "$PREFIX.weekly")
+LABELS=("$PREFIX.daily" "$PREFIX.weekly" "$PREFIX.refresh")
+
+# Time of the DAILY refresh check, staggered per instance. The check itself is free;
+# what must not collide is the deep-research bootstrap it can start, which is the most
+# expensive thing this repo runs. Clones bootstrapped on the same day cross their refresh
+# windows on the same day, so they need separating in TIME, not by date. Hashing the label
+# gives each checkout a stable slot (identical on every reinstall) with nothing to
+# configure. Hours stay in 1-5, so every bucket lands before the 06:30 daily sweep.
+#
+# Minute is hashed too, for 300 slots rather than 5. Five buckets was not "staggered" in
+# any useful sense: with n instances the chance of no collision is 5!/(5-n)!/5^n, so five
+# clones avoid one only 3.8% of the time - and two of the real deployments did in fact
+# land on the same hour. Dividing by 5 first keeps the minute independent of the hour it
+# is paired with, rather than re-deriving it from the same low bits.
+REFRESH_CKSUM="$(printf '%s' "$PREFIX.refresh" | cksum | awk '{print $1}')"
+REFRESH_HOUR=$(( REFRESH_CKSUM % 5 + 1 ))
+REFRESH_MINUTE=$(( REFRESH_CKSUM / 5 % 60 ))
+
+# ...and an explicit override, because a hash can only make collisions unlikely, never
+# impossible: independent checkouts share no state, so nothing here can KNOW what a
+# sibling picked. An operator who sees two instances land together (or who just wants a
+# different window) pins one of them and the question is settled deterministically.
+# Validated only when installing - uninstall is path/marker-based and must keep working
+# with a since-broken config.
+REFRESH_TIME_RAW=""
+[ -f "$ROOT/monitor-config.yaml" ] && REFRESH_TIME_RAW="$(cfg_get_text deployment refresh_time "$ROOT/monitor-config.yaml" || true)"
+if [ "${1:-}" != "uninstall" ] && [ -n "$REFRESH_TIME_RAW" ]; then
+  rt_bad=""
+  case "$REFRESH_TIME_RAW" in
+    *:*) rt_h="${REFRESH_TIME_RAW%%:*}"; rt_m="${REFRESH_TIME_RAW#*:}" ;;
+    *)   rt_bad=1; rt_h=""; rt_m="" ;;
+  esac
+  # Reject anything non-numeric or empty on either side. This also catches "1:2:3",
+  # whose minute half keeps a colon.
+  case "$rt_h" in ''|*[!0-9]*) rt_bad=1 ;; esac
+  case "$rt_m" in ''|*[!0-9]*) rt_bad=1 ;; esac
+  # Length-cap before any arithmetic: bash 3.2 wraps silently on overflow, so a
+  # 20-digit hour would come out the far side as a plausible number and install a
+  # schedule nobody asked for instead of being rejected.
+  [ "${#rt_h}" -le 2 ] || rt_bad=1
+  [ "${#rt_m}" -le 2 ] || rt_bad=1
+  if [ -z "$rt_bad" ]; then
+    # 10# so a zero-padded "08:30" is decimal, not an invalid octal literal.
+    rt_h=$(( 10#$rt_h )); rt_m=$(( 10#$rt_m ))
+    { [ "$rt_h" -gt 23 ] || [ "$rt_m" -gt 59 ]; } && rt_bad=1
+  fi
+  if [ -n "$rt_bad" ]; then
+    echo "deployment.refresh_time ('$REFRESH_TIME_RAW') must be HH:MM in 00:00-23:59" >&2
+    exit 1
+  fi
+  REFRESH_HOUR="$rt_h"; REFRESH_MINUTE="$rt_m"
+fi
 
 # A configured-but-unusable name must NOT silently become the default deployment.
 # Checked up front (before any LaunchAgents mutation) so a bad name can't leave the
@@ -77,7 +137,7 @@ our_installed_labels() {
   local f base
   for f in "$LA_DIR"/ai.zoller.vantagepoint.*.plist; do
     [ -e "$f" ] || continue
-    grep -qF "$PROG_LINE" "$f" || continue
+    grep -qF "$PROG_PREFIX" "$f" || continue
     base="$(basename "$f")"
     printf '%s\n' "${base%.plist}"
   done
@@ -90,8 +150,8 @@ our_installed_labels() {
 label_is_ours() {
   local plist="$LA_DIR/$1.plist" prog
   [ -f "$plist" ] || return 1
-  grep -qF "$PROG_LINE" "$plist" && return 0
-  prog="$(sed -n 's#^[[:space:]]*<string>\(.*/bin/monitor.sh\)</string>[[:space:]]*$#\1#p' "$plist" | head -1)"
+  grep -qF "$PROG_PREFIX" "$plist" && return 0
+  prog="$(sed -n 's#^[[:space:]]*<string>\(.*/bin/[^/<]*\.sh\)</string>[[:space:]]*$#\1#p' "$plist" | head -1)"
   # The path is XML-escaped in the plist; decode it (amp last) before the -e test, or a
   # sibling whose path has &/</> would look "gone" and defeat the hijack guard.
   prog="${prog//&lt;/<}"; prog="${prog//&gt;/>}"; prog="${prog//&amp;/&}"
@@ -174,7 +234,7 @@ installed_labels | while IFS= read -r label; do
 done
 
 # Iterate modes (template filenames are fixed); the label is namespaced per instance.
-for mode in daily weekly; do
+for mode in daily weekly refresh; do
   label="$PREFIX.$mode"
   src="$ROOT/launchd/ai.zoller.vantagepoint.$mode.plist"
   dst="$LA_DIR/$label.plist"
@@ -183,6 +243,8 @@ for mode in daily weekly; do
   template="$(cat "$src")"
   template="${template//__VP_ROOT__/$ROOT_XML}"
   template="${template//__VP_LABEL__/$label}"   # label is slug-safe; no XML escaping needed
+  template="${template//__VP_REFRESH_HOUR__/$REFRESH_HOUR}"       # refresh template only; a no-op elsewhere
+  template="${template//__VP_REFRESH_MINUTE__/$REFRESH_MINUTE}"   # refresh template only; a no-op elsewhere
   printf '%s\n' "$template" > "$dst"
 
   # Catch a malformed plist before launchd does (no-op if plutil is absent).
@@ -200,5 +262,9 @@ done
 # even if the path or instance name no longer matches.
 printf '%s\n' "${LABELS[@]}" > "$MARKER"
 
+# %02d on BOTH fields: the hour can now be two digits (refresh_time may pin any hour),
+# so a hard-coded leading "0" printed "012:45". This line is the operator's readback of
+# the very value they pinned to dodge a collision - it has to match the plist exactly.
+printf '[install-launchd] profile refresh: daily at %02d:%02d (a no-op unless the profile is past governance.profile_refresh_days)\n' "$REFRESH_HOUR" "$REFRESH_MINUTE"
 echo "[install-launchd] done. Kick a run now to confirm wiring:"
 echo "  launchctl kickstart -k $DOMAIN/$PREFIX.daily"
