@@ -21,7 +21,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T5 (standard) — portal.py vs monitor.sh: tracking.quiet_min_events: 0 normalized differently — portal shows quiet flags the monitor never raises (Fixes #68)
   - acceptance: `bin/portal.py` normalizes zero or invalid `tracking.quiet_min_events` to 4, matching `bin/monitor.sh`, and tests show the portal and monitor apply the same threshold
   - pr: 84
-- [R] T6 (standard) — portal.py: grade links never URL-encode the item id, so ids with URL metacharacters break or mis-route grading (Fixes #67)
+- [x] T6 (standard) — portal.py: grade links never URL-encode the item id, so ids with URL metacharacters break or mis-route grading (Fixes #67)
   - acceptance: `bin/portal.py` percent-encodes review grade and missed-link item ids with no safe metacharacters; tests verify ids containing `&`, `=`, `%`, `#`, `+`, and spaces reach the intended record without query splitting
   - pr: 85
 - [ ] T7 (standard) — fetch.py: relative entry links resolved against the pre-redirect feed URL (Fixes #66)

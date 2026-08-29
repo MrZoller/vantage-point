@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T6",
-  "branch": "factory/t6-encode-grade-ids",
-  "pr": 85,
+  "current_task": null,
+  "branch": null,
+  "pr": null,
   "hold": false,
-  "updated": "2026-08-29T05:46:29Z"
+  "updated": "2026-08-29T05:59:37Z"
 }
