@@ -33,7 +33,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T9 (standard) — research.py/bootstrap.sh: unbounded facet slug length breaks the stub-note degradation contract (Fixes #64)
   - acceptance: `bin/research.py` bounds filesystem-safe facet slugs before de-duplication so long ids/titles cannot exceed filename limits; `bin/bootstrap.sh` still writes a note or failure stub, JSON stash, and `.failed` marker and reports provenance accurately for a long facet
   - pr: 88
-- [ ] T10 (standard) — email-lib.sh: CID logo emits one giant base64 line on macOS, violating the SMTP 998-octet limit (Fixes #63)
+- [~] T10 (standard) — email-lib.sh: CID logo emits one giant base64 line on macOS, violating the SMTP 998-octet limit (Fixes #63)
   - acceptance: `bin/email-lib.sh` emits CID image base64 in explicitly normalized 76-character lines on both macOS and GNU tooling; tests exercise a logo large enough to exceed the SMTP line limit
 - [ ] T11 (standard) — monitor.sh: deepdive_max_items: 0 empties the queue after the non-empty check, launching a pointless deep-dive pass (Fixes #62)
   - acceptance: `bin/monitor.sh` treats `deepdive_max_items: 0` as disabling/skipping deep-dive work or rechecks the truncated queue, and tests verify no `claude` deep-dive invocation occurs for an empty post-cap queue

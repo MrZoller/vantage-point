@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": null,
-  "branch": null,
+  "current_task": "T10",
+  "branch": "factory/t10-normalize-cid-base64",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T07:44:13Z"
+  "updated": "2026-08-29T07:45:14Z"
 }
