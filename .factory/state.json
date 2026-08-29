@@ -5,7 +5,7 @@
   "plan_approved": true,
   "current_task": "T11",
   "branch": "factory/t11-skip-empty-deepdive",
-  "pr": null,
+  "pr": 90,
   "hold": false,
-  "updated": "2026-08-29T08:04:12Z"
+  "updated": "2026-08-29T08:14:11Z"
 }

@@ -36,8 +36,9 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T10 (standard) — email-lib.sh: CID logo emits one giant base64 line on macOS, violating the SMTP 998-octet limit (Fixes #63)
   - acceptance: `bin/email-lib.sh` emits CID image base64 in explicitly normalized 76-character lines on both macOS and GNU tooling; tests exercise a logo large enough to exceed the SMTP line limit
   - pr: 89
-- [~] T11 (standard) — monitor.sh: deepdive_max_items: 0 empties the queue after the non-empty check, launching a pointless deep-dive pass (Fixes #62)
+- [R] T11 (standard) — monitor.sh: deepdive_max_items: 0 empties the queue after the non-empty check, launching a pointless deep-dive pass (Fixes #62)
   - acceptance: `bin/monitor.sh` treats `deepdive_max_items: 0` as disabling/skipping deep-dive work or rechecks the truncated queue, and tests verify no `claude` deep-dive invocation occurs for an empty post-cap queue
+  - pr: 90
 - [ ] T12 (standard) — usage.sh: one runs.log row without a valid timestamp aborts the whole rollup (Fixes #61)
   - acceptance: `bin/usage.sh` skips JSONL rows with missing/invalid timestamps and malformed or truncated lines while retaining valid rows in the rollup; tests verify the command remains successful and reports valid usage
 - [ ] T13 (standard) — monitor.sh: triage prompt renders "DEEP-DIVE QUEUE: enabledopus." when deep-dive is on (Fixes #60)
