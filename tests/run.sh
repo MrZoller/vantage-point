@@ -5136,6 +5136,27 @@ PY
   assert_contains "a script/img-only denylist renderer is rejected" "$out" "PICKED False"
   assert_contains "no live <style> reaches the page" "$out" "LIVESTYLE False"
 
+  # An INLINE-ONLY filter -- strips raw tags mid-line but preserves start-of-line HTML
+  # blocks -- must be rejected by the canary's block-context probes: CommonMark parses
+  # the two through separate paths, and a surviving block <style> is live CSS.
+  local repo5="$TMP/pcanary5"
+  mkdir -p "$repo5/bin" "$repo5/stub" "$repo5/state" "$repo5/kb"
+  cp "$ROOT/bin/portal.py" "$repo5/bin/"
+  printf '#!/usr/bin/env bash\nsed -E "s/(.)<[^>]*>/\\1/g"\n' > "$repo5/stub/cmark-gfm"
+  chmod +x "$repo5/stub/cmark-gfm"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo5" && PATH="$repo5/stub:$PATH" python3 - "$repo5/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("PICKED", m._safe_renderer())
+body = m.render_markdown("text\n\n<style>\nbody{display:none}\n</style>\n")
+print("LIVEBLOCK", "<style" in body.lower())
+PY
+)"
+  assert_contains "an inline-only filter is rejected by the block canary" "$out" "PICKED False"
+  assert_contains "no live block <style> reaches the page" "$out" "LIVEBLOCK False"
+
   # The verdict must be pinned to the FILE that was probed, not the name: replace the
   # winning stub in place (brew upgrade's shape) and the next render has to notice,
   # re-probe, and refuse the now-unsafe binary instead of riding the cached verdict.

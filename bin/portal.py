@@ -1328,8 +1328,14 @@ RENDERERS = (("pandoc", ["-f", "gfm-raw_html", "-t", "html"]),
 # surviving <style> can restyle or blank the whole page); and <vpcanary> is a made-up
 # element no denylist has ever heard of, so a filter that strips known-bad tags while
 # passing unknown raw HTML through is caught by the sentinel it cannot have listed.
+# ...and in BOTH parsing contexts: CommonMark handles inline HTML and start-of-line
+# HTML blocks through separate paths, so the same tags appear once inline (behind the
+# "canary " prefix) and once as blank-line-delimited blocks at column 0 -- a renderer
+# that suppresses only one context is rejected by the survivor from the other.
 RAW_HTML_CANARY = ("canary <script>alert(1)</script> <img src=x onerror=alert(2)> "
-                   "<style>p{}</style> <vpcanary>x</vpcanary>\n")
+                   "<style>p{}</style> <vpcanary>x</vpcanary>\n"
+                   "\n<style>\np{}\n</style>\n"
+                   "\n<vpcanary>\nblock\n</vpcanary>\n")
 
 _RENDERER = None      # None = not probed yet; False = nothing on the chain is safe
 _RENDERER_ID = None   # the winner's (path, mtime_ns, size, ino, dev) at probe time
