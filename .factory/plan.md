@@ -70,7 +70,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
   - pr: 99
 - [!] T22 (standard) — monitor.sh: stale-lock reclaim race can leave two monitors running concurrently (Fixes #51)
   - acceptance: `bin/monitor.sh` serializes stale-lock reclamation, re-verifies the inspected owner/token before removing a lock, preserves final `mkdir` ownership arbitration, and reclaims an abandoned reclaim mutex after the setup grace; a contention test proves two reclaimers cannot both own the monitor lock
-- [R] T23 (standard) — bootstrap.sh: a successful run exits 1 whenever no draft summary was written (Fixes #50)
+- [x] T23 (standard) — bootstrap.sh: a successful run exits 1 whenever no draft summary was written (Fixes #50)
   - acceptance: `bin/bootstrap.sh` exits successfully when synthesis writes `profile.draft.yaml` without the optional summary, still prints the appropriate completion guidance, and has an end-to-end test for a draft-without-summary stub
   - pr: 100
 - [ ] T24 (standard) — webhook.py: a redirect silently drops the report payload, then reports success (Fixes #49)
@@ -81,6 +81,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
   - acceptance: confirmed non-blocking review findings parked during backlog delivery are collected here and shipped together when the batch is made runnable
   - PR #82: make Review and dossier latest-row readers reserve IDs whose newest seen row is `dropped`, so older surfaced rows cannot reappear for grading.
   - PR #82: retain dropped tombstone state (or distinguish it from an ordinary pruned surfaced record) for the calibration fallback after `seen.jsonl` pruning.
+  - PR #100: make the `NO_SUMMARY` bootstrap regression assert `state/.draft-complete`, preserving the documented reviewability marker invariant.
 
 ## Risks
 
