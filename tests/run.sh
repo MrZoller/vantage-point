@@ -3212,6 +3212,7 @@ SH
     "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"id\":\"h-soon\",\"entity\":\"Competitor B\",\"event\":\"Q2 earnings\",\"due\":\"$soon\",\"due_precision\":\"day\",\"due_text\":\"in 10 days\",\"status\":\"pending\",\"source\":\"https://x\"}" \
     > "$repo/state/horizon.jsonl"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
   report="$repo/kb/$(date +%F).weekly.md"
   assert_contains "announces the appended section" "$out" "appended the Coming up section"
@@ -3641,6 +3642,7 @@ with open(sys.argv[2], "w") as f:
                             "event_type": "x", "last_seen": "2026-01-01",
                             "flagged": "2026-01-02"}) + "\n")
 PY
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
   assert_contains "an oversized flag log is compacted" "$out" "compacted state/quiet.jsonl"
