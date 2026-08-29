@@ -280,6 +280,7 @@ if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
   # whole check on Linux. BSD already fails it; this makes both platforms agree.
   if [ -z "$LAST_BOOT" ]; then
     boot_epoch=""
+    echo "[monitor:$MODE] note: profile has no last_bootstrapped - skipping staleness check" >&2
   else
     boot_epoch="$(date -d "$LAST_BOOT" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$LAST_BOOT" +%s 2>/dev/null || true)"
   fi
@@ -296,7 +297,7 @@ if [ -n "$REFRESH_DAYS" ] && [ "$REFRESH_DAYS" -gt 0 ]; then
       echo "[monitor:$MODE] WARNING: profile is ${age_days}d old (> profile_refresh_days=$REFRESH_DAYS) - re-run bin/bootstrap.sh to refresh" >&2
       STALE_NOTE="${age_days}d old (\`governance.profile_refresh_days\` is $REFRESH_DAYS)"
     fi
-  else
+  elif [ -n "$LAST_BOOT" ]; then
     echo "[monitor:$MODE] note: couldn't parse profile last_bootstrapped ('$LAST_BOOT') - skipping staleness check" >&2
   fi
 fi
