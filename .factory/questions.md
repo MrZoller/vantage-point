@@ -19,3 +19,16 @@ Options considered: A) proceed — fix the race in place per issue #51's sketch;
 the later extraction inherits the fixed reclaim / B) hold T22 until the
 lock-lib design lands / C) drop T22 into the extraction work itself.
 **A:**
+
+## Q2 (task T12, open; parked branch: factory/t12-tolerant-usage-log) — Should usage harden every numeric field or keep T12 scoped to damaged JSON and timestamps?
+Context: T12 now parses `runs.log` line by line and its full suite passes, but
+the required second panel blocked because a valid JSON row with a current
+timestamp and a string-valued cost/turn field can still abort aggregation.
+That case is broader than issue #61's malformed/truncated JSON and timestamp
+acceptance, while the documentation update made a general malformed-record
+tolerance promise. Protocol forbids a third panel attempt without a decision.
+Options considered: A) broaden T12 by treating every non-numeric aggregate
+field as zero and test all usage totals / B) keep the issue scope and narrow
+the new documentation to JSON/timestamp tolerance / C) drop the documentation
+update and ship only the exact issue #61 fix.
+**A:**
