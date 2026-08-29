@@ -5,7 +5,7 @@
   "plan_approved": true,
   "current_task": "T24",
   "branch": "factory/t24-refuse-webhook-redirects",
-  "pr": null,
+  "pr": 101,
   "hold": false,
-  "updated": "2026-08-29T16:25:35Z"
+  "updated": "2026-08-29T16:42:35Z"
 }
