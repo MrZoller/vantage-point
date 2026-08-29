@@ -600,7 +600,7 @@ log_usage triage "$RUN_JSON"
 # ---- deep-dive pass (optional; stronger model on triage's top survivors) ----
 # Runs only when models.deepdive is set AND triage produced a report with queued
 # candidates - so most days there's no second call and cost is unchanged.
-if [ -n "$DEEPDIVE_MODEL" ] && [ -s "$RUN_REPORT" ] && [ -s "$QUEUE" ]; then
+if [ -n "$DEEPDIVE_MODEL" ] && [ "$DEEPDIVE_MAX" -gt 0 ] && [ -s "$RUN_REPORT" ] && [ -s "$QUEUE" ]; then
   # Enforce the cost guard in code: never investigate more than deepdive_max_items,
   # no matter what triage queued.
   head -n "$DEEPDIVE_MAX" "$QUEUE" > "$QUEUE.tmp" && mv "$QUEUE.tmp" "$QUEUE"

@@ -1264,6 +1264,32 @@ test_deepdive_disabled() {
 }
 test_deepdive_disabled
 
+echo "== monitor.sh: deep-dive max items zero skips a non-empty queue =="
+test_deepdive_zero_max_items() {
+  local repo="$TMP/ddzerorepo" out rc dd="$TMP/dd_ran_zero"
+  make_fake_repo "$repo"
+  # Keep the deep-dive model enabled and let the two-pass stub create its queued item;
+  # only the explicit zero cap should prevent the second Claude invocation.
+  sed -i.bak 's/^  deepdive_max_items: 5$/  deepdive_max_items: 0/' "$repo/monitor-config.yaml" \
+    && rm -f "$repo/monitor-config.yaml.bak"
+  write_twopass_stub "$repo"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( DD_MARKER="$dd" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "zero deepdive_max_items run exits 0" "0" "$rc"
+  if [ -f "$dd" ]; then
+    fail "deep-dive pass is NOT invoked when the explicit item cap is zero"
+  else
+    pass "deep-dive pass is NOT invoked when the explicit item cap is zero"
+  fi
+  if [ -s "$repo/kb/$(date +%F).daily.md" ]; then
+    pass "triage's non-empty report is still promoted"
+  else
+    fail "triage's non-empty report is still promoted"
+  fi
+}
+test_deepdive_zero_max_items
+
 echo "== monitor.sh: a failed deep-dive keeps the triage report =="
 test_deepdive_failure() {
   local repo="$TMP/ddfailrepo" out rc
