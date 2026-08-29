@@ -3128,6 +3128,129 @@ PYSRV
 }
 test_fetch_redirect_entry_links
 
+echo "== fetch.py: bounded slow and oversized feeds do not block later feeds =="
+test_fetch_limits() {
+  local srv="$TMP/fetch-limits-httpd.py" ready="$TMP/fetch-limits.ready" log="$TMP/fetch-limits.log"
+  local pid port rc err out started elapsed
+  # This deliberately serves both pathological feeds from a local, threaded server:
+  # while the slow handler is still sleeping after the client abandons it, the healthy
+  # handler must remain available to prove the sweep got to its following feed.
+  cat > "$srv" <<'PY'
+import socketserver, sys, time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class _Quiet(HTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+
+class S(socketserver.ThreadingMixIn, _Quiet):
+    daemon_threads = True
+
+GOOD = (b'<?xml version="1.0"?><rss version="2.0"><channel><item>'
+        b'<title>Following feed</title><link>https://example.test/following</link>'
+        b'</item></channel></rss>')
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/slow.xml":
+            # Each byte arrives well inside urllib's existing per-read 20-second
+            # timeout. Only a total request deadline can reject this response.
+            self.send_response(200)
+            self.send_header("Content-Type", "application/xml")
+            self.end_headers()
+            self.wfile.write(b'<?xml version="1.0"?><rss version="2.0"><channel><!--')
+            self.wfile.flush()
+            try:
+                for _ in range(24):
+                    time.sleep(1)
+                    self.wfile.write(b' ')
+                    self.wfile.flush()
+                self.wfile.write(b'--><item><title>Slow feed</title><link>https://example.test/slow</link></item></channel></rss>')
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        if self.path == "/oversized.xml":
+            # 6 MiB is intentionally above the documented 5 MiB feed-response cap,
+            # but remains small enough to be a cheap local fixture.
+            body = (b'<?xml version="1.0"?><rss version="2.0"><channel><!--' +
+                    b'x' * (6 * 1024 * 1024) +
+                    b'--><item><title>Oversized feed</title><link>https://example.test/oversized</link></item></channel></rss>')
+            self.send_response(200)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/xml")
+        self.send_header("Content-Length", str(len(GOOD)))
+        self.end_headers()
+        self.wfile.write(GOOD)
+    def log_message(self, *a):
+        pass
+
+httpd = S(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write(str(httpd.server_address[1]))
+httpd.serve_forever()
+PY
+  python3 "$srv" "$ready" > "$log" 2>&1 &
+  pid=$!
+  if ! wait_server "$ready" "$pid" "$log"; then
+    fail "limited-feed server came up"; stop_server "$pid"; return
+  fi
+  port="$SERVER_PORT"
+
+  cat > "$TMP/slow-feed-limits.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/slow.xml
+      - http://127.0.0.1:$port/good.xml
+YAML
+  err="$TMP/slow-feed-limits.err"
+  started="$(python3 -c 'import time; print(time.monotonic())')"
+  python3 "$ROOT/bin/fetch.py" --out "$TMP/slow-feed-limits.jsonl" \
+    "$TMP/slow-feed-limits.yaml" 2> "$err"; rc=$?
+  elapsed="$(python3 - "$started" <<'PY'
+import sys, time
+print("%.1f" % (time.monotonic() - float(sys.argv[1])))
+PY
+)"
+  assert_eq "a slow-drip feed leaves the sweep successful" "0" "$rc"
+  assert_contains "a slow-drip feed is a per-feed warning" "$(cat "$err")" "slow.xml failed"
+  assert_contains "a slow-drip failure does not prevent the following feed" \
+    "$(cat "$TMP/slow-feed-limits.jsonl" 2>/dev/null)" "Following feed"
+  # The fixture takes 24 seconds to finish without a total deadline. Leave a little
+  # scheduler margin over the existing 20-second request budget, but not enough for
+  # that old per-read-only behavior to pass.
+  if python3 - "$elapsed" <<'PY'
+import sys
+sys.exit(0 if float(sys.argv[1]) < 23 else 1)
+PY
+  then pass "a slow-drip feed is stopped by the total wall-clock deadline ($elapsed s)"
+  else fail "a slow-drip feed is stopped by the total wall-clock deadline ($elapsed s)"; fi
+
+  cat > "$TMP/oversized-feed-limits.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/oversized.xml
+      - http://127.0.0.1:$port/good.xml
+YAML
+  err="$TMP/oversized-feed-limits.err"
+  python3 "$ROOT/bin/fetch.py" --out "$TMP/oversized-feed-limits.jsonl" \
+    "$TMP/oversized-feed-limits.yaml" 2> "$err"; rc=$?
+  stop_server "$pid"
+  assert_eq "an oversized feed leaves the sweep successful" "0" "$rc"
+  assert_contains "an oversized feed is a per-feed warning" "$(cat "$err")" "oversized.xml failed"
+  out="$(cat "$TMP/oversized-feed-limits.jsonl" 2>/dev/null)"
+  assert_contains "an oversized failure does not prevent the following feed" "$out" "Following feed"
+  assert_not_contains "an oversized feed emits no candidate" "$out" "Oversized feed"
+}
+test_fetch_limits
+
 echo "== fetch.py: --health tracks per-feed sweep health across runs =="
 test_fetch_health() {
   local dir="$TMP/feeds-h" err rc port fh="$TMP/feedhealth.json" ready="$TMP/static.health.ready"

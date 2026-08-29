@@ -41,9 +41,10 @@ Treat the open GitHub issue tracker as the external specification and keep this 
   - pr: 90
 - [!] T12 (standard) — usage.sh: one runs.log row without a valid timestamp aborts the whole rollup (Fixes #61)
   - acceptance: `bin/usage.sh` skips JSONL rows with missing/invalid timestamps and malformed or truncated lines while retaining valid rows in the rollup; tests verify the command remains successful and reports valid usage
-- [~] T13 (standard) — monitor.sh: triage prompt renders "DEEP-DIVE QUEUE: enabledopus." when deep-dive is on (Fixes #60)
+- [x] T13 (standard) — monitor.sh: triage prompt renders "DEEP-DIVE QUEUE: enabledopus." when deep-dive is on (Fixes #60)
   - acceptance: `bin/monitor.sh` renders the triage prompt's deep-dive state as exactly `enabled` or `disabled`; tests cover a configured model without concatenating its name into the state
-- [ ] T14 (standard) — fetch.py: no total deadline or size cap on feed fetches — a slow-drip feed stalls the whole run (Fixes #59)
+  - pr: 91
+- [~] T14 (standard) — fetch.py: no total deadline or size cap on feed fetches — a slow-drip feed stalls the whole run (Fixes #59)
   - acceptance: `bin/fetch.py` reads feeds with a total wall-clock deadline and finite byte cap, treating either breach as a per-feed warning/failure while continuing subsequent feeds; tests cover slow-drip and oversized responses
 - [ ] T15 (standard) — demo-bundle.sh: a broken symlink in state/ or kb/ aborts the build, leaving a partial bundle (Fixes #58)
   - acceptance: `bin/demo-bundle.sh` handles dangling symlinks in `state/` or `kb/` with a warning/skip rather than aborting, and still produces the launcher, `START-HERE.md`, copied content, relocation, smoke-test result, and tarball expected of a completed bundle

@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T13",
-  "branch": "factory/t13-deep-dive-state",
+  "current_task": "T14",
+  "branch": "factory/t14-feed-fetch-limits",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T08:45:18Z"
+  "updated": "2026-08-29T09:10:13Z"
 }
