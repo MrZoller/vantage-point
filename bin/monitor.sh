@@ -221,6 +221,8 @@ else
 fi
 DEEPDIVE_MODEL_ARGS=()
 [ -n "$DEEPDIVE_MODEL" ] && DEEPDIVE_MODEL_ARGS=(--model "$DEEPDIVE_MODEL")
+DEEPDIVE_STATE=disabled
+[ -n "$DEEPDIVE_MODEL" ] && DEEPDIVE_STATE=enabled
 EDITOR_MODEL_ARGS=()
 [ -n "$EDITOR_MODEL" ] && EDITOR_MODEL_ARGS=(--model "$EDITOR_MODEL")
 
@@ -563,7 +565,7 @@ above - including the show_borderline / 'Considered (below threshold)' handling.
 For a daily run, if those rules produce no report at all (no items AND no changes),
 write NOTHING to the report file and print exactly NO_MATERIAL_ITEMS.
 
-DEEP-DIVE QUEUE: ${DEEPDIVE_MODEL:+enabled}${DEEPDIVE_MODEL:-disabled}. When enabled,
+DEEP-DIVE QUEUE: $DEEPDIVE_STATE. When enabled,
 also append your highest-scoring surfaced items - those with score >= $DEEPDIVE_THRESHOLD,
 at most $DEEPDIVE_MAX of them, highest first - to ./$QUEUE, one JSON object per line:
 {\"url\":...,\"title\":...,\"signal\":...,\"score\":...,\"so_what\":...}. A separate

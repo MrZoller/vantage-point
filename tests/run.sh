@@ -1226,6 +1226,7 @@ case "$*" in
     [ -n "${DD_EMPTY:-}" ] && : > "kb/.$(date +%F).daily.partial.md"   # simulate emptying the report
     printf '{"num_turns":2,"total_cost_usd":0.0}\n'; exit "${DD_EXIT:-0}" ;;
   *)                                        # the triage pass
+    [ -n "${TRIAGE_PROMPT:-}" ] && printf '%s\n' "$2" > "$TRIAGE_PROMPT"
     printf '# report\n* item\n' > "kb/.$(date +%F).daily.partial.md"
     printf '{"url":"u","title":"t","signal":"opportunity","score":0.9,"so_what":"x"}\n' \
       > "state/.deepdive.daily.queue.jsonl"
@@ -1237,13 +1238,15 @@ SH
 
 echo "== monitor.sh: deep-dive pass runs on queued high-scorers when models.deepdive is set =="
 test_deepdive_enabled() {
-  local repo="$TMP/ddrepo" out rc dd="$TMP/dd_ran"
+  local repo="$TMP/ddrepo" out rc dd="$TMP/dd_ran" prompt="$TMP/dd_enabled_prompt"
   make_fake_repo "$repo"                    # config has models.deepdive: opus
   write_twopass_stub "$repo"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
-  out="$( DD_MARKER="$dd" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
-          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  out="$( DD_MARKER="$dd" TRIAGE_PROMPT="$prompt" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+           bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
   assert_eq "run exits 0" "0" "$rc"
+  assert_contains "triage prompt marks the deep-dive queue enabled" "$(cat "$prompt" 2>/dev/null)" "DEEP-DIVE QUEUE: enabled."
+  assert_not_contains "enabled deep-dive state does not include its model" "$(cat "$prompt" 2>/dev/null)" "DEEP-DIVE QUEUE: enabledopus."
   if [ -f "$dd" ]; then pass "deep-dive pass was invoked"; else fail "deep-dive pass was invoked"; fi
   assert_contains "logs the deep-dive pass to runs.log" "$(cat "$repo/state/runs.log" 2>/dev/null)" '"pass":"deepdive"'
   if [ -f "$repo/state/.deepdive.daily.queue.jsonl" ]; then fail "deep-dive queue cleaned up"; else pass "deep-dive queue cleaned up"; fi
@@ -1252,14 +1255,15 @@ test_deepdive_enabled
 
 echo "== monitor.sh: no deep-dive pass when models.deepdive is unset =="
 test_deepdive_disabled() {
-  local repo="$TMP/ddoffrepo" out rc dd="$TMP/dd_ran_off"
+  local repo="$TMP/ddoffrepo" out rc dd="$TMP/dd_ran_off" prompt="$TMP/dd_disabled_prompt"
   make_fake_repo "$repo"
   sed -i.bak '/^  deepdive: opus$/d' "$repo/monitor-config.yaml" && rm -f "$repo/monitor-config.yaml.bak"
   write_twopass_stub "$repo"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
-  out="$( DD_MARKER="$dd" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
-          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  out="$( DD_MARKER="$dd" TRIAGE_PROMPT="$prompt" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+           bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
   assert_eq "run exits 0" "0" "$rc"
+  assert_contains "triage prompt marks the deep-dive queue disabled" "$(cat "$prompt" 2>/dev/null)" "DEEP-DIVE QUEUE: disabled."
   if [ -f "$dd" ]; then fail "deep-dive pass NOT invoked when disabled"; else pass "deep-dive pass NOT invoked when disabled"; fi
 }
 test_deepdive_disabled
