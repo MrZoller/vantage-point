@@ -114,7 +114,14 @@ QUIET_FACTOR="$(cfg_get tracking quiet_factor)"
 QUIET_MIN_EVENTS="$(cfg_get tracking quiet_min_events)"
 case "$QUIET_FACTOR"     in ''|*[!0-9.]*|*.*.*) QUIET_FACTOR=3 ;; esac
 awk -v f="$QUIET_FACTOR" 'BEGIN{exit !(f > 0)}' || QUIET_FACTOR=3
-case "$QUIET_MIN_EVENTS" in ''|0|*[!0-9]*) QUIET_MIN_EVENTS=4 ;; esac
+# Accept decimal values containing at least one non-zero digit. This avoids Bash
+# arithmetic's leading-zero/octal pitfall while making every spelling of zero use
+# the documented default, just like portal.py.
+case "$QUIET_MIN_EVENTS" in
+  ''|*[!0-9]*) QUIET_MIN_EVENTS=4 ;;
+  *[1-9]*) ;;
+  *) QUIET_MIN_EVENTS=4 ;;
+esac
 
 # ---- run budgets (budgets: block; all optional with the long-standing defaults) ----
 # On a Max subscription the spend is subscription headroom, not API billing, so the

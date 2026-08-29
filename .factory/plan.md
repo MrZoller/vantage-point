@@ -15,9 +15,10 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T3 (standard) — portal.py: calibration coverage counts first-record-per-id while Review/dossiers use newest — dropped items inflate the denominator (Fixes #70)
   - acceptance: `bin/portal.py` builds calibration and source surfaced counts from the newest record per id and excludes ids whose newest record is `signal: "dropped"`, matching Review and dossier visibility; portal tests cover a surfaced-then-dropped id
   - pr: 82
-- [~] T4 (standard) — portal.py: Coming-up card uses local date.today() while every other portal date is UTC (Fixes #69)
+- [x] T4 (standard) — portal.py: Coming-up card uses local date.today() while every other portal date is UTC (Fixes #69)
   - acceptance: `bin/portal.py` computes the Coming-up card date in UTC so expectation timing and cadence/quiet displays use the same day boundary; tests cover a local-date/UTC-date boundary
-- [ ] T5 (standard) — portal.py vs monitor.sh: tracking.quiet_min_events: 0 normalized differently — portal shows quiet flags the monitor never raises (Fixes #68)
+  - pr: 83
+- [~] T5 (standard) — portal.py vs monitor.sh: tracking.quiet_min_events: 0 normalized differently — portal shows quiet flags the monitor never raises (Fixes #68)
   - acceptance: `bin/portal.py` normalizes zero or invalid `tracking.quiet_min_events` to 4, matching `bin/monitor.sh`, and tests show the portal and monitor apply the same threshold
 - [ ] T6 (standard) — portal.py: grade links never URL-encode the item id, so ids with URL metacharacters break or mis-route grading (Fixes #67)
   - acceptance: `bin/portal.py` percent-encodes review grade and missed-link item ids with no safe metacharacters; tests verify ids containing `&`, `=`, `%`, `#`, `+`, and spaces reach the intended record without query splitting

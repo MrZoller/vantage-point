@@ -3650,6 +3650,100 @@ PY
 }
 test_monitor_quiet_compact
 
+echo "== portal.py and monitor.sh: invalid quiet_min_events uses the default threshold =="
+test_quiet_min_events_normalization() {
+  local repo="$TMP/quietminevents" base="$TMP/quiet_min_events_base.yaml" obsbase="$TMP/quiet_min_events_obs.jsonl" out value label unicode_digit overlong_digits
+  make_fake_repo "$repo"
+  # Three evenly-spaced events make a valid cadence only if the configured minimum is
+  # accepted below the documented default of four. Keep the last event far enough back
+  # that it would otherwise be quiet, so an empty result proves the event threshold.
+  python3 - "$repo/state/observations.jsonl" <<'PY'
+import json, sys
+from datetime import datetime, timedelta, timezone
+today = datetime.now(timezone.utc).date()
+with open(sys.argv[1], "w") as f:
+    for d in (132, 111, 90):
+        f.write(json.dumps({"timestamp": (today - timedelta(days=d)).isoformat() + "T07:00:00Z",
+                            "entity": "Competitor Q", "metric": "event",
+                            "event_type": "release", "value": "release",
+                            "source": "https://q.example/releases"}) + "\n")
+PY
+  cp "$repo/monitor-config.yaml" "$base"
+  cp "$repo/state/observations.jsonl" "$obsbase"
+  quiet_portal_count() {
+    python3 - "$repo/bin/portal.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("CAD", len(m.entity_cadence("Competitor Q")))
+PY
+  }
+
+  # Every spelling of zero, a negative number, and non-numeric text are invalid to
+  # monitor.sh. The portal must fall back to the same default (4), rather than
+  # displaying this three-event cadence as a quiet finding.
+  unicode_digit="$(printf '\331\243')" # U+0663 ARABIC-INDIC DIGIT THREE
+  overlong_digits="$(python3 -c 'print("1" * 4301)')"
+  for value in 0 00 000 -1 invalid "$unicode_digit" "$overlong_digits"; do
+    label="$value"
+    [ "${#label}" -le 100 ] || label="overlong digits"
+    cp "$base" "$repo/monitor-config.yaml"
+    cp "$obsbase" "$repo/state/observations.jsonl"
+    python3 - "$repo/monitor-config.yaml" "$value" <<'PY'
+import sys
+path, value = sys.argv[1:]
+with open(path) as f:
+    config = f.read()
+with open(path, "w") as f:
+    f.write(config.replace("tracking:\n", "tracking:\n  quiet_min_events: " + value + "\n", 1))
+PY
+    out="$(quiet_portal_count)"
+    assert_eq "portal defaults invalid quiet_min_events=$label to four events" "CAD 0" "$out"
+    python3 - "$repo/state/observations.jsonl" <<'PY'
+import json, sys
+from datetime import datetime, timedelta, timezone
+with open(sys.argv[1], "a") as f:
+    f.write(json.dumps({"timestamp": (datetime.now(timezone.utc).date() - timedelta(days=153)).isoformat() + "T07:00:00Z",
+                        "entity": "Competitor Q", "metric": "event",
+                        "event_type": "release", "value": "release",
+                        "source": "https://q.example/releases"}) + "\n")
+PY
+    out="$(quiet_portal_count)"
+    assert_eq "portal accepts four events after invalid quiet_min_events=$label" "CAD 1" "$out"
+  done
+
+  # The monitor normalizes every spelling of zero to four. With the identical
+  # three-event fixture it must likewise produce no quiet detection, demonstrating
+  # parity at the public boundaries rather than merely comparing implementation values.
+  cp "$base" "$repo/monitor-config.yaml"
+  cp "$obsbase" "$repo/state/observations.jsonl"
+  python3 - "$repo/monitor-config.yaml" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    config = f.read()
+with open(path, "w") as f:
+    f.write(config.replace("tracking:\n", "tracking:\n  quiet_min_events: 00\n", 1))
+PY
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
+  assert_contains "monitor completes with the default zero-padded quiet_min_events threshold" "$out" "nothing material"
+  assert_not_contains "monitor also requires four events for zero-padded quiet_min_events" "$out" "quiet detection:"
+  python3 - "$repo/state/observations.jsonl" <<'PY'
+import json, sys
+from datetime import datetime, timedelta, timezone
+with open(sys.argv[1], "a") as f:
+    f.write(json.dumps({"timestamp": (datetime.now(timezone.utc).date() - timedelta(days=153)).isoformat() + "T07:00:00Z",
+                        "entity": "Competitor Q", "metric": "event",
+                        "event_type": "release", "value": "release",
+                        "source": "https://q.example/releases"}) + "\n")
+PY
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
+  assert_contains "monitor accepts four events for zero-padded quiet_min_events" "$out" "quiet detection: 1 entity(ies) silent past their baseline"
+}
+test_quiet_min_events_normalization
+
 echo "== portal.py: dossier Cadence line shows the baseline; quiet styled; off when disabled =="
 test_portal_cadence() {
   local repo="$TMP/pcad" out
