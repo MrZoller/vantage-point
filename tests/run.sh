@@ -2175,6 +2175,11 @@ test_portal_feedback_post_security() {
   fi
   assert_contains "trusted localhost POST grade records its item" \
     "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"id": "post-grade"'
+  local forwarded_port=49152 code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Host: localhost:$forwarded_port" -H "Origin: http://localhost:$forwarded_port" \
+    --data 'id=post-grade&v=down' "http://127.0.0.1:$port/grade" || true)"
+  assert_eq "a POST through a different browser-facing forwarded port succeeds" "303" "$code"
   cp "$repo/state/feedback.jsonl" "$repo/feedback.before-missed-post"
   curl -s -o /dev/null -X POST -H "Host: localhost:$port" -H "Origin: http://localhost:$port" \
     --data-urlencode 'url=https://example.com/legitimate-miss' --data-urlencode 'note=reported locally' \
@@ -2200,7 +2205,6 @@ test_portal_feedback_post_security() {
     fail "forged cross-origin POST grade and missed requests do not append feedback"
   fi
 
-  local code
   code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: localhost:$port" \
     --data 'id=post-grade&v=down' "http://127.0.0.1:$port/grade" || true)"
   assert_eq "a POST without an Origin is rejected" "403" "$code"

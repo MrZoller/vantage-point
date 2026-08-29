@@ -2104,13 +2104,17 @@ class Handler(BaseHTTPRequestHandler):
 
         Loopback binding prevents remote connections, but not DNS rebinding: a
         hostile hostname can resolve to 127.0.0.1 and reach this handler with an
-        attacker-controlled Host. The selected port is part of the authority so
-        another local service cannot supply a matching Origin for this portal.
+        attacker-controlled Host. The port may differ after SSH or VS Code
+        forwarding, so trust the loopback hostname and bind the Origin to the
+        complete browser-facing authority separately.
         """
         hosts = self.headers.get_all("Host") or []
-        port = self.server.server_address[1]
-        return len(hosts) == 1 and hosts[0] in (
-            "localhost:%d" % port, "127.0.0.1:%d" % port)
+        if len(hosts) != 1:
+            return False
+        host, separator, port = hosts[0].partition(":")
+        return (host in ("localhost", "127.0.0.1")
+                and (not separator or (port.isascii() and port.isdigit()
+                                       and 0 < int(port) <= 65535)))
 
     def _authorize(self, state_change=False):
         if not self._trusted_host():
