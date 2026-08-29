@@ -1483,10 +1483,19 @@ def render_markdown(md):
 
 # ----------------------------------------------------------------------------- views
 
-def shell(active, inner, title=""):
+def shell(active, inner, title="", static=False):
+    nav_items = NAV
+    nav_active = active
+    if static:
+        # A static export contains only the Overview and its report/entity sections.
+        # Link within that document instead of advertising unavailable server routes.
+        nav_items = [("#overview", "Overview"), ("#reports", "Reports"),
+                     ("#entities", "Entities")]
+        nav_active = "#overview"
     nav = "".join(
-        '<a href="%s"%s>%s</a>' % (path, ' class="on"' if path == active else "", esc(label))
-        for path, label in NAV)
+        '<a href="%s"%s>%s</a>'
+        % (path, ' class="on"' if path == nav_active else "", esc(label))
+        for path, label in nav_items)
     page_title = "Vantage Point" + (" — " + title if title else "")
     return ("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
@@ -1525,7 +1534,7 @@ def overview_inner(static=False):
     parts.append(coming_up_card(static=static))
     parts.append(feed_health_card())
 
-    parts.append('<div class="card"><h2>Tracked entities</h2>')
+    parts.append('<div class="card" id="entities"><h2>Tracked entities</h2>')
     if rows:
         parts.append('<table><tr><th>Entity</th><th>Metric</th><th>Latest</th>'
                      '<th>Recent</th><th>As of</th></tr>')
@@ -1557,7 +1566,7 @@ def overview_inner(static=False):
                             esc(e.get("event_type", "event")), esc(note)))
         parts.append('</ul></div>')
 
-    parts.append('<div class="card"><h2>Recent reports</h2>')
+    parts.append('<div class="card" id="reports"><h2>Recent reports</h2>')
     reports = list_reports()[:14]
     if reports:
         parts.append('<ul class="reportlist">')
@@ -2126,13 +2135,13 @@ class Handler(BaseHTTPRequestHandler):
 def export_static(out_path):
     """Write a standalone Overview snapshot (the old kb/index.html artifact)."""
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    body = ('<h1>Vantage Point</h1><p class="meta">generated %s &middot; '
+    body = ('<h1 id="overview">Vantage Point</h1><p class="meta">generated %s &middot; '
             '<em>static snapshot &mdash; run <code>./bin/portal.sh</code> for the live '
             'portal (reports, review, profile, config)</em></p>%s'
             % (esc(datetime.now().strftime("%Y-%m-%d %H:%M")), overview_inner(static=True)))
     tmp = out_path + ".tmp"
     with open(tmp, "wb") as f:
-        f.write(shell("/", body))
+        f.write(shell("/", body, static=True))
     os.replace(tmp, out_path)
     print("[portal] wrote %s" % out_path)
 
