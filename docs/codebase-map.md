@@ -149,11 +149,10 @@ to its own copied state.
   SMTP, launchd, or webhook services. [`tests/run.sh`](../tests/run.sh) stubs
   those boundaries and tests orchestration/failure paths instead.
 - Generated state is both the database and the audit trail, but JSONL is
-  agent-written and hand-editable. The sweep/portal/state readers intentionally
-  skip malformed lines -- protecting availability at the cost of silently
-  reduced calibration or history -- but the tolerance is not universal:
-  [`bin/usage.sh`](../bin/usage.sh) feeds `state/runs.log` to `jq -rs`, so a
-  single malformed row aborts the whole usage rollup (tracked in #61).
+  agent-written and hand-editable. The sweep/portal/state readers and
+  [`bin/usage.sh`](../bin/usage.sh) intentionally skip malformed lines --
+  protecting availability at the cost of silently reduced calibration,
+  history, or usage totals.
 - Feed health warns after repeated failures, but a dead feed does not fail a
   run. Coverage can therefore degrade until a human refreshes/removes the feed.
 - `tracking.quiet` and `tracking.horizon` surface candidates for judgment; they

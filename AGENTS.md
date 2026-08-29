@@ -47,7 +47,7 @@ Other useful entry points:
 - Use Bash/ubiquitous CLI tools and Python stdlib; do not add a YAML parser or other heavy dependency. Config options are optional and default with a stderr note rather than crashing.
 - The monitor refuses to run without `profile.yaml`. Bootstrap writes a draft and never promotes it: approval is the human `cp` step.
 - Optional deep-dive, editor, email, webhook, dashboard, feed-health, and deep-research stages are fail-safe and non-destructive; a failed optional stage must preserve a good report/draft.
-- State is append-oriented JSONL and mostly hand-editable. The sweep/portal/state readers skip malformed records, but not every reader is tolerant yet: [`bin/usage.sh`](bin/usage.sh) passes `state/runs.log` through `jq -rs`, so one malformed row aborts the whole rollup (tracked in #61). Bounded logs are pruned or compacted. Monitor runs share `state/.lock`; concurrent runs skip, and stale locks are reclaimed.
+- State is append-oriented JSONL and mostly hand-editable. The sweep, portal, state, and usage readers skip malformed records so one damaged row does not make their whole view unavailable. Bounded logs are pruned or compacted. Monitor runs share `state/.lock`; concurrent runs skip, and stale locks are reclaimed.
 - Reports are Markdown in `kb/`; empty daily/weekly runs are intentionally silent. Grades go to `state/feedback.jsonl`; post-bootstrap grades affect the next monitor run and are consolidated by the next bootstrap.
 - The approved profile is a competitive-intelligence artifact and stays uncommitted. Webhook URLs, recipient data, profiles, and accumulated reports belong only in ignored runtime files.
 
