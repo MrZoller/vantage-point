@@ -3531,10 +3531,14 @@ test_portal_cadence() {
   local repo="$TMP/pcad" out
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
   cp "$ROOT/bin/portal.py" "$ROOT/bin/cadence.py" "$repo/bin/"
+  # portal.entity_cadence() measures the silence against the UTC date, so the fixture
+  # has to be laid out in UTC too: built from the LOCAL date, the assertions below are
+  # off by a day whenever the two disagree (any evening west of Greenwich), which is
+  # invisible on the always-UTC CI runners and fails only on a developer's machine.
   python3 - "$repo/state/observations.jsonl" <<'PY'
 import json, sys
-from datetime import date, timedelta
-today = date.today()
+from datetime import datetime, timedelta, timezone
+today = datetime.now(timezone.utc).date()
 with open(sys.argv[1], "w") as f:
     for d in (153, 132, 111, 90):
         f.write(json.dumps({"timestamp": (today - timedelta(days=d)).isoformat() + "T07:00:00Z",
@@ -5055,6 +5059,197 @@ test_init_bootstrap_offer() {
   assert_contains "an explicit yes runs bootstrap" "$out" "BOOTSTRAP_STUB_RAN"
 }
 test_init_bootstrap_offer
+
+echo "== portal.py: the renderer must PROVE it neutralizes raw HTML (stubbed chain) =="
+# Stubs, not the real tools: the machine that serves the portal has pandoc, the CI
+# runners have none, and that asymmetry is exactly how a renderer silently passing raw
+# HTML through stayed invisible. Driving the chain with stubs puts the canary itself
+# under test everywhere the suite runs.
+test_portal_renderer_canary() {
+  local repo="$TMP/pcanary" out
+  mkdir -p "$repo/bin" "$repo/stub" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  # An UNSAFE renderer: hands stdin back untouched, which is what pandoc 3.9 does with
+  # `-f gfm-raw_html` -- it accepts the flag, exits 0, and still emits live markup.
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo/stub/pandoc"
+  # A SAFE renderer that ESCAPES rather than drops. Both are safe, and the canary has to
+  # accept this one: keying on the `onerror` text instead of the tag would reject a
+  # renderer for leaving the escaped canary's inert characters behind.
+  printf '#!/usr/bin/env bash\nsed -e "s/</\&lt;/g" -e "s/>/\&gt;/g"\n' > "$repo/stub/cmark-gfm"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo/stub/cmark"
+  chmod +x "$repo/stub/pandoc" "$repo/stub/cmark-gfm" "$repo/stub/cmark"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo" && PATH="$repo/stub:$PATH" python3 - "$repo/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+picked = m._safe_renderer()
+print("PICKED", picked[0] if picked else "none")
+print("LIVE", "<script" in m.render_markdown("body <script>alert(1)</script>\n").lower())
+PY
+)"
+  assert_contains "the passthrough renderer is rejected, the next one picked" "$out" "PICKED cmark-gfm"
+  assert_contains "the skipped renderer is named on stderr" "$out" "[portal] pandoc left raw HTML live"
+  assert_contains "no live <script> reaches the page" "$out" "LIVE False"
+
+  # Every renderer unsafe -> fall all the way through to the escaping light renderer
+  # rather than trusting the least-bad one.
+  local repo2="$TMP/pcanary2"
+  mkdir -p "$repo2/bin" "$repo2/stub" "$repo2/state" "$repo2/kb"
+  cp "$ROOT/bin/portal.py" "$repo2/bin/"
+  for r in pandoc cmark-gfm cmark; do
+    printf '#!/usr/bin/env bash\ncat\n' > "$repo2/stub/$r"
+    chmod +x "$repo2/stub/$r"
+  done
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo2" && PATH="$repo2/stub:$PATH" REPO2="$repo2" python3 - "$repo2/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("PICKED", m._safe_renderer())
+body = m.render_markdown("body <script>alert(1)</script>\n")
+print("LIVE", "<script" in body.lower())
+print("ESCAPED", "&lt;script&gt;" in body)
+# The negative verdict must age out, not stand forever: repair one renderer, expire the
+# TTL by hand, and the next call has to re-probe and find it -- the old per-call
+# discovery healed this by itself, so the cache may not regress it.
+stub = os.path.join(os.environ["REPO2"], "stub", "cmark")
+with open(stub, "w") as f:
+    f.write('#!/usr/bin/env bash\nsed -e "s/</\\&lt;/g" -e "s/>/\\&gt;/g"\n')
+os.chmod(stub, 0o755)
+print("STILLFALSE", m._safe_renderer() is False)   # TTL not expired yet
+m._RENDERER_RETRY = 0.0
+picked = m._safe_renderer()
+print("RECOVERED", picked[0] if picked else picked)
+print("RLIVE", "<script" in m.render_markdown("x <script>a</script>\n").lower())
+PY
+)"
+  assert_contains "no renderer is trusted when they all pass raw HTML" "$out" "PICKED False"
+  assert_contains "the light renderer serves it escaped" "$out" "ESCAPED True"
+  assert_contains "still no live <script> with the whole chain unsafe" "$out" "LIVE False"
+  assert_contains "a repaired renderer is NOT seen before the TTL expires" "$out" "STILLFALSE True"
+  assert_contains "an expired negative verdict re-probes and recovers" "$out" "RECOVERED cmark"
+  assert_contains "the recovered renderer still serves live-free" "$out" "RLIVE False"
+
+  # A DENYLIST renderer -- drops the famous tags (script/img) but passes unknown raw
+  # HTML through -- must be rejected by the canary's generic sentinel: under this
+  # portal's CSP a surviving <style> alone can restyle the whole page.
+  local repo4="$TMP/pcanary4"
+  mkdir -p "$repo4/bin" "$repo4/stub" "$repo4/state" "$repo4/kb"
+  cp "$ROOT/bin/portal.py" "$repo4/bin/"
+  printf '#!/usr/bin/env bash\nsed -E "s|<(/?)(script\|img)[^>]*>||g"\n' > "$repo4/stub/cmark-gfm"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo4/stub/pandoc"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo4/stub/cmark"
+  chmod +x "$repo4/stub/cmark-gfm" "$repo4/stub/pandoc" "$repo4/stub/cmark"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo4" && PATH="$repo4/stub:$PATH" python3 - "$repo4/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("PICKED", m._safe_renderer())
+body = m.render_markdown("body <style>p{display:none}</style>\n")
+print("LIVESTYLE", "<style" in body.lower())
+PY
+)"
+  assert_contains "a script/img-only denylist renderer is rejected" "$out" "PICKED False"
+  assert_contains "no live <style> reaches the page" "$out" "LIVESTYLE False"
+
+  # An INLINE-ONLY filter -- strips raw tags mid-line but preserves start-of-line HTML
+  # blocks -- must be rejected by the canary's block-context probes: CommonMark parses
+  # the two through separate paths, and a surviving block <style> is live CSS.
+  local repo5="$TMP/pcanary5"
+  mkdir -p "$repo5/bin" "$repo5/stub" "$repo5/state" "$repo5/kb"
+  cp "$ROOT/bin/portal.py" "$repo5/bin/"
+  printf '#!/usr/bin/env bash\nsed -E "s/(.)<[^>]*>/\\1/g"\n' > "$repo5/stub/cmark-gfm"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo5/stub/pandoc"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo5/stub/cmark"
+  chmod +x "$repo5/stub/cmark-gfm" "$repo5/stub/pandoc" "$repo5/stub/cmark"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo5" && PATH="$repo5/stub:$PATH" python3 - "$repo5/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("PICKED", m._safe_renderer())
+body = m.render_markdown("text\n\n<style>\nbody{display:none}\n</style>\n")
+print("LIVEBLOCK", "<style" in body.lower())
+PY
+)"
+  assert_contains "an inline-only filter is rejected by the block canary" "$out" "PICKED False"
+  assert_contains "no live block <style> reaches the page" "$out" "LIVEBLOCK False"
+
+  # A burst of concurrent first renders must trigger ONE probe chain, not one per
+  # thread: each candidate probe is a subprocess with a 20s budget, so a pile-on is a
+  # real backlog. Losing threads render via the escaping light renderer immediately.
+  local repo6="$TMP/pcanary6" count6="$TMP/pcanary6.count"
+  mkdir -p "$repo6/bin" "$repo6/stub" "$repo6/state" "$repo6/kb"
+  cp "$ROOT/bin/portal.py" "$repo6/bin/"
+  : > "$count6"
+  for r in pandoc cmark-gfm cmark; do
+    # shellcheck disable=SC2016  # $CANARY_COUNT must reach the stub unexpanded
+    printf '#!/usr/bin/env bash\nsleep 0.5\necho x >> "$CANARY_COUNT"\ncat\n' > "$repo6/stub/$r"
+    chmod +x "$repo6/stub/$r"
+  done
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo6" && PATH="$repo6/stub:$PATH" CANARY_COUNT="$count6" python3 - "$repo6/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, sys, threading
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+N = 6
+barrier = threading.Barrier(N)
+results = [None] * N
+def go(i):
+    barrier.wait()
+    results[i] = m.render_markdown("body <script>alert(1)</script>\n")
+ts = [threading.Thread(target=go, args=(i,)) for i in range(N)]
+for t in ts: t.start()
+for t in ts: t.join()
+print("ANYLIVE", any("<script" in r.lower() for r in results))
+print("ALLESCAPED", all("&lt;script&gt;" in r for r in results))
+PY
+)"
+  assert_contains "no thread of the burst serves live markup" "$out" "ANYLIVE False"
+  assert_contains "every thread of the burst serves the escaped body" "$out" "ALLESCAPED True"
+  local probes; probes="$(wc -l < "$count6" | tr -d ' ')"
+  assert_eq "a concurrent burst runs the probe chain once (3 candidates)" "3" "$probes"
+
+  # The verdict must be pinned to the FILE that was probed, not the name: replace the
+  # winning stub in place (brew upgrade's shape) and the next render has to notice,
+  # re-probe, and refuse the now-unsafe binary instead of riding the cached verdict.
+  local repo3="$TMP/pcanary3"
+  mkdir -p "$repo3/bin" "$repo3/stub" "$repo3/state" "$repo3/kb"
+  cp "$ROOT/bin/portal.py" "$repo3/bin/"
+  printf '#!/usr/bin/env bash\nsed -e "s/</\&lt;/g" -e "s/>/\&gt;/g"\n' > "$repo3/stub/cmark-gfm"
+  # The scenario is about cmark-gfm; pandoc and cmark are stubbed unsafe so a SAFE host
+  # binary of either name can never satisfy the chain and mask the swap under test.
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo3/stub/pandoc"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo3/stub/cmark"
+  chmod +x "$repo3/stub/cmark-gfm" "$repo3/stub/pandoc" "$repo3/stub/cmark"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo3" && PATH="$repo3/stub:$PATH" REPO3="$repo3" python3 - "$repo3/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+first = m.render_markdown("body <script>alert(1)</script>\n")
+print("PICKED1", (m._safe_renderer() or ("none",))[0].split("/")[-1] if m._safe_renderer() else "none")
+print("LIVE1", "<script" in first.lower())
+stub = os.path.join(os.environ["REPO3"], "stub", "cmark-gfm")
+with open(stub, "w") as f:
+    f.write("#!/usr/bin/env bash\ncat\n")
+os.chmod(stub, 0o755)
+second = m.render_markdown("body <script>alert(1)</script>\n")
+print("PICKED2", m._safe_renderer())
+print("LIVE2", "<script" in second.lower())
+print("ESCAPED2", "&lt;script&gt;" in second)
+PY
+)"
+  assert_contains "the safe stub is picked before the swap" "$out" "PICKED1 cmark-gfm"
+  assert_contains "renders live-free before the swap" "$out" "LIVE1 False"
+  assert_contains "the in-place swap is noticed" "$out" "changed on disk since it was probed"
+  assert_contains "the swapped-in passthrough is refused" "$out" "PICKED2 False"
+  assert_contains "no live <script> after the swap" "$out" "LIVE2 False"
+  assert_contains "the light renderer serves the post-swap render escaped" "$out" "ESCAPED2 True"
+}
+test_portal_renderer_canary
 
 echo
 echo "tests: $PASS passed, $FAIL failed"

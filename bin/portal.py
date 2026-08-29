@@ -29,6 +29,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone, timedelta, date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote
@@ -1313,28 +1315,169 @@ def _light_md(md):
     return "\n".join(out)
 
 
+# The renderer chain, in preference order. Each entry is asked to PROVE it neutralizes
+# raw HTML before it is trusted -- see _safe_renderer().
+RENDERERS = (("pandoc", ["-f", "gfm-raw_html", "-t", "html"]),
+             ("cmark-gfm", ["-e", "autolink", "-e", "table", "-e",
+                            "strikethrough", "-e", "tagfilter"]),
+             ("cmark", []))
+
+# Fed to a candidate renderer to see what it does with raw HTML. A renderer that leaves
+# any of these live is not used, whatever its flags claim. Four probes because they
+# catch different failure classes: <script> is the headline tag every filter drops;
+# <img onerror=> survives GFM tagfilter, which drops script but not img; <style> is the
+# tag that stays DANGEROUS under this portal's CSP (style-src 'unsafe-inline', so a
+# surviving <style> can restyle or blank the whole page); and <vpcanary> is a made-up
+# element no denylist has ever heard of, so a filter that strips known-bad tags while
+# passing unknown raw HTML through is caught by the sentinel it cannot have listed.
+# ...and in BOTH parsing contexts: CommonMark handles inline HTML and start-of-line
+# HTML blocks through separate paths, so the same tags appear once inline (behind the
+# "canary " prefix) and once as blank-line-delimited blocks at column 0 -- a renderer
+# that suppresses only one context is rejected by the survivor from the other.
+RAW_HTML_CANARY = ("canary <script>alert(1)</script> <img src=x onerror=alert(2)> "
+                   "<style>p{}</style> <vpcanary>x</vpcanary>\n"
+                   "\n<style>\np{}\n</style>\n"
+                   "\n<vpcanary>\nblock\n</vpcanary>\n")
+
+_RENDERER = None       # None = not probed yet; False = nothing on the chain is safe
+_RENDERER_ID = None    # the winner's (path, mtime_ns, size, ino, dev) at probe time
+_RENDERER_RETRY = 0.0  # monotonic deadline after which a negative verdict is re-probed
+_RENDERER_LOCK = threading.Lock()  # held by the one thread allowed to run the probes
+# How long "nothing on the chain is safe" is believed before looking again. A negative
+# cached forever would strand a long-lived portal on the reduced-fidelity light renderer
+# after a transient gap -- mid-upgrade, or a renderer installed later -- where the old
+# per-call discovery recovered by itself. A bounded TTL keeps that self-healing (at most
+# one probe burst per window) without re-paying the probe on every render.
+NEGATIVE_TTL_SECONDS = 300.0
+
+
+def _neutralizes_raw_html(cmd, args):
+    """True when `cmd` demonstrably renders RAW_HTML_CANARY without live markup."""
+    try:
+        p = subprocess.run([cmd] + args, input=RAW_HTML_CANARY, capture_output=True,
+                           text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if p.returncode != 0 or not p.stdout.strip():
+        return False
+    low = p.stdout.lower()
+    # Any canary tag surviving as a real tag means raw HTML passed through. Match the
+    # TAGS rather than attribute text like `onerror`: a renderer that escapes the canary
+    # leaves the attribute behind as inert characters (&lt;img src=x onerror=...&gt;),
+    # and rejecting it for that would refuse a renderer doing exactly the right thing.
+    return not any(t in low for t in ("<script", "<img", "<style", "<vpcanary"))
+
+
+def _renderer_id(cmd):
+    """Identity of the executable `cmd` resolves to right now: its path plus the stat
+    fields that change when the file is replaced. None when it no longer resolves or
+    cannot be statted -- both read as "not the binary that was probed"."""
+    path = shutil.which(cmd)
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (path, st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev)
+
+
+def _safe_renderer():
+    """First installed renderer that passes the raw-HTML canary, re-probed when the
+    winning executable changes on disk.
+
+    Asking rather than assuming is the point. cmark/cmark-gfm omit raw HTML in their
+    default (no --unsafe) safe mode, and pandoc was believed to do the same once its
+    raw_html extension was disabled with `-f gfm-raw_html`. It does not: pandoc's gfm
+    reader accepts that flag, exits 0, and still emits a live `<script>` (measured on
+    pandoc 3.9; only its `markdown` reader honours the toggle). The flag looked correct
+    and the CI runners carry no pandoc, so the gap stayed invisible on every machine
+    except the one that actually serves the portal. A canary cannot rot that way: a
+    renderer that stops being safe simply stops being picked.
+
+    The verdict is cached, but keyed to the winner's resolved path and stat signature:
+    a probe attests to the file it ran, not to the name, and a long-lived portal can
+    watch `brew upgrade` swap the binary underneath it. Each call re-stats the winner
+    (microseconds, against the ~ms subprocess it guards) and a changed or vanished file
+    drops the cache and re-probes. The residual window -- a swap between this check and
+    the exec's own path resolution -- is microseconds instead of the portal's lifetime,
+    and behind it the CSP still confines raw HTML to markup, not script. Re-probing
+    every render was considered and declined: it would double the subprocess cost of
+    every report view to close a window the stat check already reduces to noise."""
+    global _RENDERER, _RENDERER_ID, _RENDERER_RETRY
+    r = _RENDERER
+    if r:
+        if _renderer_id(r[0]) == _RENDERER_ID:
+            return r
+    elif r is False and time.monotonic() < _RENDERER_RETRY:
+        return False
+    # The cache needs work: first call, aged-out negative, or the winner changed on
+    # disk. Exactly ONE thread runs the probes -- each candidate is a subprocess with a
+    # 20s budget, so a request burst piling on N probe chains is a real backlog, not a
+    # benign duplicate. Everyone who loses the race renders this page via the escaping
+    # light renderer instead of waiting: degraded toward safety, and self-healing on
+    # the next request once the probing thread publishes its verdict.
+    if not _RENDERER_LOCK.acquire(blocking=False):
+        return False
+    try:
+        # Re-read under the lock: the previous holder may have settled the very state
+        # this thread queued up on.
+        r = _RENDERER
+        if r and _renderer_id(r[0]) == _RENDERER_ID:
+            return r
+        if r is False and time.monotonic() < _RENDERER_RETRY:
+            return False
+        if r:
+            # Reaching the probe with a cached winner means its file changed on disk.
+            sys.stderr.write("[portal] %s changed on disk since it was probed; "
+                             "re-checking the renderer chain\n" % r[0])
+        # Publish the provisional negative AND claim the retry window before probing,
+        # so peer threads read "recent negative -- use the light renderer" rather than
+        # "expired -- probe again" for the whole time the probes run.
+        _RENDERER = False
+        _RENDERER_ID = None
+        _RENDERER_RETRY = time.monotonic() + NEGATIVE_TTL_SECONDS
+        for cmd, args in RENDERERS:
+            before = _renderer_id(cmd)
+            if before is None:
+                continue
+            if _neutralizes_raw_html(cmd, args):
+                # Accept only if the file is still the one the probe ran: a swap DURING
+                # the probe would otherwise pin the new binary to the old file's verdict.
+                if _renderer_id(cmd) != before:
+                    continue
+                _RENDERER_ID = before
+                _RENDERER = (cmd, args)
+                break
+            # Installed but unsafe: say so once, so an operator whose reports suddenly
+            # render through a different tool knows which one was skipped and why.
+            sys.stderr.write("[portal] %s left raw HTML live on the canary; "
+                             "skipping it\n" % cmd)
+        return _RENDERER
+    finally:
+        _RENDERER_LOCK.release()
+
+
 def render_markdown(md):
     """Render report markdown to an HTML fragment using the same renderer chain as the
     email (pandoc/cmark-gfm/cmark); fall back to the light renderer if none is present.
 
     Reports are agent-written from web sweeps, so the markdown is semi-trusted and the
     portal serves the result to a browser -- raw HTML in the source must not become live
-    markup. cmark/cmark-gfm already omit raw HTML in their default (no --unsafe) safe
-    mode; pandoc preserves it, so we disable its raw_html extension (`gfm-raw_html`) so
-    stray `<script>`/`<img onerror=...>` is escaped, not executed. A strict CSP on every
-    response (see Handler._send) is the defense-in-depth backstop."""
-    for cmd, args in (("pandoc", ["-f", "gfm-raw_html", "-t", "html"]),
-                      ("cmark-gfm", ["-e", "autolink", "-e", "table", "-e",
-                                     "strikethrough", "-e", "tagfilter"]),
-                      ("cmark", [])):
-        if shutil.which(cmd):
-            try:
-                p = subprocess.run([cmd] + args, input=md, capture_output=True,
-                                   text=True, timeout=20)
-                if p.returncode == 0 and p.stdout.strip():
-                    return p.stdout
-            except (OSError, subprocess.SubprocessError):
-                pass
+    markup. Which renderer honours that is PROVEN per machine by _safe_renderer(), never
+    assumed from a flag. The light renderer escapes everything, so falling all the way
+    through is safe by construction. A strict CSP on every response (see Handler._send)
+    is the defense-in-depth backstop."""
+    picked = _safe_renderer()
+    if picked:
+        cmd, args = picked
+        try:
+            p = subprocess.run([cmd] + args, input=md, capture_output=True,
+                               text=True, timeout=20)
+            if p.returncode == 0 and p.stdout.strip():
+                return p.stdout
+        except (OSError, subprocess.SubprocessError):
+            pass
     return _light_md(md)
 
 
