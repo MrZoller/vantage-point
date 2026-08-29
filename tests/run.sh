@@ -3212,7 +3212,6 @@ SH
     "{\"timestamp\":\"2026-01-01T00:00:00Z\",\"id\":\"h-soon\",\"entity\":\"Competitor B\",\"event\":\"Q2 earnings\",\"due\":\"$soon\",\"due_precision\":\"day\",\"due_text\":\"in 10 days\",\"status\":\"pending\",\"source\":\"https://x\"}" \
     > "$repo/state/horizon.jsonl"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
-  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
   report="$repo/kb/$(date +%F).weekly.md"
   assert_contains "announces the appended section" "$out" "appended the Coming up section"
@@ -3643,7 +3642,6 @@ with open(sys.argv[2], "w") as f:
                             "flagged": "2026-01-02"}) + "\n")
 PY
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
-  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
   assert_contains "an oversized flag log is compacted" "$out" "compacted state/quiet.jsonl"
   assert_eq "compaction keeps the latest row per key" "2" "$(wc -l < "$repo/state/quiet.jsonl" | tr -d ' ')"
@@ -3723,6 +3721,7 @@ with open(path) as f:
 with open(path, "w") as f:
     f.write(config.replace("tracking:\n", "tracking:\n  quiet_min_events: -1\n", 1))
 PY
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
   assert_contains "monitor completes with the default quiet_min_events threshold" "$out" "nothing material"
   assert_not_contains "monitor also requires four events for invalid quiet_min_events" "$out" "quiet detection:"
@@ -3735,6 +3734,7 @@ with open(sys.argv[1], "a") as f:
                         "event_type": "release", "value": "release",
                         "source": "https://q.example/releases"}) + "\n")
 PY
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
   assert_contains "monitor accepts four events for invalid quiet_min_events" "$out" "quiet detection: 1 entity(ies) silent past their baseline"
 }
