@@ -5,7 +5,7 @@
   "plan_approved": true,
   "current_task": "T15",
   "branch": "factory/t15-dangling-demo-symlinks",
-  "pr": null,
+  "pr": 93,
   "hold": false,
-  "updated": "2026-08-29T09:41:54Z"
+  "updated": "2026-08-29T10:01:50Z"
 }
