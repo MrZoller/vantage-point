@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": null,
-  "branch": null,
+  "current_task": "T7",
+  "branch": "factory/t7-redirect-entry-links",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T05:59:37Z"
+  "updated": "2026-08-29T06:00:38Z"
 }
