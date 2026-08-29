@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": null,
-  "branch": null,
+  "current_task": "T25",
+  "branch": "factory/t25-http-client-errors",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T16:50:00Z"
+  "updated": "2026-08-29T16:51:32Z"
 }
