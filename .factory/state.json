@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T18",
-  "branch": "factory/t18-preserve-sweep-diagnostics",
+  "current_task": "T19",
+  "branch": "factory/t19-non-string-feedback-id",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T10:59:32Z"
+  "updated": "2026-08-29T11:38:12Z"
 }

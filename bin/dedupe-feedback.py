@@ -7,8 +7,8 @@ contradictory row. bootstrap.sh runs this before feeding grades into calibration
 each item contributes one (latest) verdict. monitor.sh additionally scopes the output
 with --since (keep only grades newer than the profile's last_bootstrapped, i.e. not
 yet folded into the rubric) and --max (the newest N, oldest first) to inject as live
-calibration. Malformed and non-object lines are skipped. Stdlib only; reads the path
-arg (or stdin).
+calibration. Malformed lines, non-object lines, and records without a non-empty string
+id are skipped. Stdlib only; reads the path arg (or stdin).
 """
 import json
 import sys
@@ -66,7 +66,7 @@ def main():
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(obj, dict) and obj.get("id"):
+            if isinstance(obj, dict) and isinstance(obj.get("id"), str) and obj["id"]:
                 rid = obj["id"]
                 prev = latest.get(rid)
                 # Keep the latest BY TIMESTAMP. The log is append-only so this usually
