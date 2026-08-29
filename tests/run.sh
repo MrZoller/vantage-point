@@ -33,17 +33,41 @@ stop_server() {  # <pid>
   wait "$1" 2>/dev/null || true
 }
 
-write_portal_httpd() {  # <script-path>
-  cat > "$1" <<'PY'
-import importlib.util, sys
-from http.server import ThreadingHTTPServer
-spec = importlib.util.spec_from_file_location("portal_under_test", sys.argv[1])
-portal = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(portal)
-httpd = ThreadingHTTPServer(("127.0.0.1", 0), portal.Handler)
-open(sys.argv[2], "w").write(str(httpd.server_address[1]))
-httpd.serve_forever()
+wait_portal_server() {  # <server-log> <server-pid> [timeout-seconds]
+  local out rc
+  out="$(python3 - "$1" "$2" "${3:-$WAIT_SERVER_BUDGET}" <<'PY'
+import os, re, sys, time
+log, pid, budget = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+start = time.monotonic()
+pattern = re.compile(r"\[portal\] http://localhost:(\d+)/")
+while True:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        print("gone %.2f" % (time.monotonic() - start))
+        sys.exit(1)
+    try:
+        match = pattern.search(open(log).read())
+        if match:
+            print("ok %s %.2f" % (match.group(1), time.monotonic() - start))
+            sys.exit(0)
+    except OSError:
+        pass
+    if time.monotonic() - start >= budget:
+        print("timeout %.2f" % (time.monotonic() - start))
+        sys.exit(1)
+    time.sleep(0.1)
 PY
+)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    SERVER_PORT="${out#ok }"; SERVER_PORT="${SERVER_PORT%% *}"
+    return 0
+  fi
+  printf '    wait_portal_server: process %s did not report readiness (%s)\n' "$2" "$out" >&2
+  if [ -s "$1" ]; then
+    sed 's/^/      /' "$1" >&2
+  fi
+  return 1
 }
 
 WAIT_SERVER_BUDGET="${WAIT_SERVER_BUDGET:-30}"
@@ -1706,7 +1730,7 @@ test_portal_args
 echo "== portal.py: serves overview/reports/review/profile/config + records grades =="
 test_portal_server() {
   if ! command -v curl >/dev/null 2>&1; then pass "portal server (skipped: no curl)"; return; fi
-  local repo="$TMP/psrvrepo" port page ready="$TMP/portal.review.ready" slog="$TMP/portal.review.log"
+  local repo="$TMP/psrvrepo" port page slog="$TMP/portal.review.log"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
   cp "$ROOT/bin/portal.py" "$repo/bin/"
   printf 'version: 1\nsubject:\n  name: "Test Market & Co"\noutput:\n  email_to: ""\n' \
@@ -1727,10 +1751,9 @@ test_portal_server() {
     printf 'null\n'                                          # valid JSON, non-object -> must be skipped
     printf '{"id":"evil","title":"XSS attempt","signal":"opportunity","score":0.5,"url":"javascript:alert(1)"}\n'
   } > "$repo/state/seen.jsonl"
-  write_portal_httpd "$TMP/portalhttpd.py"
-  ( cd "$repo" && exec python3 "$TMP/portalhttpd.py" bin/portal.py "$ready" > "$slog" 2>&1 ) &
+  ( cd "$repo" && exec python3 bin/portal.py 0 > "$slog" 2>&1 ) &
   local srv=$!
-  if ! wait_server "$ready" "$srv" "$slog"; then fail "portal server came up"; stop_server "$srv"; return; fi
+  if ! wait_portal_server "$slog" "$srv"; then fail "portal server came up"; stop_server "$srv"; return; fi
   port="$SERVER_PORT"
   page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
   assert_contains "review lists a surfaced item (skips the malformed line)" "$page" "Tudor GMT leak"
@@ -1781,14 +1804,13 @@ test_portal_server
 echo "== portal.py: missed-signal reports record a 'missed' verdict (recall loop) =="
 test_portal_missed() {
   if ! command -v curl >/dev/null 2>&1; then pass "portal missed signals (skipped: no curl)"; return; fi
-  local repo="$TMP/pmissrepo" port page fb ready="$TMP/portal.missed.ready" slog="$TMP/portal.missed.log"
+  local repo="$TMP/pmissrepo" port page fb slog="$TMP/portal.missed.log"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
   cp "$ROOT/bin/portal.py" "$repo/bin/"
   printf 'version: 1\n' > "$repo/monitor-config.yaml"
-  write_portal_httpd "$TMP/portalhttpd.py"
-  ( cd "$repo" && exec python3 "$TMP/portalhttpd.py" bin/portal.py "$ready" > "$slog" 2>&1 ) &
+  ( cd "$repo" && exec python3 bin/portal.py 0 > "$slog" 2>&1 ) &
   local srv=$!
-  if ! wait_server "$ready" "$srv" "$slog"; then fail "portal missed server came up"; stop_server "$srv"; return; fi
+  if ! wait_portal_server "$slog" "$srv"; then fail "portal missed server came up"; stop_server "$srv"; return; fi
   port="$SERVER_PORT"
   page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
   assert_contains "review offers the missed-signal form" "$page" 'action="/missed"'
@@ -2218,11 +2240,10 @@ PY
   assert_contains "a short entity matches whole tokens only (no 'Prepaid' for 'AI')" "$out" "MATCHED_AI a1"
 
   if ! command -v curl >/dev/null 2>&1; then pass "entity pages (skipped: no curl)"; return; fi
-  local ready="$TMP/portal.entities.ready" slog="$TMP/portal.entities.log"
-  write_portal_httpd "$TMP/portalhttpd.py"
-  ( cd "$repo" && exec python3 "$TMP/portalhttpd.py" bin/portal.py "$ready" > "$slog" 2>&1 ) &
+  local slog="$TMP/portal.entities.log"
+  ( cd "$repo" && exec python3 bin/portal.py 0 > "$slog" 2>&1 ) &
   local srv=$!
-  if ! wait_server "$ready" "$srv" "$slog"; then fail "entity portal server came up"; stop_server "$srv"; return; fi
+  if ! wait_portal_server "$slog" "$srv"; then fail "entity portal server came up"; stop_server "$srv"; return; fi
   port="$SERVER_PORT"
   page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/entities" || true)"
   assert_contains "entities index lists the entity" "$page" "Tudor BB58"
@@ -3295,11 +3316,10 @@ PY
   rm -f "$repo/monitor-config.yaml"   # restore default-enabled for the live-server checks
 
   if ! command -v curl >/dev/null 2>&1; then pass "dossier Expected (skipped: no curl)"; return; fi
-  local ready="$TMP/portal.coming-up.ready" slog="$TMP/portal.coming-up.log"
-  write_portal_httpd "$TMP/portalhttpd.py"
-  ( cd "$repo" && exec python3 "$TMP/portalhttpd.py" bin/portal.py "$ready" > "$slog" 2>&1 ) &
+  local slog="$TMP/portal.coming-up.log"
+  ( cd "$repo" && exec python3 bin/portal.py 0 > "$slog" 2>&1 ) &
   local srv=$!
-  if ! wait_server "$ready" "$srv" "$slog"; then fail "coming-up portal server came up"; stop_server "$srv"; return; fi
+  if ! wait_portal_server "$slog" "$srv"; then fail "coming-up portal server came up"; stop_server "$srv"; return; fi
   port="$SERVER_PORT"
   page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/" || true)"
   assert_contains "overview shows the Coming up card" "$page" "Coming up"
