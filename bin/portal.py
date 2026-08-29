@@ -2113,7 +2113,7 @@ class Handler(BaseHTTPRequestHandler):
             return False
         host, separator, port = hosts[0].partition(":")
         return (host in ("localhost", "127.0.0.1")
-                and (not separator or (port.isascii() and port.isdigit()
+                and (not separator or (len(port) <= 5 and port.isascii() and port.isdigit()
                                        and 0 < int(port) <= 65535)))
 
     def _authorize(self, state_change=False):

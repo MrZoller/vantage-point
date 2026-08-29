@@ -2224,6 +2224,9 @@ test_portal_feedback_post_security() {
   code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: attacker.example' \
     "http://127.0.0.1:$port/review" || true)"
   assert_eq "an untrusted Host cannot read portal pages" "403" "$code"
+  code="$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Host: localhost:$(printf '%04301d' 0)" "http://127.0.0.1:$port/review" || true)"
+  assert_eq "an overlong numeric Host port is rejected without aborting" "403" "$code"
   stop_server "$srv"
 }
 test_portal_feedback_post_security
