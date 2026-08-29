@@ -3679,12 +3679,12 @@ print("CAD", len(m.entity_cadence("Competitor Q")))
 PY
   }
 
-  # 0, a negative number, and non-numeric text are all invalid to monitor.sh. The
-  # portal must fall back to the same default (4), rather than displaying this
-  # three-event cadence as a quiet finding.
+  # Every spelling of zero, a negative number, and non-numeric text are invalid to
+  # monitor.sh. The portal must fall back to the same default (4), rather than
+  # displaying this three-event cadence as a quiet finding.
   unicode_digit="$(printf '\331\243')" # U+0663 ARABIC-INDIC DIGIT THREE
   overlong_digits="$(python3 -c 'print("1" * 4301)')"
-  for value in 0 -1 invalid "$unicode_digit" "$overlong_digits"; do
+  for value in 0 00 000 -1 invalid "$unicode_digit" "$overlong_digits"; do
     label="$value"
     [ "${#label}" -le 100 ] || label="overlong digits"
     cp "$base" "$repo/monitor-config.yaml"
@@ -3712,9 +3712,9 @@ PY
     assert_eq "portal accepts four events after invalid quiet_min_events=$label" "CAD 1" "$out"
   done
 
-  # The monitor already normalizes -1 to four. With the identical three-event
-  # fixture it must likewise produce no quiet detection, demonstrating parity at the
-  # public boundaries rather than merely comparing implementation values.
+  # The monitor normalizes every spelling of zero to four. With the identical
+  # three-event fixture it must likewise produce no quiet detection, demonstrating
+  # parity at the public boundaries rather than merely comparing implementation values.
   cp "$base" "$repo/monitor-config.yaml"
   cp "$obsbase" "$repo/state/observations.jsonl"
   python3 - "$repo/monitor-config.yaml" <<'PY'
@@ -3723,12 +3723,12 @@ path = sys.argv[1]
 with open(path) as f:
     config = f.read()
 with open(path, "w") as f:
-    f.write(config.replace("tracking:\n", "tracking:\n  quiet_min_events: -1\n", 1))
+    f.write(config.replace("tracking:\n", "tracking:\n  quiet_min_events: 00\n", 1))
 PY
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
-  assert_contains "monitor completes with the default quiet_min_events threshold" "$out" "nothing material"
-  assert_not_contains "monitor also requires four events for invalid quiet_min_events" "$out" "quiet detection:"
+  assert_contains "monitor completes with the default zero-padded quiet_min_events threshold" "$out" "nothing material"
+  assert_not_contains "monitor also requires four events for zero-padded quiet_min_events" "$out" "quiet detection:"
   python3 - "$repo/state/observations.jsonl" <<'PY'
 import json, sys
 from datetime import datetime, timedelta, timezone
@@ -3740,7 +3740,7 @@ with open(sys.argv[1], "a") as f:
 PY
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" weekly 2>&1 )"
-  assert_contains "monitor accepts four events for invalid quiet_min_events" "$out" "quiet detection: 1 entity(ies) silent past their baseline"
+  assert_contains "monitor accepts four events for zero-padded quiet_min_events" "$out" "quiet detection: 1 entity(ies) silent past their baseline"
 }
 test_quiet_min_events_normalization
 
