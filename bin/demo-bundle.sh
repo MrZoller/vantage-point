@@ -161,6 +161,7 @@ copy_dir() {   # copy_dir <src-relative> [warn]
     # broken link; Python is already a required runtime and lets other copy errors remain
     # fatal rather than hiding permissions, disk-full, or traversal failures.
     python3 - "$ROOT/$1" "$OUT/$1" "$1" <<'PY'
+import errno
 import os
 import shutil
 import sys
@@ -172,7 +173,13 @@ def skip_dangling(directory, names):
     skipped = []
     for name in names:
         path = os.path.join(directory, name)
-        if os.path.islink(path) and not os.path.exists(path):
+        if not os.path.islink(path):
+            continue
+        try:
+            os.stat(path)
+        except OSError as error:
+            if error.errno not in (errno.ENOENT, errno.ENOTDIR):
+                raise
             relative = os.path.relpath(path, source)
             print(
                 "demo-bundle.sh: WARNING: "

@@ -1865,6 +1865,26 @@ test_demo_bundle() {
     fail "symlinked state file is dereferenced into a real file"
   fi
   assert_eq "dereferenced content matches the link target" "EXTERNAL_OBS" "$(cat "$symout/state/observations.jsonl" 2>/dev/null)"
+  # A valid link whose target cannot be inspected is a real copy error, not a dangling
+  # link. Do not silently ship a bundle missing data under a misleading warning.
+  local locked="$TMP/demolocked" lockout="$TMP/demolockout" lockerr
+  mkdir -p "$locked"; printf 'PRIVATE\n' > "$locked/data.jsonl"
+  ln -s "$locked/data.jsonl" "$symrepo/state/private.jsonl"
+  chmod 000 "$locked"
+  if python3 -c 'import os, sys; os.stat(sys.argv[1])' "$symrepo/state/private.jsonl" \
+      >/dev/null 2>&1; then
+    pass "inaccessible symlink target remains a copy error (skipped: privileged test user)"
+  else
+    lockerr="$( cd "$symrepo" && bash bin/demo-bundle.sh --out "$lockout" 2>&1 1>/dev/null )" || true
+    if [ ! -f "$lockout/START-HERE.md" ]; then
+      pass "inaccessible symlink target aborts the bundle"
+    else
+      fail "inaccessible symlink target aborts the bundle"
+    fi
+    assert_not_contains "inaccessible symlink is not called dangling" "$lockerr" \
+      "private.jsonl is a dangling symlink"
+  fi
+  chmod 700 "$locked"
 }
 test_demo_bundle
 
