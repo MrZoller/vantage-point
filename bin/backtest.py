@@ -288,7 +288,7 @@ def cmd_render(argv):
     universe = _eval_ids(opts["eval"]) if opts["eval"] else list(verdicts)
 
     agree = baseline_agree = 0
-    scored = 0
+    scored = baseline_scored = 0
     not_scored = []                      # graded items the agent didn't score
     would_drop = []                      # was up, draft now scores below threshold
     would_surface = []                   # was down, draft now scores at/above threshold
@@ -308,8 +308,10 @@ def cmd_render(argv):
         # Baseline: how the LIVE system actually scored these (recorded score vs the
         # APPROVED threshold vs verdict) -- free, no second scoring pass.
         base = _score(rec.get("score"))
-        if base is not None and _agrees(verdict, base, baseline_threshold):
-            baseline_agree += 1
+        if base is not None:
+            baseline_scored += 1
+            if _agrees(verdict, base, baseline_threshold):
+                baseline_agree += 1
         # Flips that change the decision.
         title = rec.get("title") or rec.get("url") or rid
         if verdict == "up" and ds < threshold:
@@ -317,8 +319,8 @@ def cmd_render(argv):
         elif verdict == "down" and ds >= threshold:
             would_surface.append((rid, title, base, ds))
 
-    md = _format_report(threshold, scored, agree, baseline_agree, len(universe),
-                        not_scored, would_drop, would_surface, malformed)
+    md = _format_report(threshold, scored, agree, baseline_agree, baseline_scored,
+                        len(universe), not_scored, would_drop, would_surface, malformed)
     try:
         with open(opts["out"], "w", encoding="utf-8") as f:
             f.write(md)
@@ -339,7 +341,7 @@ def _flip_line(item, threshold):
     return "  - [%s] %s  %s -> %.2f%s" % (rid, title, base_s, ds, tag)
 
 
-def _format_report(threshold, scored, agree, baseline_agree, total,
+def _format_report(threshold, scored, agree, baseline_agree, baseline_scored, total,
                    not_scored, would_drop, would_surface, malformed):
     lines = ["## Backtest vs your grades", ""]
     if scored == 0:
@@ -356,7 +358,8 @@ def _format_report(threshold, scored, agree, baseline_agree, total,
     lines.append("```")
     lines.append("  agrees with your verdict:   %d / %d  (%s)   [approved profile: %d / %d (%s)]"
                 % (agree, scored, _pct(agree, scored),
-                   baseline_agree, scored, _pct(baseline_agree, scored)))
+                   baseline_agree, baseline_scored,
+                   _pct(baseline_agree, baseline_scored)))
     lines.append("  would now DROP a thumbs-up:  %d%s"
                 % (len(would_drop), "   <- review these before approving" if would_drop else ""))
     lines.append("  would now SURFACE a thumbs-down: %d" % len(would_surface))
