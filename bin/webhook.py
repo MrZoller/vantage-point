@@ -22,6 +22,13 @@ import urllib.request
 DISCORD_LIMIT = 2000
 
 
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Leave redirect responses as HTTP errors instead of changing the request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def build_payload(heading, mode, date, body):
     text = "%s\n\n%s" % (heading, body) if heading else body
     if len(text) > DISCORD_LIMIT:
@@ -46,11 +53,19 @@ def main():
     req = urllib.request.Request(url, data=payload,
                                  headers={"Content-Type": "application/json",
                                           "User-Agent": "vantage-point"})
+    opener = urllib.request.build_opener(RefuseRedirects())
     try:
-        # urlopen raises HTTPError (a URLError) for any non-2xx status, so reaching
-        # the body of the `with` means the post was accepted.
-        with urllib.request.urlopen(req, timeout=30):
+        # opener.open raises HTTPError (a URLError) for any non-2xx status, so
+        # reaching the body of the `with` means this exact URL accepted the post.
+        with opener.open(req, timeout=30):
             return 0
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            print("[webhook] post refused redirect; configure the final webhook URL",
+                  file=sys.stderr)
+        else:
+            print("[webhook] post failed: %s" % exc, file=sys.stderr)
+        return 1
     except (urllib.error.URLError, OSError) as exc:
         print("[webhook] post failed: %s" % exc, file=sys.stderr)
         return 1

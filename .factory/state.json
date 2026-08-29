@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T23",
-  "branch": "factory/t23-bootstrap-without-summary",
+  "current_task": "T24",
+  "branch": "factory/t24-refuse-webhook-redirects",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T16:04:12Z"
+  "updated": "2026-08-29T16:25:35Z"
 }

@@ -2925,6 +2925,44 @@ httpd.serve_forever()
 PY
 }
 
+write_redirect_webhook_httpd() {  # <script-path>
+  cat > "$1" <<'PY'
+import socketserver, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class _Quiet(HTTPServer):
+    # Skip the reverse-DNS lookup in HTTPServer.server_bind(); see capture server.
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path == "/redirect":
+            self.send_response(302)
+            self.send_header("Location", "/final")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._record_and_accept()
+    def do_GET(self):
+        self._record_and_accept()
+    def _record_and_accept(self):
+        # A redirect-following client turns the POST into a bodyless GET. Accept it so
+        # the regression demonstrates that it would otherwise be reported delivered.
+        with open(sys.argv[2], "a") as f:
+            f.write(self.command + " " + self.path + "\n")
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+    def log_message(self, *args):
+        pass
+httpd = _Quiet(("127.0.0.1", int(sys.argv[1])), H)
+open(sys.argv[3], "w").write(str(httpd.server_address[1]))
+httpd.serve_forever()
+PY
+}
+
 echo "== webhook.py: posts one polyglot JSON payload (Slack text / Discord content) =="
 test_webhook_py() {
   local srv="$TMP/caphttpd.py" body="$TMP/wh_body.json" probe="$TMP/wh_probe.py" out rc port ready="$TMP/capture.webhook.ready"
@@ -2975,6 +3013,27 @@ PY
   assert_eq "a non-http(s) scheme is rejected with exit 2" "2" "$?"
 }
 test_webhook_py
+
+echo "== webhook.py: refuses redirects rather than delivering a bodyless GET =="
+test_webhook_redirect() {
+  local srv="$TMP/redirect-webhook-httpd.py" requests="$TMP/wh_redirect.requests" out rc port ready="$TMP/redirect.webhook.ready"
+  write_redirect_webhook_httpd "$srv"
+  local slog="$TMP/srv.redirect-webhook.log"
+  python3 "$srv" 0 "$requests" "$ready" > "$slog" 2>&1 &
+  local pid=$!
+  if ! wait_server "$ready" "$pid" "$slog"; then fail "redirect webhook server came up"; stop_server "$pid"; return; fi
+  port="$SERVER_PORT"
+  out="$(printf 'redirected report body\n' | python3 "$ROOT/bin/webhook.py" "http://127.0.0.1:$port/redirect" h daily 2026-06-09 2>&1)"; rc=$?
+  stop_server "$pid"
+  assert_eq "a redirected webhook exits nonzero" "1" "$rc"
+  assert_contains "a redirect advises the final webhook URL" "$out" "final webhook URL"
+  if [ -s "$requests" ]; then
+    fail "a redirected payload is never reported delivered"
+  else
+    pass "a redirected payload is never reported delivered"
+  fi
+}
+test_webhook_redirect
 
 echo "== monitor.sh: posts the report to output.webhook_url; a failed post can't fail the run =="
 test_monitor_webhook() {
