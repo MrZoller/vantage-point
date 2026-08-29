@@ -693,11 +693,14 @@ def signal_mix():
 
 def _surfaced_index():
     """id -> {date, source} for surfaced (non-dropped) items in seen.jsonl.
-    First record per id wins (a rerun may append the same id again)."""
-    out = {}
-    for rec in read_jsonl(SEEN):
+    Newest record per id wins (a rerun may append the same id again)."""
+    out, ids = {}, set()
+    for rec in reversed(read_jsonl(SEEN)):
         rid = rec.get("id")
-        if not isinstance(rid, str) or not rid or rid in out or rec.get("signal") == "dropped":
+        if not isinstance(rid, str) or not rid or rid in ids:
+            continue
+        ids.add(rid)
+        if rec.get("signal") == "dropped":
             continue
         d = rec.get("date")
         src = rec.get("source")
