@@ -3360,7 +3360,7 @@ test_fetch_health
 
 echo "== monitor.sh: feeds the pre-fetched candidates to triage (and cleans up) =="
 test_monitor_fetch() {
-  local repo="$TMP/fetchrepo" dir="$TMP/feeds2" out args="$TMP/fetch_args" port ready="$TMP/static.monitor-fetch.ready" run_err
+  local repo="$TMP/fetchrepo" dir="$TMP/feeds2" out args="$TMP/fetch_args" port ready="$TMP/static.monitor-fetch.ready" run_err run_err_path
   make_fake_repo "$repo"
   mkdir -p "$dir"
   write_feed_fixtures "$dir"
@@ -3389,6 +3389,10 @@ anchor:
   derived:
     last_bootstrapped: $(date +%F)
 YAML
+  # A same-day rerun must start a fresh diagnostic log: stale failures from a prior
+  # run would otherwise be presented as current feed health.
+  run_err_path="$repo/kb/$(date +%F).daily.err"
+  printf '%s\n' '[test] stale prior-run sentinel' > "$run_err_path"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"
@@ -3398,7 +3402,8 @@ YAML
   assert_contains "prompt points at the right path" "$(cat "$args" 2>/dev/null)" "state/.candidates.daily.jsonl"
   if [ -f "$repo/state/.candidates.daily.jsonl" ]; then fail "candidates file cleaned up after the run"; else pass "candidates file cleaned up after the run"; fi
   if [ -s "$repo/state/feedhealth.json" ]; then pass "the sweep records feed health"; else fail "the sweep records feed health"; fi
-  run_err="$(cat "$repo/kb/$(date +%F).daily.err" 2>/dev/null)"
+  run_err="$(cat "$run_err_path" 2>/dev/null)"
+  assert_not_contains "run stderr drops stale prior-run diagnostics" "$run_err" "[test] stale prior-run sentinel"
   assert_contains "run stderr preserves feed failure diagnostics after triage" "$run_err" "dead.xml failed:"
   assert_contains "run stderr preserves feed sweep statistics after triage" "$run_err" "candidate(s) from 2 feed(s) (1 feed(s) failed)"
   assert_contains "run stderr also contains later triage stderr" "$run_err" "[test triage] stderr marker"

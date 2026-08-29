@@ -212,6 +212,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# One clean stderr log per run; the feed sweep and every agent pass append to it.
+: > "kb/${TODAY}.${MODE}.err"
+
 # Pass --model only when set; otherwise omit it so the CLI default applies.
 MODEL_ARGS=()
 if [ -n "$MODEL" ]; then
