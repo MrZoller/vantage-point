@@ -53,7 +53,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T16 (standard) — monitor.sh: missing last_bootstrapped silently disables the profile-staleness check on Linux (Fixes #57)
   - acceptance: `bin/monitor.sh` checks that `last_bootstrapped` is non-empty before platform date parsing and emits a distinct note when it is absent; tests show consistent Linux/macOS behavior
   - pr: 94
-- [R] T17 (standard) — backtest.py: baseline agreement deflated when a feedback row lacks a numeric score, flattering the draft (Fixes #56)
+- [x] T17 (standard) — backtest.py: baseline agreement deflated when a feedback row lacks a numeric score, flattering the draft (Fixes #56)
   - acceptance: `bin/backtest.py` calculates approved-profile baseline agreement with a denominator containing only rows that have a numeric baseline score, while draft agreement retains its own denominator; rendered output/tests distinguish unscored baseline rows
   - pr: 95
 - [ ] T18 (standard) — monitor.sh: triage claude's 2> truncates the feed-sweep diagnostics written moments earlier (Fixes #55)
