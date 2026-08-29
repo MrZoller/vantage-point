@@ -5,7 +5,7 @@
   "plan_approved": true,
   "current_task": "T1",
   "branch": "factory/t1-server-port-isolation",
-  "pr": null,
+  "pr": 80,
   "hold": false,
-  "updated": "2026-08-29T02:04:20Z"
+  "updated": "2026-08-29T02:30:28Z"
 }
