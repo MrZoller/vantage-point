@@ -3529,6 +3529,90 @@ YAML
 }
 test_fetch_limits
 
+echo "== fetch.py: malformed HTTP responses fail per feed without stopping the sweep =="
+test_fetch_http_exceptions() {
+  local srv="$TMP/fetch-http-exceptions.py" ready="$TMP/fetch-http-exceptions.ready"
+  local log="$TMP/fetch-http-exceptions.log" pid port rc err out fh="$TMP/fetch-http-exceptions-health.json"
+  # This intentionally speaks HTTP on a raw socket rather than using http.server:
+  # chunked truncation raises http.client.IncompleteRead, an invalid status line
+  # raises BadStatusLine, and the oversized status line raises LineTooLong.
+  cat > "$srv" <<'PY'
+import socketserver, sys
+
+GOOD = (b'<?xml version="1.0"?><rss version="2.0"><channel><item>'
+        b'<title>Following HTTP failure</title><link>https://example.test/following</link>'
+        b'</item></channel></rss>')
+
+class S(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+class H(socketserver.StreamRequestHandler):
+    def handle(self):
+        request = self.rfile.readline().split()
+        path = request[1] if len(request) > 1 else b"/"
+        if path == b"/incomplete.xml":
+            # A chunk header promises five bytes but the connection closes after three.
+            response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nabc"
+        elif path == b"/bad-status.xml":
+            response = b"this is not an HTTP status line\r\n\r\n"
+        elif path == b"/long-status.xml":
+            response = b"HTTP/1.1 200 " + b"x" * 70000 + b"\r\n\r\n"
+        else:
+            response = (b"HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\n"
+                        b"Content-Length: " + str(len(GOOD)).encode("ascii") +
+                        b"\r\n\r\n" + GOOD)
+        self.wfile.write(response)
+        self.wfile.flush()
+
+httpd = S(("127.0.0.1", 0), H)
+open(sys.argv[1], "w").write(str(httpd.server_address[1]))
+httpd.serve_forever()
+PY
+  python3 "$srv" "$ready" > "$log" 2>&1 &
+  pid=$!
+  if ! wait_server "$ready" "$pid" "$log"; then
+    fail "malformed-response server came up"; stop_server "$pid"; return
+  fi
+  port="$SERVER_PORT"
+  cat > "$TMP/fetch-http-exceptions.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/incomplete.xml
+      - http://127.0.0.1:$port/bad-status.xml
+      - http://127.0.0.1:$port/long-status.xml
+      - http://127.0.0.1:$port/good.xml
+YAML
+  err="$TMP/fetch-http-exceptions.err"
+  python3 "$ROOT/bin/fetch.py" --health "$fh" --out "$TMP/fetch-http-exceptions.jsonl" \
+    "$TMP/fetch-http-exceptions.yaml" 2> "$err"; rc=$?
+  stop_server "$pid"
+  assert_eq "malformed HTTP responses leave the sweep successful" "0" "$rc"
+  assert_contains "an incomplete HTTP response is reported per feed" "$(cat "$err")" "incomplete.xml failed"
+  assert_contains "a malformed status line is reported per feed" "$(cat "$err")" "bad-status.xml failed"
+  assert_contains "an overlong status line is reported per feed" "$(cat "$err")" "long-status.xml failed"
+  out="$(cat "$TMP/fetch-http-exceptions.jsonl" 2>/dev/null)"
+  assert_contains "HTTP failures do not prevent the following feed" "$out" "Following HTTP failure"
+  local health
+  health="$(python3 - "$fh" "http://127.0.0.1:$port" <<'PY'
+import json, sys
+h, base = json.load(open(sys.argv[1])), sys.argv[2]
+for name in ("incomplete.xml", "bad-status.xml", "long-status.xml"):
+    rec = h[base + "/" + name]
+    print(name, rec.get("consecutive_failures"), bool(rec.get("error")), rec.get("last_ok") == "")
+good = h[base + "/good.xml"]
+print("good.xml", good.get("consecutive_failures"), bool(good.get("last_ok")))
+PY
+ )"
+  assert_eq "feed health records every HTTP exception as a failed feed" \
+    "incomplete.xml 1 True True
+bad-status.xml 1 True True
+long-status.xml 1 True True
+good.xml 0 True" "$health"
+}
+test_fetch_http_exceptions
+
 echo "== fetch.py: --health tracks per-feed sweep health across runs =="
 test_fetch_health() {
   local dir="$TMP/feeds-h" err rc port fh="$TMP/feedhealth.json" ready="$TMP/static.health.ready"

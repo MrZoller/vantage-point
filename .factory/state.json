@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T24",
-  "branch": "factory/t24-refuse-webhook-redirects",
+  "current_task": "T25",
+  "branch": "factory/t25-http-client-errors",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T16:25:35Z"
+  "updated": "2026-08-29T16:51:32Z"
 }
