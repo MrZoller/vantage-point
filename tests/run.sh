@@ -2556,12 +2556,15 @@ test_feedback_dedupe() {
     '{"timestamp":"2026-06-02T00:00:00Z","id":"abc","verdict":"down"}' \
     'MALFORMED {oops' \
     'null' \
+    '{"timestamp":"2026-06-02T00:00:00Z","id":["not","a","key"],"verdict":"down"}' \
+    '{"timestamp":"2026-06-02T00:00:00Z","id":{"not":"a key"},"verdict":"down"}' \
     '{"timestamp":null,"id":"abc","verdict":"up"}' \
     '{"timestamp":"2026-06-01T00:00:00Z","id":"xyz","verdict":"up"}' > "$fb"
   local rc
-  out="$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb")"; rc=$?
-  assert_eq "exits 0 even with a non-string (null) timestamp" "0" "$rc"
-  assert_eq "regraded + valid ids collapse to one row each (bad/null lines skipped)" "2" "$(printf '%s\n' "$out" | grep -c .)"
+  out="$(python3 "$ROOT/bin/dedupe-feedback.py" "$fb" 2>&1)"; rc=$?
+  assert_eq "exits 0 with unhashable array/object ids" "0" "$rc"
+  assert_not_contains "unhashable ids do not emit a traceback" "$out" "Traceback"
+  assert_eq "regraded + valid ids collapse to one row each (bad/unhashable lines skipped)" "2" "$(printf '%s\n' "$out" | grep -c .)"
   assert_contains "the regraded id keeps its newest-timestamp verdict" "$out" '"id": "abc", "verdict": "down"'
   assert_eq "the stale up verdict for abc is dropped (only xyz is up)" "1" "$(printf '%s\n' "$out" | grep -c '"verdict": "up"')"
 }
@@ -4359,6 +4362,27 @@ SH
   chmod +x "$home/.npm-global/bin/claude"
   write_capture_msmtp "$home/.npm-global/bin/msmtp"
 }
+
+echo "== bootstrap.sh: malformed feedback ids cannot abort calibration =="
+test_bootstrap_unhashable_feedback_ids() {
+  local repo="$TMP/bootstrap-unhashable-feedback" home="$TMP/bootstrap-unhashable-home" out rc
+  make_fake_bootstrap_repo "$repo" "$home"
+  printf '%s\n' \
+    '{"timestamp":"2026-06-01T00:00:00Z","id":["not","a","key"],"verdict":"down"}' \
+    '{"timestamp":"2026-06-01T00:00:00Z","id":{"not":"a key"},"verdict":"down"}' \
+    '{"timestamp":"2026-06-01T00:00:00Z","id":"valid-grade","verdict":"up"}' \
+    > "$repo/state/feedback.jsonl"
+  out="$( cd "$repo" && HOME="$home" bash bin/bootstrap.sh 2>&1 )"; rc=$?
+  assert_eq "bootstrap exits 0 with unhashable feedback ids" "0" "$rc"
+  assert_not_contains "bootstrap does not surface a dedupe traceback" "$out" "Traceback"
+  assert_contains "bootstrap retains the valid calibration grade" "$out" "including 1 calibration grade"
+  if [ -f "$repo/profile.draft.yaml" ]; then
+    pass "bootstrap writes a draft after skipping unhashable feedback ids"
+  else
+    fail "bootstrap writes a draft after skipping unhashable feedback ids"
+  fi
+}
+test_bootstrap_unhashable_feedback_ids
 
 # An isolated bootstrap.sh checkout wired for the DEEP-RESEARCH pipeline (models.researcher
 # set): copies the research/fetch helpers + the real plan/facet/challenge prompts, and a
