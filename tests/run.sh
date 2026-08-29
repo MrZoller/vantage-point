@@ -2826,6 +2826,91 @@ YAML
   printf 'subject:\n  derived:\n    feeds: [http://127.0.0.1:%s/rss.xml]\n' "$port" > "$TMP/inline.yaml"
   python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-inline.jsonl" "$TMP/inline.yaml" 2>/dev/null
   assert_contains "an inline feeds list is parsed" "$(cat "$TMP/cand-inline.jsonl" 2>/dev/null)" "Fresh RSS story"
+  # An apostrophe is valid in an unquoted URL scalar, not a quote delimiter.
+  printf 'subject:\n  derived:\n    feeds: [http://127.0.0.1:%s/rss.xml?what'\''s-new]\n' "$port" > "$TMP/inline-apostrophe.yaml"
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-inline-apostrophe.jsonl" \
+    "$TMP/inline-apostrophe.yaml" 2>/dev/null
+  assert_contains "an apostrophe in a plain inline feed URL is parsed" \
+    "$(cat "$TMP/cand-inline-apostrophe.jsonl" 2>/dev/null)" "Fresh RSS story"
+  # A plain scalar apostrophe must not hide the separator and lose later feeds.
+  cat > "$TMP/inline-apostrophe-followed.yaml" <<YAML
+subject:
+  derived:
+    feeds: [http://127.0.0.1:$port/rss.xml?what's-new, http://127.0.0.1:$port/atom.xml]
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-inline-apostrophe-followed.jsonl" \
+    "$TMP/inline-apostrophe-followed.yaml" 2>/dev/null
+  assert_contains "an apostrophe does not swallow a later inline feed" \
+    "$(cat "$TMP/cand-inline-apostrophe-followed.jsonl" 2>/dev/null)" "Fresh Atom entry"
+  # The same plain-scalar rule applies to block-list URLs before a YAML comment.
+  cat > "$TMP/block-apostrophe-comment.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/rss.xml?what's-new # YAML comment
+      - http://127.0.0.1:$port/atom.xml
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-block-apostrophe-comment.jsonl" \
+    "$TMP/block-apostrophe-comment.yaml" 2>/dev/null; rc=$?
+  assert_eq "apostrophe plus comment in a block feed exits 0" "0" "$rc"
+  out="$(cat "$TMP/cand-block-apostrophe-comment.jsonl" 2>/dev/null)"
+  assert_not_contains "block feed YAML comment is stripped" "$out" "# YAML comment"
+  assert_contains "later block feed survives an apostrophe URL" "$out" "Fresh Atom entry"
+  # `#` is part of an unquoted URL unless whitespace introduces a YAML comment.
+  # The candidate's feed provenance is the configured scalar, so it checks that the
+  # fragment survives parsing rather than merely relying on HTTP to discard it.
+  cat > "$TMP/fragment-and-comment.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/rss.xml#feed-fragment
+      - http://127.0.0.1:$port/atom.xml # YAML comment, not part of the URL
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-fragment.jsonl" \
+    "$TMP/fragment-and-comment.yaml" 2>/dev/null
+  out="$(cat "$TMP/cand-fragment.jsonl" 2>/dev/null)"
+  assert_contains "an unquoted feed URL keeps its # fragment" "$out" \
+    "\"feed\": \"http://127.0.0.1:$port/rss.xml#feed-fragment\""
+  assert_contains "whitespace before # begins a feed YAML comment" "$out" "Fresh Atom entry"
+  assert_not_contains "a feed YAML comment is not part of the URL" "$out" \
+    "atom.xml # YAML comment"
+  # YAML flow collections may span lines; they must not fall through as an empty feed
+  # list and silently disable the deterministic sweep.
+  cat > "$TMP/multiline-flow.yaml" <<YAML
+subject:
+  derived:
+    feeds: [
+      http://127.0.0.1:$port/rss.xml,
+      http://127.0.0.1:$port/atom.xml
+    ]
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-multiline-flow.jsonl" \
+    "$TMP/multiline-flow.yaml" 2>/dev/null
+  out="$(cat "$TMP/cand-multiline-flow.jsonl" 2>/dev/null)"
+  assert_contains "a multi-line flow feeds list is parsed" "$out" "Fresh RSS story"
+  assert_contains "a multi-line flow feeds list includes every URL" "$out" "Fresh Atom entry"
+  cat > "$TMP/multiline-flow-ipv6.yaml" <<YAML
+subject:
+  derived:
+    feeds: [
+      http://[::1]:1/unreachable.xml,
+      http://127.0.0.1:$port/atom.xml
+    ]
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-multiline-ipv6.jsonl" \
+    "$TMP/multiline-flow-ipv6.yaml" 2>/dev/null
+  assert_contains "an IPv6 bracket does not close a multi-line flow list" \
+    "$(cat "$TMP/cand-multiline-ipv6.jsonl" 2>/dev/null)" "Fresh Atom entry"
+  cat > "$TMP/inline-comma.yaml" <<YAML
+subject:
+  derived:
+    feeds: ["http://127.0.0.1:$port/rss.xml?topics=ai,ml"]
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-inline-comma.jsonl" \
+    "$TMP/inline-comma.yaml" 2>/dev/null
+  assert_contains "a quoted comma remains inside an inline feed URL" \
+    "$(cat "$TMP/cand-inline-comma.jsonl" 2>/dev/null)" \
+    "rss.xml?topics=ai,ml"
   # --max caps to the newest N (again: only correct under UTC normalization).
   python3 "$ROOT/bin/fetch.py" --hours 30 --max 1 --out "$TMP/cand1.jsonl" \
     "$TMP/feeds-profile.yaml" 2>/dev/null
