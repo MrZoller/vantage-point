@@ -5481,6 +5481,19 @@ test_backtest_py() {
   assert_contains "baseline uses the approved threshold (0.70 up still agrees)" \
     "$(cat "$d/base.md")" "approved profile: 10 / 10"
 
+  # A draft score exists for every item, but b1 has no numeric recorded baseline.
+  # The two agreement rates therefore need independent denominators.
+  sed 's/"score":0.70/"score":null/' "$d/fb_base.jsonl" > "$d/fb_base_missing.jsonl"
+  python3 "$ROOT/bin/backtest.py" render --draft "$d/draft_hi.yaml" --approved "$d/approved.yaml" \
+    --feedback "$d/fb_base_missing.jsonl" --scores "$d/sc_base.jsonl" --out "$d/base_missing.md"
+  local base_missing_md; base_missing_md="$(cat "$d/base_missing.md")"
+  assert_contains "draft agreement keeps all 10 draft-scored items" "$base_missing_md" \
+    "agrees with your verdict:   10 / 10"
+  assert_contains "baseline agreement excludes the missing recorded score" "$base_missing_md" \
+    "approved profile: 9 / 9"
+  assert_contains "render clearly shows the independent agreement denominators" "$base_missing_md" \
+    "10 / 10  (100%)   [approved profile: 9 / 9 (100%)]"
+
   # prepare derives `source` from the URL host when a grade has no recorded source
   # (older grades predate record_grade persisting it), so the rubric isn't starved of
   # domain context. Exercise the helper directly (run from bin/ so it imports).
