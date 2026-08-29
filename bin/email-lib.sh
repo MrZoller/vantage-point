@@ -249,7 +249,7 @@ _emit_plain() {
 # chrome (read by wrap_html via dynamic scope) and passes the raw subject, then one or
 # more recipients. Each recipient gets its OWN message - a separate msmtp envelope
 # whose only To: header is that one address - so a recipient never sees the others (no
-# shared To:/Cc list). Returns the first nonzero msmtp status, if any.
+# shared To:/Cc list). Returns the last nonzero msmtp status, if any.
 send_email() {  # <subject> <body-markdown-file> <recipient>...
   local subject body="$2"
   subject="$(encode_header "$1")"   # RFC 2047 if it has non-ASCII chars

@@ -756,7 +756,10 @@ low-confidence / uncertainty flag - faithfulness to the draft beats polish. Edit
   fi
   # Email the summary when output.email_to is set (one address or a list).
   if [ "${#EMAIL_TO[@]}" -gt 0 ]; then
-    email_disp="$(IFS=', '; echo "${EMAIL_TO[*]}")"
+    email_disp=""
+    for _addr in "${EMAIL_TO[@]}"; do
+      email_disp="$email_disp${email_disp:+, }$_addr"
+    done
     if command -v msmtp >/dev/null 2>&1; then
       DELIVER="$(mktemp)"
       cat "$SUMMARY" > "$DELIVER"

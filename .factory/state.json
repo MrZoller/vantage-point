@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T1",
-  "branch": "factory/t1-server-port-isolation",
+  "current_task": "T2",
+  "branch": "factory/t2-minor-findings-grab-bag",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T02:04:20Z"
+  "updated": "2026-08-29T03:05:18Z"
 }

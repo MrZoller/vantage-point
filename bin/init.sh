@@ -327,6 +327,7 @@ summary of what you changed and why, for the operator to judge." \
     rm -f "$SUGGEST"
     return 1
   fi
+  rm -f init.err
   if [ ! -s "$SUGGEST" ]; then
     note "WARNING: review produced no suggested config - keeping your draft unchanged"
     return 1
