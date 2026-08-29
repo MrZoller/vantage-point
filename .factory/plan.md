@@ -62,7 +62,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T19 (standard) — dedupe-feedback.py: non-string id raises TypeError and aborts the whole bootstrap (Fixes #54)
   - acceptance: `bin/dedupe-feedback.py` skips records whose id is not a string without traceback, preserves valid output, and does not abort `bin/bootstrap.sh`; tests cover an unhashable array/object id alongside valid feedback
   - pr: 97
-- [R] T20 (standard) — portal.py: one invalid UTF-8 byte in any state file breaks every portal page (Fixes #53)
+- [x] T20 (standard) — portal.py: one invalid UTF-8 byte in any state file breaks every portal page (Fixes #53)
   - acceptance: `bin/portal.py` tolerates invalid UTF-8 in JSONL state and kb reports without dropping the entire page, and `bin/cadence.py` applies equivalent tolerant reading; tests cover malformed bytes in each reader surface
   - pr: 98
 - [ ] T21 (standard) — portal.py: state-changing GET endpoints (/grade, /missed) have no CSRF/origin protection (Fixes #52)
