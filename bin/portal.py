@@ -1313,28 +1313,84 @@ def _light_md(md):
     return "\n".join(out)
 
 
+# The renderer chain, in preference order. Each entry is asked to PROVE it neutralizes
+# raw HTML before it is trusted -- see _safe_renderer().
+RENDERERS = (("pandoc", ["-f", "gfm-raw_html", "-t", "html"]),
+             ("cmark-gfm", ["-e", "autolink", "-e", "table", "-e",
+                            "strikethrough", "-e", "tagfilter"]),
+             ("cmark", []))
+
+# Fed to a candidate renderer to see what it does with raw HTML. A renderer that leaves
+# a live tag behind is not used, whatever its flags claim.
+RAW_HTML_CANARY = "canary <script>alert(1)</script> <img src=x onerror=alert(2)>\n"
+
+_RENDERER = None   # None = not probed yet; False = nothing on the chain is safe
+
+
+def _neutralizes_raw_html(cmd, args):
+    """True when `cmd` demonstrably renders RAW_HTML_CANARY without live markup."""
+    try:
+        p = subprocess.run([cmd] + args, input=RAW_HTML_CANARY, capture_output=True,
+                           text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if p.returncode != 0 or not p.stdout.strip():
+        return False
+    low = p.stdout.lower()
+    # The canary's only tags are <script> and <img>, so either one surviving as a real
+    # tag means raw HTML passed through. Match the TAG rather than the `onerror` text: a
+    # renderer that escapes the canary leaves `onerror` behind as inert characters, and
+    # rejecting it for that would refuse a renderer that is doing exactly the right thing.
+    return "<script" not in low and "<img" not in low
+
+
+def _safe_renderer():
+    """First installed renderer that passes the raw-HTML canary, probed once per process.
+
+    Asking rather than assuming is the point. cmark/cmark-gfm omit raw HTML in their
+    default (no --unsafe) safe mode, and pandoc was believed to do the same once its
+    raw_html extension was disabled with `-f gfm-raw_html`. It does not: pandoc's gfm
+    reader accepts that flag, exits 0, and still emits a live `<script>` (measured on
+    pandoc 3.9; only its `markdown` reader honours the toggle). The flag looked correct
+    and the CI runners carry no pandoc, so the gap stayed invisible on every machine
+    except the one that actually serves the portal. A canary cannot rot that way: a
+    renderer that stops being safe simply stops being picked."""
+    global _RENDERER
+    if _RENDERER is None:
+        _RENDERER = False
+        for cmd, args in RENDERERS:
+            if not shutil.which(cmd):
+                continue
+            if _neutralizes_raw_html(cmd, args):
+                _RENDERER = (cmd, args)
+                break
+            # Installed but unsafe: say so once, so an operator whose reports suddenly
+            # render through a different tool knows which one was skipped and why.
+            sys.stderr.write("[portal] %s left raw HTML live on the canary; "
+                             "skipping it\n" % cmd)
+    return _RENDERER
+
+
 def render_markdown(md):
     """Render report markdown to an HTML fragment using the same renderer chain as the
     email (pandoc/cmark-gfm/cmark); fall back to the light renderer if none is present.
 
     Reports are agent-written from web sweeps, so the markdown is semi-trusted and the
     portal serves the result to a browser -- raw HTML in the source must not become live
-    markup. cmark/cmark-gfm already omit raw HTML in their default (no --unsafe) safe
-    mode; pandoc preserves it, so we disable its raw_html extension (`gfm-raw_html`) so
-    stray `<script>`/`<img onerror=...>` is escaped, not executed. A strict CSP on every
-    response (see Handler._send) is the defense-in-depth backstop."""
-    for cmd, args in (("pandoc", ["-f", "gfm-raw_html", "-t", "html"]),
-                      ("cmark-gfm", ["-e", "autolink", "-e", "table", "-e",
-                                     "strikethrough", "-e", "tagfilter"]),
-                      ("cmark", [])):
-        if shutil.which(cmd):
-            try:
-                p = subprocess.run([cmd] + args, input=md, capture_output=True,
-                                   text=True, timeout=20)
-                if p.returncode == 0 and p.stdout.strip():
-                    return p.stdout
-            except (OSError, subprocess.SubprocessError):
-                pass
+    markup. Which renderer honours that is PROVEN per machine by _safe_renderer(), never
+    assumed from a flag. The light renderer escapes everything, so falling all the way
+    through is safe by construction. A strict CSP on every response (see Handler._send)
+    is the defense-in-depth backstop."""
+    picked = _safe_renderer()
+    if picked:
+        cmd, args = picked
+        try:
+            p = subprocess.run([cmd] + args, input=md, capture_output=True,
+                               text=True, timeout=20)
+            if p.returncode == 0 and p.stdout.strip():
+                return p.stdout
+        except (OSError, subprocess.SubprocessError):
+            pass
     return _light_md(md)
 
 

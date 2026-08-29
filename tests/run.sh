@@ -5060,6 +5060,63 @@ test_init_bootstrap_offer() {
 }
 test_init_bootstrap_offer
 
+echo "== portal.py: the renderer must PROVE it neutralizes raw HTML (stubbed chain) =="
+# Stubs, not the real tools: the machine that serves the portal has pandoc, the CI
+# runners have none, and that asymmetry is exactly how a renderer silently passing raw
+# HTML through stayed invisible. Driving the chain with stubs puts the canary itself
+# under test everywhere the suite runs.
+test_portal_renderer_canary() {
+  local repo="$TMP/pcanary" out
+  mkdir -p "$repo/bin" "$repo/stub" "$repo/state" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  # An UNSAFE renderer: hands stdin back untouched, which is what pandoc 3.9 does with
+  # `-f gfm-raw_html` -- it accepts the flag, exits 0, and still emits live markup.
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo/stub/pandoc"
+  # A SAFE renderer that ESCAPES rather than drops. Both are safe, and the canary has to
+  # accept this one: keying on the `onerror` text instead of the tag would reject a
+  # renderer for leaving the escaped canary's inert characters behind.
+  printf '#!/usr/bin/env bash\nsed -e "s/</\&lt;/g" -e "s/>/\&gt;/g"\n' > "$repo/stub/cmark-gfm"
+  chmod +x "$repo/stub/pandoc" "$repo/stub/cmark-gfm"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo" && PATH="$repo/stub:$PATH" python3 - "$repo/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+picked = m._safe_renderer()
+print("PICKED", picked[0] if picked else "none")
+print("LIVE", "<script" in m.render_markdown("body <script>alert(1)</script>\n").lower())
+PY
+)"
+  assert_contains "the passthrough renderer is rejected, the next one picked" "$out" "PICKED cmark-gfm"
+  assert_contains "the skipped renderer is named on stderr" "$out" "[portal] pandoc left raw HTML live"
+  assert_contains "no live <script> reaches the page" "$out" "LIVE False"
+
+  # Every renderer unsafe -> fall all the way through to the escaping light renderer
+  # rather than trusting the least-bad one.
+  local repo2="$TMP/pcanary2"
+  mkdir -p "$repo2/bin" "$repo2/stub" "$repo2/state" "$repo2/kb"
+  cp "$ROOT/bin/portal.py" "$repo2/bin/"
+  for r in pandoc cmark-gfm cmark; do
+    printf '#!/usr/bin/env bash\ncat\n' > "$repo2/stub/$r"
+    chmod +x "$repo2/stub/$r"
+  done
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo2" && PATH="$repo2/stub:$PATH" python3 - "$repo2/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("PICKED", m._safe_renderer())
+body = m.render_markdown("body <script>alert(1)</script>\n")
+print("LIVE", "<script" in body.lower())
+print("ESCAPED", "&lt;script&gt;" in body)
+PY
+)"
+  assert_contains "no renderer is trusted when they all pass raw HTML" "$out" "PICKED False"
+  assert_contains "the light renderer serves it escaped" "$out" "ESCAPED True"
+  assert_contains "still no live <script> with the whole chain unsafe" "$out" "LIVE False"
+}
+test_portal_renderer_canary
+
 echo
 echo "tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
