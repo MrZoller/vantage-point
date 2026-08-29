@@ -24,7 +24,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T6 (standard) — portal.py: grade links never URL-encode the item id, so ids with URL metacharacters break or mis-route grading (Fixes #67)
   - acceptance: `bin/portal.py` percent-encodes review grade and missed-link item ids with no safe metacharacters; tests verify ids containing `&`, `=`, `%`, `#`, `+`, and spaces reach the intended record without query splitting
   - pr: 85
-- [R] T7 (standard) — fetch.py: relative entry links resolved against the pre-redirect feed URL (Fixes #66)
+- [x] T7 (standard) — fetch.py: relative entry links resolved against the pre-redirect feed URL (Fixes #66)
   - acceptance: `bin/fetch.py` retains the final URL returned after redirects and resolves relative entry links against it; tests cover a configured feed redirecting to another origin before returning a relative entry URL
   - pr: 86
 - [ ] T8 (standard) — fetch.py: config parsing loses feeds — '#' truncation without whitespace, and multi-line flow lists yield zero feeds (Fixes #65)
