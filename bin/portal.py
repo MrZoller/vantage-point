@@ -132,9 +132,10 @@ ul.events li:last-child{border:0}
 .item{border-bottom:1px solid var(--line);padding:14px 0;scroll-margin-top:80px}.item:last-child{border:0}
 .sig{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
 .grade{margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.grade a.btn{font-size:1.25em;text-decoration:none;padding:2px 10px;border:1px solid var(--line);
+.grade form{margin:0}.grade button.btn{font-size:1.25em;padding:2px 10px;border:1px solid var(--line);
+  background:transparent;color:inherit;cursor:pointer;
   border-radius:7px;line-height:1.6}
-.grade a.btn.on{background:var(--accent);border-color:var(--accent)}
+.grade button.btn.on{background:var(--accent);border-color:var(--accent)}
 .verdict{font-size:.85em;color:var(--accent)}
 .missed{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .missed input{flex:2;min-width:220px;padding:7px 10px;border:1px solid var(--line);
@@ -1692,7 +1693,7 @@ def review_inner(just=None):
                  '<p class="sublabel">Saw something relevant the monitor never '
                  'surfaced? Paste its URL &mdash; it becomes a false-negative '
                  'example for the next runs and the next profile refresh.</p>'
-                 '<form class="missed" method="get" action="/missed">'
+                 '<form class="missed" method="post" action="/missed">'
                  '<input type="url" name="url" required '
                  'placeholder="https://&hellip; (the item it missed)">'
                  '<input type="text" name="note" '
@@ -1716,7 +1717,7 @@ def review_inner(just=None):
     if not items:
         parts.append('<p class="muted">No surfaced items yet.</p>')
     for idx, it in enumerate(items):
-        rid = esc(quote(str(it.get("id")), safe=""))
+        rid = esc(it.get("id"))
         v = verdicts.get(it.get("id"))
         up = " on" if v == "up" else ""
         down = " on" if v == "down" else ""
@@ -1729,9 +1730,15 @@ def review_inner(just=None):
         if it.get("so_what"):
             parts.append('<div class="muted">%s</div>' % esc(it["so_what"]))
         parts.append('<div class="grade">'
-                     '<a class="btn up%s" href="/grade?id=%s&v=up" title="relevant">&#128077;</a>'
-                     '<a class="btn down%s" href="/grade?id=%s&v=down" title="not relevant">&#128078;</a>'
-                     % (up, rid, down, rid))
+                     '<form method="post" action="/grade">'
+                     '<input type="hidden" name="id" value="%s">'
+                     '<input type="hidden" name="v" value="up">'
+                     '<button class="btn up%s" type="submit" title="relevant">&#128077;</button>'
+                     '</form><form method="post" action="/grade">'
+                     '<input type="hidden" name="id" value="%s">'
+                     '<input type="hidden" name="v" value="down">'
+                     '<button class="btn down%s" type="submit" title="not relevant">&#128078;</button>'
+                     '</form>' % (rid, up, rid, down))
         link = safe_url(it.get("url"))
         if link:
             parts.append('<a href="%s" target="_blank" rel="noopener noreferrer">source</a>'
@@ -2087,10 +2094,36 @@ def config_inner():
 # event handlers, and javascript: navigation if anything slips through. We use an inline
 # <style> block and inline style attributes, so style-src must allow 'unsafe-inline';
 # everything else (scripts, objects, frames) defaults to 'none'.
-CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'"
+CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+       "form-action 'self'; base-uri 'none'")
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _trusted_host(self):
+        """Accept only the loopback authorities this server advertises.
+
+        Loopback binding prevents remote connections, but not DNS rebinding: a
+        hostile hostname can resolve to 127.0.0.1 and reach this handler with an
+        attacker-controlled Host. The selected port is part of the authority so
+        another local service cannot supply a matching Origin for this portal.
+        """
+        hosts = self.headers.get_all("Host") or []
+        port = self.server.server_address[1]
+        return len(hosts) == 1 and hosts[0] in (
+            "localhost:%d" % port, "127.0.0.1:%d" % port)
+
+    def _authorize(self, state_change=False):
+        if not self._trusted_host():
+            self._send(403, b"untrusted Host")
+            return False
+        if state_change:
+            host = self.headers.get("Host")
+            origins = self.headers.get_all("Origin") or []
+            if origins != ["http://" + host]:
+                self._send(403, b"cross-origin request rejected")
+                return False
+        return True
+
     def _security_headers(self):
         self.send_header("Content-Security-Policy", CSP)
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -2112,6 +2145,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):  # noqa: N802
+        if not self._authorize():
+            return
         u = urlparse(self.path)
         q = parse_qs(u.query)
         path = u.path
@@ -2132,7 +2167,40 @@ class Handler(BaseHTTPRequestHandler):
                                   title="Profile draft" if draft else "Profile"))
         elif path == "/config":
             self._send(200, shell("/config", config_inner(), title="Configuration"))
-        elif path == "/grade":
+        elif path in ("/grade", "/missed"):
+            self.send_response(405)
+            self.send_header("Allow", "POST")
+            self.send_header("Content-Length", "0")
+            self._security_headers()
+            self.end_headers()
+        else:
+            self._send(404, b"not found")
+
+    def do_POST(self):  # noqa: N802
+        if not self._authorize(state_change=True):
+            return
+        path = urlparse(self.path).path
+        if path not in ("/grade", "/missed"):
+            self._send(404, b"not found")
+            return
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != \
+                "application/x-www-form-urlencoded":
+            self._send(415, b"form-encoded body required")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self._send(400, b"valid Content-Length required")
+            return
+        if length < 0 or length > 64 * 1024:
+            self._send(413, b"request body too large")
+            return
+        try:
+            q = parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
+        except UnicodeDecodeError:
+            self._send(400, b"form body must be UTF-8")
+            return
+        if path == "/grade":
             rid = (q.get("id") or [""])[0]
             verdict = (q.get("v") or [""])[0]
             items = recent_items()
@@ -2141,11 +2209,10 @@ class Handler(BaseHTTPRequestHandler):
             item = items[idx] if idx is not None else None
             if item and verdict in ("up", "down"):
                 record_grade(item, verdict)
-                # Land back on the graded row, not the top of the page.
                 self._redirect("/review#item-%d" % idx)
             else:
                 self._send(400, b"bad grade request")
-        elif path == "/missed":
+        else:
             url_v = (q.get("url") or [""])[0].strip()
             note = (q.get("note") or [""])[0].strip()
             if safe_url(url_v):
@@ -2153,8 +2220,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect("/review")
             else:
                 self._send(400, b"bad missed-signal request: url must be http(s)")
-        else:
-            self._send(404, b"not found")
 
     def log_message(self, *_):  # quiet
         pass
