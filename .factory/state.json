@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T14",
-  "branch": "factory/t14-feed-fetch-limits",
+  "current_task": "T15",
+  "branch": "factory/t15-dangling-demo-symlinks",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T09:10:13Z"
+  "updated": "2026-08-29T09:41:54Z"
 }

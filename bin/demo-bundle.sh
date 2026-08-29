@@ -156,10 +156,43 @@ copy_file() {  # copy_file <src-relative> [warn]
 }
 copy_dir() {   # copy_dir <src-relative> [warn]
   if [ -d "$ROOT/$1" ]; then
-    # -L dereferences symlinks: a state/ or kb/ that is (or contains) a symlink to an
-    # absolute live path must land as real data in the bundle, or the off-site copy has
-    # broken links and the original machine's portal would write back into live state.
-    cp -RL "$ROOT/$1" "$OUT/$1"; copied_any=1
+    # Dereference valid symlinks so an off-site bundle cannot point back into live state,
+    # but omit dangling ones individually. Plain `cp -RL` aborts the entire build on one
+    # broken link; Python is already a required runtime and lets other copy errors remain
+    # fatal rather than hiding permissions, disk-full, or traversal failures.
+    python3 - "$ROOT/$1" "$OUT/$1" "$1" <<'PY'
+import errno
+import os
+import shutil
+import sys
+
+source, destination, relative_root = sys.argv[1:]
+
+
+def skip_dangling(directory, names):
+    skipped = []
+    for name in names:
+        path = os.path.join(directory, name)
+        if not os.path.islink(path):
+            continue
+        try:
+            os.stat(path)
+        except OSError as error:
+            if error.errno not in (errno.ENOENT, errno.ENOTDIR):
+                raise
+            relative = os.path.relpath(path, source)
+            print(
+                "demo-bundle.sh: WARNING: "
+                f"{os.path.join(relative_root, relative)} is a dangling symlink - skipped",
+                file=sys.stderr,
+            )
+            skipped.append(name)
+    return skipped
+
+
+shutil.copytree(source, destination, ignore=skip_dangling)
+PY
+    copied_any=1
   elif [ "${2:-}" = "warn" ]; then
     echo "demo-bundle.sh: WARNING: $1/ not found - its portal tab will be empty" >&2
   fi
