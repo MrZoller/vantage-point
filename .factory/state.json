@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T13",
-  "branch": "factory/t13-deep-dive-state",
-  "pr": 91,
+  "current_task": null,
+  "branch": null,
+  "pr": null,
   "hold": false,
-  "updated": "2026-08-29T08:56:47Z"
+  "updated": "2026-08-29T09:09:07Z"
 }

@@ -41,7 +41,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
   - pr: 90
 - [!] T12 (standard) — usage.sh: one runs.log row without a valid timestamp aborts the whole rollup (Fixes #61)
   - acceptance: `bin/usage.sh` skips JSONL rows with missing/invalid timestamps and malformed or truncated lines while retaining valid rows in the rollup; tests verify the command remains successful and reports valid usage
-- [R] T13 (standard) — monitor.sh: triage prompt renders "DEEP-DIVE QUEUE: enabledopus." when deep-dive is on (Fixes #60)
+- [x] T13 (standard) — monitor.sh: triage prompt renders "DEEP-DIVE QUEUE: enabledopus." when deep-dive is on (Fixes #60)
   - acceptance: `bin/monitor.sh` renders the triage prompt's deep-dive state as exactly `enabled` or `disabled`; tests cover a configured model without concatenating its name into the state
   - pr: 91
 - [ ] T14 (standard) — fetch.py: no total deadline or size cap on feed fetches — a slow-drip feed stalls the whole run (Fixes #59)
