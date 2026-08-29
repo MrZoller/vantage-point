@@ -2919,6 +2919,67 @@ PYSRV
 }
 test_fetch_308
 
+echo "== fetch.py: relative entry links follow a redirect's final origin =="
+test_fetch_redirect_entry_links() {
+  local dir="$TMP/feeds-redirect-entry" rc final_port redirect_port final_ready="$TMP/static.redirect-final.ready"
+  local redirect_ready="$TMP/redirect-entry.ready" final_log="$TMP/srv.redirect-final.log" redirect_log="$TMP/srv.redirect-entry.log"
+  mkdir -p "$dir"
+  write_feed_fixtures "$dir"
+  # The final feed lives on a distinct dynamically assigned origin. Its RSS fixture
+  # contains /rel/post, so using the configured redirecting URL as urljoin's base
+  # would put the candidate back on the redirecting server instead.
+  write_static_httpd "$TMP/statichttpd.py"
+  python3 "$TMP/statichttpd.py" "$dir" 0 "$final_ready" > "$final_log" 2>&1 &
+  local final_srv=$!
+  if ! wait_server "$final_ready" "$final_srv" "$final_log"; then
+    fail "redirect final-feed server came up"; stop_server "$final_srv"; return
+  fi
+  final_port="$SERVER_PORT"
+  cat > "$TMP/redirect-entry-httpd.py" <<'PYSRV'
+import socketserver, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class _Quiet(HTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(302)
+        self.send_header("Location", sys.argv[1])
+        self.end_headers()
+    def log_message(self, *a):
+        pass
+
+httpd = _Quiet(("127.0.0.1", 0), H)
+open(sys.argv[2], "w").write(str(httpd.server_address[1]))
+httpd.serve_forever()
+PYSRV
+  python3 "$TMP/redirect-entry-httpd.py" "http://127.0.0.1:$final_port/rss.xml" \
+    "$redirect_ready" > "$redirect_log" 2>&1 &
+  local redirect_srv=$!
+  if ! wait_server "$redirect_ready" "$redirect_srv" "$redirect_log"; then
+    fail "redirecting feed server came up"; stop_server "$redirect_srv"; stop_server "$final_srv"; return
+  fi
+  redirect_port="$SERVER_PORT"
+  printf 'subject:\n  derived:\n    feeds: [http://127.0.0.1:%s/configured.xml]\n' \
+    "$redirect_port" > "$TMP/redirect-entry.yaml"
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-redirect-entry.jsonl" \
+    "$TMP/redirect-entry.yaml" 2>/dev/null; rc=$?
+  stop_server "$redirect_srv"
+  stop_server "$final_srv"
+  assert_eq "redirected feed sweep exits 0" "0" "$rc"
+  local out
+  out="$(cat "$TMP/cand-redirect-entry.jsonl" 2>/dev/null)"
+  assert_contains "a relative entry link resolves against the final feed origin" "$out" \
+    "\"url\": \"http://127.0.0.1:$final_port/rel/post\""
+  assert_contains "candidate feed retains the configured redirecting URL" "$out" \
+    "\"feed\": \"http://127.0.0.1:$redirect_port/configured.xml\""
+}
+test_fetch_redirect_entry_links
+
 echo "== fetch.py: --health tracks per-feed sweep health across runs =="
 test_fetch_health() {
   local dir="$TMP/feeds-h" err rc port fh="$TMP/feedhealth.json" ready="$TMP/static.health.ready"
