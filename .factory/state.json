@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T9",
-  "branch": "factory/t9-bound-facet-slugs",
+  "current_task": "T10",
+  "branch": "factory/t10-normalize-cid-base64",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T07:23:13Z"
+  "updated": "2026-08-29T07:45:14Z"
 }

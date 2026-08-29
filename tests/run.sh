@@ -783,6 +783,39 @@ PY
     "multipart/related image/png,text/html,text/plain <vp-logo@vantagepoint>" "$struct"
   assert_contains "HTML header references the logo via cid:" "$(cat "$on_eml")" 'src="cid:vp-logo@vantagepoint"'
 
+  # macOS base64 writes its whole result as one physical line. Use a payload whose
+  # encoded form exceeds SMTP's 998-octet line limit, then make the stub reproduce
+  # that behavior so the MIME output must normalize the CID body itself.
+  # shellcheck disable=SC2031  # the earlier subshell only exported, not reassigned, logo
+  python3 - "$logo" <<'PY'
+import sys
+open(sys.argv[1], "wb").write(b"x" * 1000)
+PY
+  rm "$lbin/base64"
+  printf '#!/usr/bin/env bash\n"%s" "$@" | "%s" -d "\\n"; printf "\\n"\n' \
+    "$(command -v base64)" "$(command -v tr)" > "$lbin/base64"
+  chmod +x "$lbin/base64"
+  local mac_eml="$TMP/logo_macos_base64.eml"
+  ( set -e
+    # shellcheck disable=SC2030,SC2031  # subshell-local env is intentional (isolation)
+    export MODE=daily TODAY=2026-01-01 MSG_OUT="$mac_eml" PATH="$lbin" LOGO_ASSET="$logo" EMAIL_IMAGES=1
+    # shellcheck source=bin/email-lib.sh
+    source "$ROOT/bin/email-lib.sh"
+    # shellcheck disable=SC1090
+    source "$funcs"
+    email_report "$report" to@example.com )
+  local logo_lines
+  logo_lines="$(python3 - "$mac_eml" <<'PY'
+import base64, email, sys
+m = email.message_from_file(open(sys.argv[1]))
+image = next(p for p in m.walk() if p.get_content_type() == "image/png")
+lines = image.get_payload().splitlines()
+print(len(base64.b64decode(image.get_payload())), "yes" if max(len(line) for line in lines) <= 76 else "no (%d)" % max(len(line) for line in lines))
+PY
+ )"
+  assert_eq "CID image body normalizes macOS base64 output to 76-character lines" \
+    "1000 yes" "$logo_lines"
+
   # ---- images OFF (default): plain multipart/alternative, no image, no cid ----
   local off_eml="$TMP/logo_off.eml"
   ( set -e

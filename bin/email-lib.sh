@@ -198,6 +198,21 @@ _emit_alt_parts() {
   printf '\n--%s--\n' "$boundary"
 }
 
+# stdin: bytes -> stdout: MIME-safe base64 with an explicit 76-character line
+# limit. GNU base64 wraps by default, while the macOS tool emits one unbounded
+# line; normalize both in Bash so sending does not depend on platform flags.
+_emit_base64_body() {
+  local encoded
+  encoded="$(base64)"
+  encoded="${encoded//$'\n'/}"
+  encoded="${encoded//$'\r'/}"
+  while [ "${#encoded}" -gt 76 ]; do
+    printf '%.76s\n' "$encoded"
+    encoded="${encoded:76}"
+  done
+  printf '%s\n' "$encoded"
+}
+
 # Print one HTML email (plain markdown + styled HTML) to stdout. With a readable logo
 # PNG + CID, the message is multipart/related: the alternative body plus the logo as a
 # base64 image/png part referenced by `cid:` from the header (inline, no external
@@ -220,7 +235,7 @@ _emit_html() {
     printf 'Content-Transfer-Encoding: base64\n'
     printf 'Content-ID: <%s>\n' "$logo_cid"
     printf 'Content-Disposition: inline; filename="vantage-point-logo.png"\n\n'
-    base64 < "$logo"; printf '\n'
+    _emit_base64_body < "$logo"
     printf -- '--%s--\n' "$rel"
   else
     printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$alt"
