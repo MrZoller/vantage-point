@@ -995,7 +995,7 @@ def _horizon_timing(rec):
         d = date.fromisoformat(due[:10])
     except ValueError:
         return None
-    overdue = (date.today() - d).days
+    overdue = (datetime.now(timezone.utc).date() - d).days
     precision = rec.get("due_precision")
     grace = HORIZON_GRACE.get(precision, 30) if isinstance(precision, str) else 30
     return d, overdue, overdue > grace
