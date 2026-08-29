@@ -6,7 +6,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 
 ## Tasks
 
-- [R] T1 (standard) — tests: fixed server ports + identity-blind wait_port make server tests flaky under contention (Fixes #78)
+- [x] T1 (standard) — tests: fixed server ports + identity-blind wait_port make server tests flaky under contention (Fixes #78)
   - acceptance: server-backed cases in `tests/run.sh` use OS-assigned ports (including portal and capture/static servers), wait for the server they started rather than any listener, and terminate then `wait` for each server; repeated or concurrent suite runs do not fail `test_fetch_verify` through a port collision
   - pr: 80
 - [ ] T2 (standard) — Minor findings grab-bag: init.err litter, dead nav links in static export, vacuous test assertion, cosmetic nits (Fixes #71)
