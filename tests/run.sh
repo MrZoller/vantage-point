@@ -3380,6 +3380,38 @@ PY
   assert_contains "dossier lists the pending overdue expectation" "$out" "EU launch:overdue"
   assert_contains "dossier keeps the met history after pending" "$out" "price cut:met"
   assert_contains "a horizon-only entity reaches the index" "$out" "INDEX True"
+  # Cross midnight: the local date is Jan 1 while this instant's UTC date is Jan 2.
+  # The card is the public boundary here; a Dec 29 day-precision expectation is only
+  # past its three-day grace period when timing is calculated from UTC.
+  local utc
+  utc="$(python3 - "$repo/bin/portal.py" <<'PY'
+import importlib.util, json, sys
+from datetime import date, datetime, timezone
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+class LocalDate(date):
+    @classmethod
+    def today(cls):
+        return cls(2026, 1, 1)
+class FixedDatetime:
+    @classmethod
+    def now(cls, tz=None):
+        if tz is timezone.utc:
+            return datetime(2026, 1, 2, 0, 30, tzinfo=timezone.utc)
+        return datetime(2026, 1, 1, 23, 30)
+m.date = LocalDate
+m.datetime = FixedDatetime
+with open(m.HORIZON) as f:
+    original = f.read()
+with open(m.HORIZON, "w") as f:
+    f.write(json.dumps({"id":"utc-boundary","entity":"UTC vendor","event":"launch", "due":"2025-12-29", "due_precision":"day", "status":"pending"}) + "\n")
+print(m.coming_up_card())
+with open(m.HORIZON, "w") as f:
+    f.write(original)
+PY
+)"
+  assert_contains "Coming up calculates overdue status from the UTC date across local midnight" \
+    "$utc" "overdue 4d"
   # The static export carries the card (Overview snapshot, no /entity route).
   ( cd "$repo" && python3 bin/portal.py --export kb/index.html >/dev/null 2>&1 )
   assert_contains "static export includes the Coming up card" "$(cat "$repo/kb/index.html" 2>/dev/null)" "Coming up"

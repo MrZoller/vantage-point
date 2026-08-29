@@ -12,9 +12,10 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T2 (standard) — Minor findings grab-bag: init.err litter, dead nav links in static export, vacuous test assertion, cosmetic nits (Fixes #71)
   - acceptance: successful `bin/init.sh` review removes `init.err`; `bin/portal.py` static exports contain usable static navigation; `tests/run.sh` replaces the non-validating HTMLParser assertion with a check that can detect the targeted malformed output; `bin/bootstrap.sh` renders recipient lists with comma-space separators; and `bin/email-lib.sh` documents the msmtp status behavior it actually provides
   - pr: 81
-- [~] T3 (standard) — portal.py: calibration coverage counts first-record-per-id while Review/dossiers use newest — dropped items inflate the denominator (Fixes #70)
+- [x] T3 (standard) — portal.py: calibration coverage counts first-record-per-id while Review/dossiers use newest — dropped items inflate the denominator (Fixes #70)
   - acceptance: `bin/portal.py` builds calibration and source surfaced counts from the newest record per id and excludes ids whose newest record is `signal: "dropped"`, matching Review and dossier visibility; portal tests cover a surfaced-then-dropped id
-- [ ] T4 (standard) — portal.py: Coming-up card uses local date.today() while every other portal date is UTC (Fixes #69)
+  - pr: 82
+- [~] T4 (standard) — portal.py: Coming-up card uses local date.today() while every other portal date is UTC (Fixes #69)
   - acceptance: `bin/portal.py` computes the Coming-up card date in UTC so expectation timing and cadence/quiet displays use the same day boundary; tests cover a local-date/UTC-date boundary
 - [ ] T5 (standard) — portal.py vs monitor.sh: tracking.quiet_min_events: 0 normalized differently — portal shows quiet flags the monitor never raises (Fixes #68)
   - acceptance: `bin/portal.py` normalizes zero or invalid `tracking.quiet_min_events` to 4, matching `bin/monitor.sh`, and tests show the portal and monitor apply the same threshold
@@ -60,6 +61,8 @@ Treat the open GitHub issue tracker as the external specification and keep this 
   - acceptance: `bin/fetch.py` catches `http.client.HTTPException` failures such as `IncompleteRead`, `BadStatusLine`, and `LineTooLong` per feed, continues processing other feeds, and updates feed-health output; tests cover malformed/incomplete server responses
 - [!] T26 (trivial) — parked review minors (batch)
   - acceptance: confirmed non-blocking review findings parked during backlog delivery are collected here and shipped together when the batch is made runnable
+  - PR #82: make Review and dossier latest-row readers reserve IDs whose newest seen row is `dropped`, so older surfaced rows cannot reappear for grading.
+  - PR #82: retain dropped tombstone state (or distinguish it from an ordinary pruned surfaced record) for the calibration fallback after `seen.jsonl` pruning.
 
 ## Risks
 
