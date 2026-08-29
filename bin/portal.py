@@ -1324,7 +1324,8 @@ RENDERERS = (("pandoc", ["-f", "gfm-raw_html", "-t", "html"]),
 # a live tag behind is not used, whatever its flags claim.
 RAW_HTML_CANARY = "canary <script>alert(1)</script> <img src=x onerror=alert(2)>\n"
 
-_RENDERER = None   # None = not probed yet; False = nothing on the chain is safe
+_RENDERER = None      # None = not probed yet; False = nothing on the chain is safe
+_RENDERER_ID = None   # the winner's (path, mtime_ns, size, ino, dev) at probe time
 
 
 def _neutralizes_raw_html(cmd, args):
@@ -1344,8 +1345,23 @@ def _neutralizes_raw_html(cmd, args):
     return "<script" not in low and "<img" not in low
 
 
+def _renderer_id(cmd):
+    """Identity of the executable `cmd` resolves to right now: its path plus the stat
+    fields that change when the file is replaced. None when it no longer resolves or
+    cannot be statted -- both read as "not the binary that was probed"."""
+    path = shutil.which(cmd)
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (path, st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev)
+
+
 def _safe_renderer():
-    """First installed renderer that passes the raw-HTML canary, probed once per process.
+    """First installed renderer that passes the raw-HTML canary, re-probed when the
+    winning executable changes on disk.
 
     Asking rather than assuming is the point. cmark/cmark-gfm omit raw HTML in their
     default (no --unsafe) safe mode, and pandoc was believed to do the same once its
@@ -1354,14 +1370,39 @@ def _safe_renderer():
     pandoc 3.9; only its `markdown` reader honours the toggle). The flag looked correct
     and the CI runners carry no pandoc, so the gap stayed invisible on every machine
     except the one that actually serves the portal. A canary cannot rot that way: a
-    renderer that stops being safe simply stops being picked."""
-    global _RENDERER
+    renderer that stops being safe simply stops being picked.
+
+    The verdict is cached, but keyed to the winner's resolved path and stat signature:
+    a probe attests to the file it ran, not to the name, and a long-lived portal can
+    watch `brew upgrade` swap the binary underneath it. Each call re-stats the winner
+    (microseconds, against the ~ms subprocess it guards) and a changed or vanished file
+    drops the cache and re-probes. The residual window -- a swap between this check and
+    the exec's own path resolution -- is microseconds instead of the portal's lifetime,
+    and behind it the CSP still confines raw HTML to markup, not script. Re-probing
+    every render was considered and declined: it would double the subprocess cost of
+    every report view to close a window the stat check already reduces to noise."""
+    global _RENDERER, _RENDERER_ID
+    if _RENDERER:
+        if _renderer_id(_RENDERER[0]) == _RENDERER_ID:
+            return _RENDERER
+        # The probed file is gone or different. Fall toward the light renderer while
+        # re-probing (never toward trusting the unknown binary), same as first call.
+        sys.stderr.write("[portal] %s changed on disk since it was probed; "
+                         "re-checking the renderer chain\n" % _RENDERER[0])
+        _RENDERER = None
     if _RENDERER is None:
         _RENDERER = False
+        _RENDERER_ID = None
         for cmd, args in RENDERERS:
-            if not shutil.which(cmd):
+            before = _renderer_id(cmd)
+            if before is None:
                 continue
             if _neutralizes_raw_html(cmd, args):
+                # Accept only if the file is still the one the probe ran: a swap DURING
+                # the probe would otherwise pin the new binary to the old file's verdict.
+                if _renderer_id(cmd) != before:
+                    continue
+                _RENDERER_ID = before
                 _RENDERER = (cmd, args)
                 break
             # Installed but unsafe: say so once, so an operator whose reports suddenly

@@ -5114,6 +5114,39 @@ PY
   assert_contains "no renderer is trusted when they all pass raw HTML" "$out" "PICKED False"
   assert_contains "the light renderer serves it escaped" "$out" "ESCAPED True"
   assert_contains "still no live <script> with the whole chain unsafe" "$out" "LIVE False"
+
+  # The verdict must be pinned to the FILE that was probed, not the name: replace the
+  # winning stub in place (brew upgrade's shape) and the next render has to notice,
+  # re-probe, and refuse the now-unsafe binary instead of riding the cached verdict.
+  local repo3="$TMP/pcanary3"
+  mkdir -p "$repo3/bin" "$repo3/stub" "$repo3/state" "$repo3/kb"
+  cp "$ROOT/bin/portal.py" "$repo3/bin/"
+  printf '#!/usr/bin/env bash\nsed -e "s/</\&lt;/g" -e "s/>/\&gt;/g"\n' > "$repo3/stub/cmark-gfm"
+  chmod +x "$repo3/stub/cmark-gfm"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo3" && PATH="$repo3/stub:$PATH" REPO3="$repo3" python3 - "$repo3/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+first = m.render_markdown("body <script>alert(1)</script>\n")
+print("PICKED1", (m._safe_renderer() or ("none",))[0].split("/")[-1] if m._safe_renderer() else "none")
+print("LIVE1", "<script" in first.lower())
+stub = os.path.join(os.environ["REPO3"], "stub", "cmark-gfm")
+with open(stub, "w") as f:
+    f.write("#!/usr/bin/env bash\ncat\n")
+os.chmod(stub, 0o755)
+second = m.render_markdown("body <script>alert(1)</script>\n")
+print("PICKED2", m._safe_renderer())
+print("LIVE2", "<script" in second.lower())
+print("ESCAPED2", "&lt;script&gt;" in second)
+PY
+)"
+  assert_contains "the safe stub is picked before the swap" "$out" "PICKED1 cmark-gfm"
+  assert_contains "renders live-free before the swap" "$out" "LIVE1 False"
+  assert_contains "the in-place swap is noticed" "$out" "changed on disk since it was probed"
+  assert_contains "the swapped-in passthrough is refused" "$out" "PICKED2 False"
+  assert_contains "no live <script> after the swap" "$out" "LIVE2 False"
+  assert_contains "the light renderer serves the post-swap render escaped" "$out" "ESCAPED2 True"
 }
 test_portal_renderer_canary
 
