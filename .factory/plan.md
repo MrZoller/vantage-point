@@ -65,7 +65,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T20 (standard) — portal.py: one invalid UTF-8 byte in any state file breaks every portal page (Fixes #53)
   - acceptance: `bin/portal.py` tolerates invalid UTF-8 in JSONL state and kb reports without dropping the entire page, and `bin/cadence.py` applies equivalent tolerant reading; tests cover malformed bytes in each reader surface
   - pr: 98
-- [R] T21 (standard) — portal.py: state-changing GET endpoints (/grade, /missed) have no CSRF/origin protection (Fixes #52)
+- [x] T21 (standard) — portal.py: state-changing GET endpoints (/grade, /missed) have no CSRF/origin protection (Fixes #52)
   - acceptance: `bin/portal.py` rejects cross-origin state changes to `/grade` and `/missed` and prevents DNS-rebinding access through untrusted Host values, using POST plus a per-session token or equivalent origin/host protection; tests verify legitimate localhost actions still append feedback while forged cross-origin requests do not
   - pr: 99
 - [!] T22 (standard) — monitor.sh: stale-lock reclaim race can leave two monitors running concurrently (Fixes #51)

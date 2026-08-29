@@ -57,3 +57,4 @@
 {"schemaVersion":1,"task":"T20","event":"merge","at":"2026-08-29T15:31:42Z","pr":98,"external":{"codex":{"rounds":1,"findings":{"blocking":0,"minor":0,"refuted":0},"fixPushes":0}},"ci":{"runs":1,"reruns":0}}
 {"schemaVersion":1,"task":"T21","event":"ship","at":"2026-08-29T15:55:09Z","size":"standard","reclassifiedFrom":null,"internal":{"rounds":2,"findings":{"blocking":2,"minor":0,"invalid":0},"fixed":2}}
 {"schemaVersion":1,"task":"T21","event":"pr","at":"2026-08-29T16:02:56Z","by":"factory-git","pr":99,"openedAt":"2026-08-29T15:55:03Z","mergedAt":"2026-08-29T16:02:49Z","commits":10,"commitsAfterOpen":0,"reviews":{},"issueComments":{"chatgpt-codex-connector":1},"reactions":{"chatgpt-codex-connector":{"+1":1}},"threads":{},"checkRuns":{"total":2,"failed":0}}
+{"schemaVersion":1,"task":"T21","event":"merge","at":"2026-08-29T16:03:00Z","pr":99,"external":{"codex":{"rounds":1,"findings":{"blocking":0,"minor":0,"refuted":0},"fixPushes":0}},"ci":{"runs":1,"reruns":0}}
