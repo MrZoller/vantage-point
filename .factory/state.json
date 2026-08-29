@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T5",
-  "branch": "factory/t5-quiet-min-events",
+  "current_task": "T6",
+  "branch": "factory/t6-encode-grade-ids",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T04:50:48Z"
+  "updated": "2026-08-29T05:33:03Z"
 }
