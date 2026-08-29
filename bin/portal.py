@@ -519,9 +519,13 @@ def entity_cadence(name):
     if not raw_min_events.isascii() or not raw_min_events.isdigit():
         min_events = 4
     else:
-        min_events = int(raw_min_events)
-        if min_events == 0:
+        try:
+            min_events = int(raw_min_events)
+        except ValueError:
             min_events = 4
+        else:
+            if min_events == 0:
+                min_events = 4
     today = datetime.now(timezone.utc).date()
     rows = []
     for b in mod.baselines(OBS, min_events):

@@ -3652,7 +3652,7 @@ test_monitor_quiet_compact
 
 echo "== portal.py and monitor.sh: invalid quiet_min_events uses the default threshold =="
 test_quiet_min_events_normalization() {
-  local repo="$TMP/quietminevents" base="$TMP/quiet_min_events_base.yaml" obsbase="$TMP/quiet_min_events_obs.jsonl" out value unicode_digit
+  local repo="$TMP/quietminevents" base="$TMP/quiet_min_events_base.yaml" obsbase="$TMP/quiet_min_events_obs.jsonl" out value label unicode_digit overlong_digits
   make_fake_repo "$repo"
   # Three evenly-spaced events make a valid cadence only if the configured minimum is
   # accepted below the documented default of four. Keep the last event far enough back
@@ -3683,7 +3683,10 @@ PY
   # portal must fall back to the same default (4), rather than displaying this
   # three-event cadence as a quiet finding.
   unicode_digit="$(printf '\331\243')" # U+0663 ARABIC-INDIC DIGIT THREE
-  for value in 0 -1 invalid "$unicode_digit"; do
+  overlong_digits="$(python3 -c 'print("1" * 4301)')"
+  for value in 0 -1 invalid "$unicode_digit" "$overlong_digits"; do
+    label="$value"
+    [ "${#label}" -le 100 ] || label="overlong digits"
     cp "$base" "$repo/monitor-config.yaml"
     cp "$obsbase" "$repo/state/observations.jsonl"
     python3 - "$repo/monitor-config.yaml" "$value" <<'PY'
@@ -3695,7 +3698,7 @@ with open(path, "w") as f:
     f.write(config.replace("tracking:\n", "tracking:\n  quiet_min_events: " + value + "\n", 1))
 PY
     out="$(quiet_portal_count)"
-    assert_eq "portal defaults invalid quiet_min_events=$value to four events" "CAD 0" "$out"
+    assert_eq "portal defaults invalid quiet_min_events=$label to four events" "CAD 0" "$out"
     python3 - "$repo/state/observations.jsonl" <<'PY'
 import json, sys
 from datetime import datetime, timedelta, timezone
@@ -3706,7 +3709,7 @@ with open(sys.argv[1], "a") as f:
                         "source": "https://q.example/releases"}) + "\n")
 PY
     out="$(quiet_portal_count)"
-    assert_eq "portal accepts four events after invalid quiet_min_events=$value" "CAD 1" "$out"
+    assert_eq "portal accepts four events after invalid quiet_min_events=$label" "CAD 1" "$out"
   done
 
   # The monitor already normalizes -1 to four. With the identical three-event
