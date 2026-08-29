@@ -29,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone, timedelta, date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote
@@ -1337,8 +1338,15 @@ RAW_HTML_CANARY = ("canary <script>alert(1)</script> <img src=x onerror=alert(2)
                    "\n<style>\np{}\n</style>\n"
                    "\n<vpcanary>\nblock\n</vpcanary>\n")
 
-_RENDERER = None      # None = not probed yet; False = nothing on the chain is safe
-_RENDERER_ID = None   # the winner's (path, mtime_ns, size, ino, dev) at probe time
+_RENDERER = None       # None = not probed yet; False = nothing on the chain is safe
+_RENDERER_ID = None    # the winner's (path, mtime_ns, size, ino, dev) at probe time
+_RENDERER_RETRY = 0.0  # monotonic deadline after which a negative verdict is re-probed
+# How long "nothing on the chain is safe" is believed before looking again. A negative
+# cached forever would strand a long-lived portal on the reduced-fidelity light renderer
+# after a transient gap -- mid-upgrade, or a renderer installed later -- where the old
+# per-call discovery recovered by itself. A bounded TTL keeps that self-healing (at most
+# one probe burst per window) without re-paying the probe on every render.
+NEGATIVE_TTL_SECONDS = 300.0
 
 
 def _neutralizes_raw_html(cmd, args):
@@ -1394,7 +1402,9 @@ def _safe_renderer():
     and behind it the CSP still confines raw HTML to markup, not script. Re-probing
     every render was considered and declined: it would double the subprocess cost of
     every report view to close a window the stat check already reduces to noise."""
-    global _RENDERER, _RENDERER_ID
+    global _RENDERER, _RENDERER_ID, _RENDERER_RETRY
+    if _RENDERER is False and time.monotonic() >= _RENDERER_RETRY:
+        _RENDERER = None   # the negative verdict has aged out -- look again
     if _RENDERER:
         if _renderer_id(_RENDERER[0]) == _RENDERER_ID:
             return _RENDERER
@@ -1422,6 +1432,8 @@ def _safe_renderer():
             # render through a different tool knows which one was skipped and why.
             sys.stderr.write("[portal] %s left raw HTML live on the canary; "
                              "skipping it\n" % cmd)
+        if _RENDERER is False:
+            _RENDERER_RETRY = time.monotonic() + NEGATIVE_TTL_SECONDS
     return _RENDERER
 
 

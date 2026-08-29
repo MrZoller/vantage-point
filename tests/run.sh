@@ -5102,19 +5102,34 @@ PY
     chmod +x "$repo2/stub/$r"
   done
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
-  out="$( cd "$repo2" && PATH="$repo2/stub:$PATH" python3 - "$repo2/bin/portal.py" 2>&1 <<'PY'
-import importlib.util, sys
+  out="$( cd "$repo2" && PATH="$repo2/stub:$PATH" REPO2="$repo2" python3 - "$repo2/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 print("PICKED", m._safe_renderer())
 body = m.render_markdown("body <script>alert(1)</script>\n")
 print("LIVE", "<script" in body.lower())
 print("ESCAPED", "&lt;script&gt;" in body)
+# The negative verdict must age out, not stand forever: repair one renderer, expire the
+# TTL by hand, and the next call has to re-probe and find it -- the old per-call
+# discovery healed this by itself, so the cache may not regress it.
+stub = os.path.join(os.environ["REPO2"], "stub", "cmark")
+with open(stub, "w") as f:
+    f.write('#!/usr/bin/env bash\nsed -e "s/</\\&lt;/g" -e "s/>/\\&gt;/g"\n')
+os.chmod(stub, 0o755)
+print("STILLFALSE", m._safe_renderer() is False)   # TTL not expired yet
+m._RENDERER_RETRY = 0.0
+picked = m._safe_renderer()
+print("RECOVERED", picked[0] if picked else picked)
+print("RLIVE", "<script" in m.render_markdown("x <script>a</script>\n").lower())
 PY
 )"
   assert_contains "no renderer is trusted when they all pass raw HTML" "$out" "PICKED False"
   assert_contains "the light renderer serves it escaped" "$out" "ESCAPED True"
   assert_contains "still no live <script> with the whole chain unsafe" "$out" "LIVE False"
+  assert_contains "a repaired renderer is NOT seen before the TTL expires" "$out" "STILLFALSE True"
+  assert_contains "an expired negative verdict re-probes and recovers" "$out" "RECOVERED cmark"
+  assert_contains "the recovered renderer still serves live-free" "$out" "RLIVE False"
 
   # A DENYLIST renderer -- drops the famous tags (script/img) but passes unknown raw
   # HTML through -- must be rejected by the canary's generic sentinel: under this
