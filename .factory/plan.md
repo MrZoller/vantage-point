@@ -73,7 +73,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T23 (standard) — bootstrap.sh: a successful run exits 1 whenever no draft summary was written (Fixes #50)
   - acceptance: `bin/bootstrap.sh` exits successfully when synthesis writes `profile.draft.yaml` without the optional summary, still prints the appropriate completion guidance, and has an end-to-end test for a draft-without-summary stub
   - pr: 100
-- [R] T24 (standard) — webhook.py: a redirect silently drops the report payload, then reports success (Fixes #49)
+- [x] T24 (standard) — webhook.py: a redirect silently drops the report payload, then reports success (Fixes #49)
   - acceptance: `bin/webhook.py` refuses HTTP redirects instead of following them as a bodyless GET, exits nonzero with guidance to use the final webhook URL, and tests verify redirected payloads are never reported as delivered
   - pr: 101
 - [ ] T25 (standard) — fetch.py: uncaught http.client exceptions from one feed kill the entire sweep (Fixes #48)
