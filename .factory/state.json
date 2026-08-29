@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": null,
-  "branch": null,
+  "current_task": "T4",
+  "branch": "factory/t4-coming-up-utc",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T04:22:00Z"
+  "updated": "2026-08-29T04:23:08Z"
 }

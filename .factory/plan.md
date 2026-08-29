@@ -15,7 +15,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T3 (standard) — portal.py: calibration coverage counts first-record-per-id while Review/dossiers use newest — dropped items inflate the denominator (Fixes #70)
   - acceptance: `bin/portal.py` builds calibration and source surfaced counts from the newest record per id and excludes ids whose newest record is `signal: "dropped"`, matching Review and dossier visibility; portal tests cover a surfaced-then-dropped id
   - pr: 82
-- [ ] T4 (standard) — portal.py: Coming-up card uses local date.today() while every other portal date is UTC (Fixes #69)
+- [~] T4 (standard) — portal.py: Coming-up card uses local date.today() while every other portal date is UTC (Fixes #69)
   - acceptance: `bin/portal.py` computes the Coming-up card date in UTC so expectation timing and cadence/quiet displays use the same day boundary; tests cover a local-date/UTC-date boundary
 - [ ] T5 (standard) — portal.py vs monitor.sh: tracking.quiet_min_events: 0 normalized differently — portal shows quiet flags the monitor never raises (Fixes #68)
   - acceptance: `bin/portal.py` normalizes zero or invalid `tracking.quiet_min_events` to 4, matching `bin/monitor.sh`, and tests show the portal and monitor apply the same threshold
