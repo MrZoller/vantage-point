@@ -4136,6 +4136,11 @@ case "$prompt" in
       python3 -c 'import time;print(int(time.time()*1000))' >> "$FACET_TIMES.$fid"
     fi
     if [ "${FACET_FAIL:-}" = all ] || [ "${FACET_FAIL:-}" = "$fid" ]; then exit 1; fi
+    # A marked facet lets the long-slug regression exercise partial coverage without
+    # coupling its failure to the implementation-selected bounded slug.
+    if [ "${FACET_FAIL:-}" = marked ]; then
+      case "$prompt" in *'"force_fail": true'*) exit 1 ;; esac
+    fi
     printf '# Facet: %s\n\n## Findings\n- ok [x](https://e/%s)\n' "$fid" "$fid" > "$note"
     emit_json; exit 0 ;;
   *"drafted intelligence profile"*) # CHALLENGE pass
@@ -4196,6 +4201,25 @@ JSON
   out="$(python3 "$ROOT/bin/research.py" validate-plan --max 6 "$d/nl.json")"
   assert_eq "a newline in goal does not add a facet line" "2" "$(printf '%s\n' "$out" | grep -c .)"
   assert_contains "the newline in goal is collapsed to a space" "$out" "line1 line2"
+
+  # The slug is also a filename stem for .md notes, .err diagnostics, and .json stashes.
+  # .json is the longest suffix, so a portable 255-byte filename component leaves 250
+  # bytes for the stem. Two ids with an identical first 300 characters prove the bound
+  # happens before de-duplication: both resulting safe stems must still be distinct.
+  local long_id long_len first_slug second_slug
+  long_id="$(python3 - <<'PY'
+print("x" * 300)
+PY
+)"
+  printf '{"facets":[{"id":"%s"},{"id":"%s-y"}]}' "$long_id" "$long_id" > "$d/long.json"
+  out="$(python3 "$ROOT/bin/research.py" validate-plan "$d/long.json")"
+  IFS=$'\t' read -r first_slug _ <<EOF
+$out
+EOF
+  second_slug="$(printf '%s\n' "$out" | python3 -c 'import sys; print(sys.stdin.read().splitlines()[1].split("\t")[0])')"
+  long_len="$(printf '%s' "$first_slug" | wc -c | tr -d ' ')"
+  if [ "$long_len" -le 250 ]; then pass "bounds a facet slug for its .json stash filename"; else fail "bounds a facet slug for its .json stash filename (got $long_len bytes)"; fi
+  if [ "$first_slug" != "$second_slug" ]; then pass "de-dups long facet slugs after bounding"; else fail "de-dups long facet slugs after bounding"; fi
 }
 test_research_py
 
@@ -4339,6 +4363,40 @@ test_bootstrap_facet_failure() {
   if [ -s "$repo/profile.draft.yaml" ]; then pass "the run still produced a draft"; else fail "the run still produced a draft"; fi
 }
 test_bootstrap_facet_failure
+
+echo "== bootstrap.sh: a long facet still degrades with complete provenance =="
+test_bootstrap_long_facet_failure() {
+  local repo="$TMP/rp-long-facet" home="$TMP/rplongfacethome" synth="$TMP/rp_long_facet_synth"
+  local long_id facets long_fid normal_fid out rc
+  make_research_bootstrap_repo "$repo" "$home"
+  long_id="$(python3 - <<'PY'
+print("x" * 300)
+PY
+)"
+  mkdir -p "$repo/state/.research"
+  # --resume uses this deterministic planner output. The marked long facet fails while
+  # the ordinary facet succeeds, so synthesis must retain honest partial provenance.
+  printf '{"facets":[{"id":"ordinary","goal":"ordinary coverage"},{"id":"%s","goal":"long coverage","force_fail":true}]}' \
+    "$long_id" > "$repo/state/.research/plan.json"
+  facets="$(cd "$repo" && python3 bin/research.py validate-plan state/.research/plan.json)"
+  normal_fid="$(printf '%s\n' "$facets" | python3 -c 'import sys; print(sys.stdin.read().splitlines()[0].split("\t")[0])')"
+  long_fid="$(printf '%s\n' "$facets" | python3 -c 'import sys; print(sys.stdin.read().splitlines()[1].split("\t")[0])')"
+  out="$( cd "$repo" && FACET_FAIL=marked SYNTH_ARGS="$synth" HOME="$home" bash bin/bootstrap.sh --resume 2>&1 )"; rc=$?
+  assert_eq "a long facet failure remains a successful partial bootstrap" "0" "$rc"
+  assert_contains "the long facet writes its failure stub" \
+    "$(cat "$repo/state/.research/notes/$long_fid.md" 2>/dev/null)" "FACET FAILED"
+  if [ -f "$repo/state/.research/$long_fid.json" ]; then pass "the long facet writes its JSON stash"; else fail "the long facet writes its JSON stash"; fi
+  assert_contains "the long facet is recorded in .failed" \
+    "$(cat "$repo/state/.research/.failed" 2>/dev/null)" "$long_fid"
+  assert_contains "reports accurate partial long-facet coverage" "$out" "1/2 facet(s) produced notes"
+  assert_contains "provenance names the long facet's note" \
+    "$(cat "$synth" 2>/dev/null)" "state/.research/notes/$long_fid.md"
+  assert_contains "provenance marks the long facet unresearched" \
+    "$(cat "$synth" 2>/dev/null)" "FAILED (treat as unresearched)"
+  assert_contains "the ordinary facet still produced notes" \
+    "$(cat "$repo/state/.research/notes/$normal_fid.md" 2>/dev/null)" "## Findings"
+}
+test_bootstrap_long_facet_failure
 
 echo "== bootstrap.sh: every facet failing falls back to single-pass synthesis =="
 test_bootstrap_all_facets_fail() {
