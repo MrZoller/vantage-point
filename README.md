@@ -181,7 +181,7 @@ Notes:
 ## Email delivery (optional)
 
 Reports always land in `kb/`. To also email them, install msmtp and add a config.
-For Google Workspace (e.g. `yourdomain.com`), SMTP requires an **App Password**, not your
+For Google Workspace (e.g. `example.com`), SMTP requires an **App Password**, not your
 account password — generate one at myaccount.google.com → Security → App passwords
 (needs 2-Step Verification on).
 
