@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T16",
-  "branch": "factory/t16-missing-bootstrap-date",
-  "pr": 94,
+  "current_task": null,
+  "branch": null,
+  "pr": null,
   "hold": false,
-  "updated": "2026-08-29T10:23:02Z"
+  "updated": "2026-08-29T10:40:00Z"
 }

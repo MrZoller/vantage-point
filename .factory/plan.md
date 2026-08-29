@@ -50,7 +50,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T15 (standard) — demo-bundle.sh: a broken symlink in state/ or kb/ aborts the build, leaving a partial bundle (Fixes #58)
   - acceptance: `bin/demo-bundle.sh` handles dangling symlinks in `state/` or `kb/` with a warning/skip rather than aborting, and still produces the launcher, `START-HERE.md`, copied content, relocation, smoke-test result, and tarball expected of a completed bundle
   - pr: 93
-- [R] T16 (standard) — monitor.sh: missing last_bootstrapped silently disables the profile-staleness check on Linux (Fixes #57)
+- [x] T16 (standard) — monitor.sh: missing last_bootstrapped silently disables the profile-staleness check on Linux (Fixes #57)
   - acceptance: `bin/monitor.sh` checks that `last_bootstrapped` is non-empty before platform date parsing and emits a distinct note when it is absent; tests show consistent Linux/macOS behavior
   - pr: 94
 - [ ] T17 (standard) — backtest.py: baseline agreement deflated when a feedback row lacks a numeric score, flattering the draft (Fixes #56)
