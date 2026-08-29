@@ -73,33 +73,44 @@ email_preheader() {  # <markdown-file>
   printf '%s' "$preheader"
 }
 
-# stdin: HTML body fragment -> stdout: full styled HTML document. A <style> block
-# (not inline styles) renders in the mail/preview clients this tool targets and keeps
-# the template readable. Optional chrome is read from the environment so this stays a
-# pure filter: VP_TITLE / VP_SUBTITLE (header), VP_PREHEADER (hidden inbox preview
-# text), VP_FOOTER (footer line). Each is HTML-escaped. No external assets/images
-# (privacy + reliability) and ASCII-only source per the repo convention.
+# stdin: HTML body fragment -> stdout: full styled HTML document. Structure is a
+# table-based layout with bgcolor attributes + inline styles, because Outlook (the
+# Word rendering engine) ignores embedded <style> rules, max-width and margin:auto,
+# and padding on <div>s - so a <style>-only card left Outlook showing a grey page
+# with the white card and body margins missing. The <style> block remains as a
+# progressive enhancement (rich typography in Gmail / Apple Mail); the layout, page
+# background, white card and gutters all come from the tables so it holds up in
+# Outlook too. Optional chrome is read from the environment so this stays a pure
+# filter: VP_TITLE / VP_SUBTITLE (header), VP_PREHEADER (hidden inbox preview text),
+# VP_FOOTER (footer line). Each is HTML-escaped. By default the email carries NO
+# images (privacy + reliability); a logo appears only when VP_LOGO_CID is set, in
+# which case the header references a CID-embedded inline image (set up by send_email -
+# never an external fetch). ASCII-only source per the repo convention.
 wrap_html() {
-  local title subtitle preheader footer
+  local title subtitle preheader footer logo_cid
   title="$(_esc "${VP_TITLE:-}")"; subtitle="$(_esc "${VP_SUBTITLE:-}")"
   preheader="$(_esc "${VP_PREHEADER:-}")"; footer="$(_esc "${VP_FOOTER:-}")"
+  logo_cid="$(_esc "${VP_LOGO_CID:-}")"   # non-empty -> emit the CID logo image
+  # Shared font stack, kept in one place. 'Segoe UI' carries a literal single quote;
+  # holding it in a variable and passing it as a printf arg avoids any escaping.
+  local ff="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
   cat <<'HTML_HEAD'
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<!--[if mso]>
+<noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+<![endif]-->
 <style>
-  body { margin: 0; padding: 0; background: #eef1f5; -webkit-font-smoothing: antialiased;
-         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-         color: #1f2933; line-height: 1.55; }
-  .preheader { display: none !important; visibility: hidden; opacity: 0; height: 0; width: 0; overflow: hidden; }
-  .wrap { max-width: 640px; margin: 0 auto; background: #ffffff; }
-  .hd { padding: 28px 32px 22px; border-top: 4px solid #2f5bea; border-bottom: 1px solid #e6e9ef; }
-  .eyebrow { font-size: 11px; letter-spacing: 0.12em; font-weight: 700; color: #2f5bea; text-transform: uppercase; }
-  .title { font-size: 22px; font-weight: 700; line-height: 1.2; margin-top: 5px; color: #10151f; }
-  .sub { font-size: 13px; color: #6b7280; margin-top: 5px; }
-  .body { padding: 6px 32px 22px; }
+  /* Progressive typography for clients that honor embedded styles (Gmail, Apple
+     Mail). Outlook ignores most of this; its layout/colors come from the table
+     attributes + inline styles below, so the email stays readable either way. */
+  body { margin: 0; padding: 0; background: #eef1f5; -webkit-font-smoothing: antialiased; }
+  .body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+          color: #1f2933; line-height: 1.55; font-size: 15px; }
   .body h1, .body h2, .body h3 { line-height: 1.25; color: #10151f; }
   .body h1 { font-size: 19px; margin: 22px 0 8px; }
   .body h2 { font-size: 14px; margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 1px solid #eceef2;
@@ -111,7 +122,7 @@ wrap_html() {
   .body ul, .body ol { padding-left: 20px; margin: 9px 0; }
   .body li { margin: 7px 0; }
   .body blockquote { margin: 16px 0; padding: 14px 18px; background: #f3f6ff; border-left: 4px solid #2f5bea;
-                     border-radius: 0 6px 6px 0; color: #28324a; font-size: 15px; }
+                     border-radius: 0 6px 6px 0; color: #28324a; }
   .body blockquote p { margin: 0; }
   .body code { background: #f1f3f7; padding: 1px 5px; border-radius: 4px; font-size: 0.92em; }
   .body pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 8px; overflow-x: auto; }
@@ -122,65 +133,146 @@ wrap_html() {
              font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; color: #6b7280; }
   .body td { border-bottom: 1px solid #eef1f5; padding: 8px 10px; }
   .body td.spark { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #2f5bea; }
-  .ft { padding: 16px 32px 26px; border-top: 1px solid #e6e9ef; color: #9aa3af; font-size: 12px; }
-  .ft a { color: #6b7280; }
+  .preheader { display: none !important; visibility: hidden; opacity: 0; height: 0; width: 0; overflow: hidden; }
+  /* Tighten the side gutters on narrow screens. */
+  @media only screen and (max-width: 600px) {
+    .gutter { padding-left: 12px !important; padding-right: 12px !important; }
+    .pad { padding-left: 20px !important; padding-right: 20px !important; }
+  }
 </style>
 </head>
-<body>
+<body style="margin:0; padding:0; background:#eef1f5;">
 HTML_HEAD
-  printf '<span class="preheader">%s</span>\n' "$preheader"
-  printf '<div class="wrap">\n'
+  printf '<span class="preheader" style="display:none; max-height:0; overflow:hidden;">%s</span>\n' "$preheader"
+  # Full-width page background (Outlook honors bgcolor on tables/cells) with a gutter
+  # cell so the white card never touches the viewport edge (the "no margin" fix). The
+  # mso conditional pins the card to 640px in Outlook, which lacks max-width.
+  cat <<'HTML_OUTER'
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef1f5" style="background:#eef1f5;">
+<tr>
+<td align="center" class="gutter" style="padding:24px 16px;">
+<!--[if mso]><table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+<table role="presentation" align="center" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="width:100%; max-width:640px; background:#ffffff;">
+<tr><td style="height:4px; line-height:4px; font-size:4px; background:#2f5bea;">&nbsp;</td></tr>
+HTML_OUTER
   if [ -n "$title" ]; then
-    printf '<div class="hd"><div class="eyebrow">Vantage Point</div><div class="title">%s</div>' "$title"
-    [ -n "$subtitle" ] && printf '<div class="sub">%s</div>' "$subtitle"
-    printf '</div>\n'
+    printf '<tr><td class="pad" style="padding:28px 32px 22px; border-bottom:1px solid #e6e9ef; font-family:%s;">' "$ff"
+    # Optional brand mark: a CID-embedded inline image (send_email attaches the bytes).
+    # width/height attributes + inline style keep Outlook honest; alt text covers the
+    # images-off case so the header never collapses.
+    [ -n "$logo_cid" ] && printf '<img src="cid:%s" width="40" height="40" alt="Vantage Point" style="display:block; border:0; width:40px; height:40px; margin:0 0 12px;">' "$logo_cid"
+    printf '<div style="font-size:11px; letter-spacing:0.12em; font-weight:700; color:#2f5bea; text-transform:uppercase;">Vantage Point</div>'
+    printf '<div style="margin-top:5px; font-size:22px; font-weight:700; line-height:1.2; color:#10151f;" class="title">%s</div>' "$title"
+    [ -n "$subtitle" ] && printf '<div style="margin-top:5px; font-size:13px; color:#6b7280;" class="sub">%s</div>' "$subtitle"
+    printf '</td></tr>\n'
   fi
-  printf '<div class="body">\n'
+  printf '<tr><td class="body pad" style="padding:6px 32px 22px; font-family:%s; color:#1f2933; line-height:1.55; font-size:15px;">\n' "$ff"
   cat
-  printf '\n</div>\n'
-  [ -n "$footer" ] && printf '<div class="ft">%s</div>\n' "$footer"
+  printf '\n</td></tr>\n'
+  [ -n "$footer" ] && printf '<tr><td class="pad" style="padding:16px 32px 26px; border-top:1px solid #e6e9ef; color:#9aa3af; font-size:12px; font-family:%s;">%s</td></tr>\n' "$ff" "$footer"
   cat <<'HTML_FOOT'
-</div>
+</table>
+<!--[if mso]></td></tr></table><![endif]-->
+</td>
+</tr>
+</table>
 </body>
 </html>
 HTML_FOOT
 }
 
-# Send a Markdown body as a polished email. Multipart/alternative (plain markdown +
-# rendered HTML) when a renderer is available; otherwise a utf-8 plain-text message.
-# The body file is unchanged on disk. The caller sets the VP_* chrome (read by
-# wrap_html via dynamic scope) and passes the raw subject. Returns msmtp's exit status.
-send_email() {  # <to> <subject> <body-markdown-file>
-  local to="$1" subject body="$3"
-  subject="$(encode_header "$2")"   # RFC 2047 if it has non-ASCII chars
-  local html
-  if html="$(render_md_to_html < "$body" 2>/dev/null)" && [ -n "$html" ]; then
-    local boundary="vp-$$-${VP_BOUNDARY:-0}"
-    {
-      printf 'To: %s\n' "$to"
-      printf 'Subject: %s\n' "$subject"
-      printf 'MIME-Version: 1.0\n'
-      printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$boundary"
-      printf -- '--%s\n' "$boundary"
-      printf 'Content-Type: text/plain; charset=utf-8\n'
-      printf 'Content-Transfer-Encoding: 8bit\n\n'
-      cat "$body"; printf '\n'
-      printf -- '--%s\n' "$boundary"
-      printf 'Content-Type: text/html; charset=utf-8\n'
-      printf 'Content-Transfer-Encoding: 8bit\n\n'
-      printf '%s\n' "$html" | wrap_html
-      printf '\n--%s--\n' "$boundary"
-    } | msmtp "$to"
+# Print the two parts of a multipart/alternative body (plain markdown, then styled
+# HTML) to stdout, using boundary $1. When a logo CID is given, it's exported to
+# wrap_html so the HTML header references the CID-embedded image.
+# Args: <alt-boundary> <body-markdown-file> <html-fragment> <logo-cid>.
+_emit_alt_parts() {
+  local boundary="$1" body="$2" html="$3" logo_cid="$4"
+  printf -- '--%s\n' "$boundary"
+  printf 'Content-Type: text/plain; charset=utf-8\n'
+  printf 'Content-Transfer-Encoding: 8bit\n\n'
+  cat "$body"; printf '\n'
+  printf -- '--%s\n' "$boundary"
+  printf 'Content-Type: text/html; charset=utf-8\n'
+  printf 'Content-Transfer-Encoding: 8bit\n\n'
+  printf '%s\n' "$html" | VP_LOGO_CID="$logo_cid" wrap_html
+  printf '\n--%s--\n' "$boundary"
+}
+
+# Print one HTML email (plain markdown + styled HTML) to stdout. With a readable logo
+# PNG + CID, the message is multipart/related: the alternative body plus the logo as a
+# base64 image/png part referenced by `cid:` from the header (inline, no external
+# fetch). Without one, it's a plain multipart/alternative - identical to before.
+# Args: <encoded-subject> <body-markdown-file> <html-fragment> <recipient> [logo-png] [logo-cid].
+_emit_html() {
+  local subject="$1" body="$2" html="$3" to="$4" logo="${5:-}" logo_cid="${6:-}"
+  local alt="vp-alt-$$-${VP_BOUNDARY:-0}"
+  printf 'To: %s\n' "$to"
+  printf 'Subject: %s\n' "$subject"
+  printf 'MIME-Version: 1.0\n'
+  if [ -n "$logo" ] && [ -n "$logo_cid" ] && [ -r "$logo" ]; then
+    local rel="vp-rel-$$-${VP_BOUNDARY:-0}"
+    printf 'Content-Type: multipart/related; boundary="%s"\n\n' "$rel"
+    printf -- '--%s\n' "$rel"
+    printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$alt"
+    _emit_alt_parts "$alt" "$body" "$html" "$logo_cid"
+    printf -- '--%s\n' "$rel"
+    printf 'Content-Type: image/png\n'
+    printf 'Content-Transfer-Encoding: base64\n'
+    printf 'Content-ID: <%s>\n' "$logo_cid"
+    printf 'Content-Disposition: inline; filename="vantage-point-logo.png"\n\n'
+    base64 < "$logo"; printf '\n'
+    printf -- '--%s--\n' "$rel"
   else
-    # No renderer (or render failed): plain text, but declare utf-8 so the
-    # bullets/arrows/em-dashes don't get mangled.
-    {
-      printf 'To: %s\n' "$to"
-      printf 'Subject: %s\n' "$subject"
-      printf 'MIME-Version: 1.0\n'
-      printf 'Content-Type: text/plain; charset=utf-8\n'
-      printf 'Content-Transfer-Encoding: 8bit\n\n'
-      cat "$body"
-    } | msmtp "$to"
+    printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$alt"
+    _emit_alt_parts "$alt" "$body" "$html" ""
   fi
+}
+
+# Print one utf-8 plain-text message to stdout (the no-renderer fallback). Declares
+# utf-8 so the bullets/arrows/em-dashes don't get mangled.
+# Args: <encoded-subject> <body-markdown-file> <recipient>.
+_emit_plain() {
+  local subject="$1" body="$2" to="$3"
+  printf 'To: %s\n' "$to"
+  printf 'Subject: %s\n' "$subject"
+  printf 'MIME-Version: 1.0\n'
+  printf 'Content-Type: text/plain; charset=utf-8\n'
+  printf 'Content-Transfer-Encoding: 8bit\n\n'
+  cat "$body"
+}
+
+# Send a Markdown body as a polished email to one or more recipients. Multipart/
+# alternative (plain markdown + rendered HTML) when a renderer is available; otherwise
+# a utf-8 plain-text message. When the caller sets VP_LOGO to a readable PNG (gated by
+# output.email_images), the HTML copy carries that logo as a CID-embedded inline image
+# (no external fetch). The body file is unchanged on disk. The caller sets the VP_*
+# chrome (read by wrap_html via dynamic scope) and passes the raw subject, then one or
+# more recipients. Each recipient gets its OWN message - a separate msmtp envelope
+# whose only To: header is that one address - so a recipient never sees the others (no
+# shared To:/Cc list). Returns the first nonzero msmtp status, if any.
+send_email() {  # <subject> <body-markdown-file> <recipient>...
+  local subject body="$2"
+  subject="$(encode_header "$1")"   # RFC 2047 if it has non-ASCII chars
+  shift 2                           # remaining args = recipients
+  # Render the Markdown body once; every recipient gets identical content and only the
+  # To: line differs. An empty result (no renderer / render failure) -> plain text.
+  local html
+  if ! html="$(render_md_to_html < "$body" 2>/dev/null)"; then
+    html=""
+  fi
+  # Embed the logo only when an HTML part exists and VP_LOGO points to a readable file
+  # (fail-safe: a missing/unreadable asset silently degrades to the no-image email).
+  local logo="" logo_cid=""
+  if [ -n "$html" ] && [ -n "${VP_LOGO:-}" ] && [ -r "${VP_LOGO:-}" ]; then
+    logo="$VP_LOGO"; logo_cid="${VP_LOGO_CID:-vp-logo@vantagepoint}"
+  fi
+  local rc=0 r
+  for r in "$@"; do
+    if [ -n "$html" ]; then
+      _emit_html "$subject" "$body" "$html" "$r" "$logo" "$logo_cid" | msmtp "$r" || rc=$?
+    else
+      _emit_plain "$subject" "$body" "$r" | msmtp "$r" || rc=$?
+    fi
+  done
+  return "$rc"
 }

@@ -25,8 +25,15 @@ version: 1
 # ai.zoller.vantagepoint.<instance>.{daily,weekly}. Leave it unset for a single
 # deployment (labels stay un-suffixed). Read by bin/install-launchd.sh; slugified
 # (lowercased, non [a-z0-9-] -> '-'). See "Running multiple instances" in the README.
+#
+# `refresh_time` (HH:MM, 24h) pins when the daily refresh check runs. Leave it unset
+# and the time is hashed from the agent label into 01:00-05:59, which spreads clones
+# without any configuration - but a hash cannot see what a sibling picked, so it can
+# only make a collision unlikely. Set it on one of the pair if two instances do land
+# together, or to move the check out of 01:00-05:59 entirely.
 # deployment:
 #   instance: ai-models
+#   refresh_time: "03:20"
 
 # Which Claude model each agent runs on. bootstrap is infrequent and depth
 # matters, so it's worth spending Opus there; monitor runs daily doing shallow
@@ -43,61 +50,113 @@ models:
                       # a dedicated editor curates + polishes the report before
                       # delivery (lead, order, cut, tighten) without adding facts or
                       # dropping citations. Runs only on days a report is delivered.
+  # init:     opus    # OPTIONAL model for bin/init.sh's one-time draft review. Unset,
+                      # it inherits models.bootstrap: init runs once per deployment and
+                      # shapes everything downstream, so it rides the deep-research
+                      # model, not the cheap daily one.
+  # researcher: sonnet  # OPTIONAL deep-research bootstrap, OFF by default. Set it and the
+                      # single research pass becomes Deep-Research-shaped: a plan pass
+                      # decomposes the work into facets, parallel researcher passes (on
+                      # THIS model, typically a fast one) write cited notes with fresh
+                      # contexts, then `bootstrap`/synthesis builds the draft from those
+                      # notes. Unset = today's single pass, byte-for-byte. 4-10x bootstrap
+                      # cost, spent at the profile gate where quality compounds (refresh-
+                      # cadence only). See "Deep-research bootstrap" in the README.
+  # challenge:  opus    # OPTIONAL adversarial pass over the draft, OFF by default. A
+                      # strong model attacks the draft's weakest claims with fresh web
+                      # evidence (missing player? defunct competitor? stale pricing?) and
+                      # writes a report folded into the review email. Works with or
+                      # without `researcher`. Non-destructive (restores the draft on
+                      # failure). Can equal models.bootstrap.
+
+# Run budgets — the cost levers. Runs authenticate against your subscription, not
+# API billing, so `--max-budget-usd` can't govern them; what actually bounds spend
+# is run frequency plus these per-pass turn caps (each is passed to its claude call
+# as `--max-turns`). All optional; absent/0/non-numeric falls back to the defaults
+# shown. monthly_cost_usd is a SOFT cap: when the rolling 30-day cost estimate in
+# state/runs.log crosses it, every run warns on stderr — it never skips a run (the
+# estimate is API-equivalent, not a bill; see bin/usage.sh).
+budgets:
+  bootstrap_max_turns: 80   # the deep research pass — depth lives here
+  monitor_max_turns: 40     # the daily/weekly triage pass
+  deepdive_max_turns: 40    # the corroboration pass (only when models.deepdive is set)
+  editor_max_turns: 15      # the editorial pass (only when models.editor is set)
+  init_max_turns: 15        # bin/init.sh's one-time draft review (only if you opt in)
+  backtest_max_turns: 30    # the refresh-gate rubric backtest (only on a re-bootstrap
+                            # with enough grades; runs on the monitor model)
+  # ---- deep-research bootstrap (only when models.researcher / models.challenge set) ----
+  plan_max_turns: 15        # the plan pass that decomposes the research into facets
+  facet_max_turns: 25       # each parallel facet researcher pass
+  research_max_facets: 6    # clamp on how many facets the plan may spawn
+  research_parallel: 3      # how many facet processes run at once (rate-limit friendly)
+  facet_timeout_seconds: 1200  # per-facet wall-clock bound (0 = off; needs timeout/gtimeout)
+  challenge_max_turns: 30   # the adversarial challenge pass (when models.challenge is set)
+  # thinking_tokens: 0      # MAX_THINKING_TOKENS for the judgment-heavy passes (plan,
+                            # synthesis, challenge); 0/absent = the CLI default
+  monthly_cost_usd: 0       # warn when 30-day estimated spend crosses this (0 = off)
 
 subject:
-  name: "Mechanical & microbrand wristwatches"
+  name: "Enterprise AI platforms & LLM products"
   description: >
-    The enthusiast watch market: new releases, microbrand drops, limited
-    editions, and secondary-market / auction movement. Excludes smartwatches.
+    The market for foundation-model providers, AI application/agent platforms, and
+    enterprise AI tooling: product & model launches, pricing and packaging, funding,
+    M&A and partnerships, integrations and platform moves, benchmarks, and the
+    standards/regulatory shifts that change the landscape.
   # Trusted seeds. The agent EXPANDS outward from these; it does not treat them
   # as the whole map. A few good seeds sharply reduce drift and hallucination.
   seeds:
-    - https://www.hodinkee.com
-    - https://www.fratellowatches.com
-    - https://www.wornandwound.com    # strong microbrand coverage
-    - https://www.chrono24.com        # secondary-market pricing signal
+    - https://news.ycombinator.com    # launches + candid practitioner sentiment
+    - https://techcrunch.com          # funding, M&A, launches
+    - https://venturebeat.com         # enterprise-AI coverage
+    # add each competitor's blog / changelog / pricing page as a seed too
   scope:
-    in:  ["new releases", "microbrand drops", "limited editions",
-          "notable auction results", "discontinuations", "price movement"]
-    out: ["smartwatches", "fashion-brand quartz", "general lifestyle content"]
+    in:  ["product & model launches", "pricing & packaging changes",
+          "funding, M&A & partnerships", "integrations & platform moves",
+          "benchmarks & evaluations", "standards & regulatory shifts"]
+    out: ["minor point releases", "vendor marketing & thought-leadership fluff",
+          "job postings", "general consumer-gadget news"]
   # ---- populated by bootstrap, then human-edited. Tells `monitor` how the
   #      market is shaped and WHERE news tends to break first. ----
   derived:
     structure: null           # segments, price tiers, how the market is organized
     key_players: []           # brands/houses that matter, each with a one-line why
     news_sources: []          # RANKED list of where news actually breaks first
+    feeds: []                 # verified RSS/Atom URLs for those sources; bin/fetch.py
+                              # pre-pulls these every run (deterministic, auditable
+                              # sweep) so the agent only browses feedless sources
     event_taxonomy: []        # kinds of events worth noticing (release, reissue, ...)
     last_bootstrapped: null
     confidence_notes: null    # what the agent is sure of vs. guessing
 
 anchor:
   # WHOSE interests define relevance. Org, individual, or persona.
-  name: "Me — collector"
-  type: persona               # organization | individual | persona
+  name: "Acme AI — product & strategy team"
+  type: organization          # organization | individual | persona
   description: >
-    A collector with specific taste. Relevance is judged against what I'd
-    actually want to know about, buy, or track — not the market at large.
-  relationship_to_subject: collector   # competitor | buyer | builder | collector | investor | ...
-  # Seeds that DESCRIBE the anchor. For a persona this is taste; for an org it's
-  # the division page, representative papers, recent awards, capability blurbs.
+    A company building and selling in this market. Relevance is judged against moves
+    that open an opportunity for us, threaten our roadmap, or signal a market shift we
+    should react to — not the market at large.
+  relationship_to_subject: competitor   # competitor | builder | buyer | investor | regulator | ...
+  # Seeds that DESCRIBE the anchor. For an org this is what you build, who you
+  # compete with, and what you'd react to. (For a persona anchor it'd be taste —
+  # likes/dislikes — instead of this profile block.)
   seeds:
-    taste:
-      likes: ["integrated-bracelet sport watches", "in-house movements",
-              "independent watchmakers", "sub-$2k microbrands with real finishing"]
-      dislikes: ["homage/clone designs", "oversized fashion pieces"]
-      owns: ["<optional: list a few to sharpen the model>"]
-      watchlist: ["<brands/refs I'm actively tracking>"]
+    profile:
+      product: ["<one line: what your product does>"]
+      competitors: ["<competitor A>", "<competitor B>", "<competitor C>"]
+      our_edges: ["<your differentiators>"]
+      roadmap_themes: ["<themes you'd feel threatened on if a rival shipped them>"]
+      icp: ["<who you sell to: e.g. individual devs, platform teams, enterprises>"]
   # ---- populated by bootstrap, then human-edited. THIS is the relevance
   #      lattice: what this anchor cares about + what counts as a signal. ----
   derived:
     interests: []             # inferred from seeds + research
-    peer_or_competitive_set: []   # collector: comparable brands/segments
-                                  # org: actual competitors
-    counterparties: []        # who they buy from / sell to / watch
+    peer_or_competitive_set: []   # the actual competitors you measure against
+    counterparties: []        # who you sell to / partner with / depend on
     signal_definitions:       # what makes something matter to THIS anchor
-      opportunity: null       # collector: a tracked ref dropping in price; new indie release
-      threat: null            # org: a competitor award in your exact wheelhouse
-      shift: null             # structural change worth flagging
+      opportunity: null       # e.g. a gap a competitor leaves; an integration/partner opening
+      threat: null            # e.g. a rival ships a headline capability on your roadmap
+      shift: null             # e.g. a pricing model or standard the market moves toward
     last_bootstrapped: null
     confidence_notes: null
 
@@ -106,9 +165,19 @@ relevance:
   # anchor profile by bootstrap, then calibrated against examples YOU grade.
   threshold: 0.6              # 0..1; items below this are dropped silently
   rubric: null                # populated by bootstrap; human-editable
+  recent_grades: 20           # live calibration: each monitor run injects up to this
+                              # many of your newest post-bootstrap thumbs up/down
+                              # grades into the triage prompt, so grading takes effect
+                              # the NEXT run instead of waiting for a re-bootstrap
+                              # (0 = off; the bootstrap still consolidates all grades)
   calibration:                # your graded examples — single biggest quality lever
     relevant: []              # things you'd want surfaced (+ one line: why)
     not_relevant: []          # near-misses you'd want filtered (+ why)
+  backtest_max_items: 60      # refresh gate: re-score your newest N graded items under
+                              # the DRAFT rubric (blind, on the monitor model) and report
+                              # agreement vs your verdicts before you approve — what
+                              # EFFECT the refresh has, not just what changed (0 = off;
+                              # needs >= 10 up/down grades or it skips with a note)
 
 monitoring:
   cadence:
@@ -119,12 +188,19 @@ monitoring:
     # run *times* live in the launchd plists (bin/install-launchd.sh) -- editing the
     # day/time here does not reschedule anything; change the plists for that.
   lookback_hours: 30          # small overlap so runs don't leave gaps
+  catchup_max_hours: 168      # if the last logged run is older than this run's window
+                              # (the machine slept, a run was skipped), widen the sweep
+                              # window to cover the gap, by at most this many EXTRA
+                              # hours on top of the normal window (0 = never widen)
   state_file: ./state/seen.jsonl    # longitudinal memory -> dedup + "is this NEW?"
   # Reliability knobs (read by bin/monitor.sh; all optional with sane defaults):
   run_timeout_seconds: 1800   # wall-clock cap on a single claude run so a stall
                               # can't hang the job (0 = no limit; needs timeout/gtimeout)
   state_max_lines: 5000       # cap on state/seen.jsonl length; pruned each run so
                               # dedup stays fast and it can't grow forever (0 = off)
+  fetch_max_items: 200        # cap on candidates from the deterministic feed
+                              # pre-sweep (subject.derived.feeds) per run; bounds the
+                              # prompt size (0 = skip the pre-sweep entirely)
   # Deep-dive pass (only when models.deepdive is set): which triage survivors get
   # the expensive second-pass investigation + corroboration.
   deepdive_threshold: 0.85    # only items scoring >= this are investigated (keep high)
@@ -143,12 +219,12 @@ tracking:
   # entity into state/observations.jsonl, then surfaces what CHANGED (deltas,
   # streaks, spikes) in a "What changed" section — not just brand-new items.
   enabled: true
-  # The agent auto-tracks entities from the approved profile (anchor watchlist +
+  # The agent auto-tracks entities from the approved profile (anchor competitors +
   # subject key players) and anything else it judges material. Pin must-track
   # entities + metrics here so coverage is guaranteed (optional; read by the agent):
   watch:
-    - { entity: "Tudor Black Bay 58", metrics: ["secondary_price_usd", "new_listings"] }
-    # - { entity: "<brand or ref>",   metrics: ["mention_count", "price_usd"] }
+    - { entity: "<competitor A>", metrics: ["pricing_usd_per_seat", "mention_count"] }
+    # - { entity: "<competitor B>", metrics: ["mention_count"] }
   # Sensitivity. Like show_borderline, start sensitive while calibrating, then
   # tighten. A change is flagged when it crosses ANY of these:
   min_pct_change: 8         # a tracked metric moved >= this % vs its last observation
@@ -156,6 +232,25 @@ tracking:
   mention_spike_factor: 2.0 # mentions >= this multiple of the entity's trailing baseline
   label_confidence: true    # tag each change high/medium/low while you're tuning
   observations_max_lines: 20000   # cap state/observations.jsonl; pruned each run (0 = off)
+  # Forward radar ("Coming up"): record the dated, time-bounded expectations the sweep
+  # mentions (earnings dates, "GA in Q3", launch windows) to state/horizon.jsonl, then
+  # re-check them as they come due — a slipped or silently-passed date is itself a
+  # signal. The weekly digest gains a "Coming up" table and the portal a card. On by
+  # default when tracking.enabled; set horizon: false to turn the whole feature off.
+  horizon: true
+  horizon_max_lines: 2000         # cap state/horizon.jsonl; pruned each run (0 = off)
+  horizon_upcoming_days: 14       # window for the weekly "Coming up" table
+  # Quiet detection (the dog that didn't bark): each entity's sourced event history
+  # in observations.jsonl gives it a normal rhythm; on weekly runs, entities silent
+  # well past that baseline (median gap between events) are flagged for the agent to
+  # verify against the sweep and surface under "Quiet on" — "no release in 8 weeks
+  # vs a ~3-week norm" is a finding even though nothing was published. A flagged
+  # silence is remembered (state/quiet.jsonl) so it never re-alarms; the flag resets
+  # when the entity resumes. On by default when tracking.enabled; quiet: false
+  # turns the whole feature off.
+  quiet: true
+  quiet_factor: 3                 # flag at this multiple of the median event gap
+  quiet_min_events: 4             # events on record before an entity has a "norm"
 
 output:
   # Reports always land in kb/. Set email_to to ALSO email each report via msmtp
@@ -163,19 +258,40 @@ output:
   # remove it to skip email and just read reports from kb/. The same switch makes
   # bootstrap email a "profile draft ready for review" summary (approval stays the
   # local `cp profile.draft.yaml profile.yaml`).
+  # One address, or several — a YAML list (each gets its own copy):
+  #   email_to:
+  #     - you@example.com
+  #     - teammate@example.com
+  # A comma-separated string ("a@x.com, b@x.com") works too.
   email_to: ""                # e.g. "you@example.com"; blank = no email
+  email_images: false         # embed the Vantage Point logo in the email header. It
+                              # rides along inside the message (CID inline image) - no
+                              # external fetch, so no privacy/tracking cost - and shows
+                              # in Gmail/Outlook/Apple Mail. Default off keeps email
+                              # image-free; missing asset = silently no logo (fail-safe).
+  webhook_url: ""             # ALSO POST each report as JSON to this URL. Works as a
+                              # generic webhook AND as a Slack/Discord incoming-webhook
+                              # URL (the payload carries text/content/report_markdown,
+                              # each receiver reads its key). Blank = off. Fail-safe:
+                              # a failed post never fails the run or loses the report.
   knowledge_base: ./kb/       # accumulate over time; don't just email into the void
-  dashboard: true             # regenerate kb/index.html each run (tracked entities +
-                              # sparklines + report links); set false to skip
+  dashboard: true             # export a static kb/index.html snapshot each run (the
+                              # portal's Overview: tracked entities + sparklines + report
+                              # links); set false to skip. The live portal (bin/portal.sh)
+                              # also serves Reports/Review/Profile/Config on demand.
   # NOTE: the distribution list below is documentation only — it sketches the
-  # intended multi-channel shape (file/slack/telegram/discord). Only email_to
-  # above is wired today; editing these entries has no effect.
+  # intended multi-channel shape. Only email_to and webhook_url above are wired
+  # today; editing these entries has no effect.
   distribution:
-    - { type: email, to: "me@example.com" }   # or: file, slack, telegram, discord
+    - { type: email, to: "me@example.com" }   # or: file, webhook
     - { type: file,  path: "./kb/{{date}}.md" }
 
 governance:
   # Human-in-the-loop. Also your clean story when you take this to the gov group.
   require_profile_review: true     # monitor won't run until derived blocks are approved
-  profile_refresh_days: 30         # anchors drift; re-bootstrap on a slow cadence
+  # Anchors drift; re-bootstrap on a slow cadence. Drives three things: the monitor's
+  # staleness warning (log + a notice appended to the report), and the launchd refresh
+  # agent, which checks daily and runs `bootstrap.sh --if-stale`, a no-op unless this
+  # window has been crossed. Blank or 0 turns all of it off.
+  profile_refresh_days: 30
   flag_low_confidence: true        # surface the agent's own uncertainty for review

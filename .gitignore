@@ -6,9 +6,18 @@ monitor-config.yaml
 # competitive-intelligence artifact built from public sources. Keep it local.
 profile.yaml
 profile.draft.yaml
+profile.draft.diff
+profile.summary.md
 profile.draft.summary.md
+profile.draft.backtest.jsonl
+profile.draft.backtest.md
+profile.draft.challenge.md
+profile.draft.feedcheck.md
+.init.*
 state/
 kb/
+# demo-bundle.sh output (the portable portal demo folder + its tarball)
+dist/
 *.err
 *.log
 

@@ -38,9 +38,10 @@ Findings land as decisions, not a list:
   confidence*.
 - The weekly digest adds a **Watchlist status** table with unicode **sparklines**
   (render in both plain text and HTML mail — more portable than SVG).
-- `bin/dashboard.sh` regenerates a browsable **`kb/index.html`** each run (tracked
-  entities + latest metric + sparkline, recent events, report links); `output.dashboard`
-  toggles it.
+- The **web portal** (`bin/portal.sh`/`portal.py`) presents the Overview (tracked
+  entities + latest metric + sparkline, recent events, recent runs), plus Reports,
+  Review, and read-only Profile/Config; `bin/portal.py --export` writes a static
+  **`kb/index.html`** snapshot each run, toggled by `output.dashboard`.
 
 ## Phase 3 — two-pass deep dive ✅ (shipped)
 
@@ -57,9 +58,9 @@ cost-bounded (fires only on high-scorers, capped per run); both passes are logge
 
 Make grading frictionless so the rubric learns your taste and quality compounds:
 - Stable per-item `id` in every report/state record.
-- `bin/review.sh` serves a localhost grading UI (`bin/feedback-server.py`) listing
-  recent surfaced items with 👍 / 👎 buttons; a click records the grade + item context
-  to `state/feedback.jsonl`. Localhost-only — reach it over an SSH/VS Code forward.
+- The portal's **Review** tab (`bin/portal.py`) lists recent surfaced items with
+  👍 / 👎 buttons; a click records the grade + item context to `state/feedback.jsonl`.
+  Localhost-only — reach it over an SSH/VS Code forward.
 - The next `bin/bootstrap.sh` reads `feedback.jsonl` as ground-truth calibration and
   tunes `relevance.rubric` / `relevance.calibration` to match (no fragile in-place
   YAML mutation; you still review/approve the draft).
@@ -67,12 +68,14 @@ Make grading frictionless so the rubric learns your taste and quality compounds:
 ## Phase 5 — presentation + editorial polish ✅ (shipped)
 
 Make the delivered report look and read like a designed brief, not a data dump:
-- A redesigned email/HTML template (`wrap_html` in `bin/monitor.sh`): a header card
+- A redesigned email/HTML template (`wrap_html` in `bin/email-lib.sh`): a header card
   (subject + "Daily/Weekly briefing — date"), a hidden inbox preheader, a bottom-line
   callout, uppercase section dividers, a styled watchlist table with sparklines, and a
-  footer. Deterministic (no per-run LLM cost), no external assets, ASCII-only source.
-  Reports are authored as Markdown so they render as the brief and stay readable as
-  plain text.
+  footer. Table-based layout with bgcolor + inline styles so it holds up in Outlook as
+  well as Gmail/Apple Mail. Deterministic (no per-run LLM cost), ASCII-only source. No
+  external assets; an optional brand logo (`output.email_images`) rides along as a
+  CID-embedded inline image, never a remote fetch. Reports are authored as Markdown so
+  they render as the brief and stay readable as plain text.
 - An optional **editorial pass** (`models.editor`, `editor-prompt.md`): a dedicated
   editor curates + polishes the report before delivery (lead, order, cut/merge,
   tighten) — strictly editorial (no new facts, figures unchanged, citations kept; no
@@ -95,18 +98,298 @@ on the review gate:
   (rendering + `send_email`) so monitor and bootstrap share one implementation (and
   bootstrap drops its bespoke, drift-prone config parser).
 
+## Phase 7 — live calibration ✅ (shipped)
+
+Close the lag between grading an item and the grade changing anything. Each monitor
+run injects the newest **post-bootstrap** grades from `state/feedback.jsonl` (latest
+verdict per item via `dedupe-feedback.py --since <last_bootstrapped> --max N`) into
+the triage prompt as worked examples — a thumbs-down filters its lookalikes the next
+run. Capped by `relevance.recent_grades` (default 20, `0` = off); grades older than
+the approved profile are excluded because the rubric already absorbed them at
+bootstrap. Fail-safe: any problem skips the injection, never the run.
+
+## Phase 8 — precision tracking ✅ (shipped)
+
+Prove (or disprove) "it gets sharper as you grade" with data the system already has.
+The portal Overview gains a **Calibration** card, built by joining
+`state/feedback.jsonl` (latest verdict per item) to `state/seen.jsonl` (surfaced
+items): 30-day **precision over graded items only** — an ungraded item is unknown,
+not an implicit positive — with **grading coverage** alongside to keep the headline
+honest, a precision-by-week SVG on the same time axis as the other Activity charts,
+and **per-source hit rates** (surfaced / graded / thumbs-up rate) to show which
+sources earn their rank before the next bootstrap re-ranks them. Stdlib-only,
+server-rendered, omitted until the first grade exists.
+
+## Phase 9 — webhook delivery ✅ (shipped)
+
+A second delivery channel so reports can land where a team sees them. Set
+`output.webhook_url` and each delivered report is POSTed there as one JSON object
+(`bin/webhook.py`, stdlib only). The payload is polyglot — `text` for Slack incoming
+webhooks, `content` (2000-char-truncated) for Discord, `title`/`mode`/`date`/
+`report_markdown` for generic receivers — so one URL works across services. Parallels
+the email path exactly: opt-in via config, fail-safe (a failed post warns; the run
+succeeds and the report is already in `kb/`), same report content.
+
+## Phase 10 — entity dossiers ✅ (shipped)
+
+Reports are perishable; what's *known* about an entity should compound. The portal
+gains an **Entities** tab: an index of every entity on file (observed in
+`observations.jsonl` or tagged on a surfaced item) and a dossier page per entity —
+its metric series with sparklines, its event timeline, and every surfaced item that
+concerned it (with grade verdicts where given). Surfaced item records now carry an
+`entities: [...]` tag (exact names from `tracking.watch` + the profile watchlist, see
+`monitor-prompt.md`); pre-tagging records still land in dossiers via a
+case-insensitive title/so_what name match. Entity names on the Overview link to their
+dossiers; the static export keeps plain text (it has no `/entity` route).
+
+## Phase 11 — deterministic feed sweep ✅ (shipped)
+
+Make recall auditable instead of hoped-for. Bootstrap now also emits
+`subject.derived.feeds` — verified RSS/Atom URLs for the ranked sources that have
+them. Each monitor run starts with `bin/fetch.py` (stdlib only) pulling those feeds
+deterministically: entries inside the lookback window (daily = `lookback_hours`,
+weekly = 7 days + overlap), not already in `seen.jsonl`, deduped across feeds, capped
+at `monitoring.fetch_max_items` (default 200, `0` disables). The candidates land in a
+scratch JSONL the triage prompt names as *the* sweep of those feeds — score first,
+don't re-fetch — so the agent's own bounded browsing covers only feedless sources
+(the recall backstop; "feeds-first + agentic backstop"). A broken feed is a warning,
+never a failed run; with no feeds configured the monitor behaves exactly as before.
+
+## Phase 12 — run budgets ✅ (shipped)
+
+Make the cost levers explicit config instead of constants buried in the scripts. A
+top-level `budgets:` block sets the per-pass turn caps handed to each `claude
+--max-turns` call (`bootstrap_max_turns` 80, `monitor_max_turns` 40,
+`deepdive_max_turns` 40, `editor_max_turns` 15 — defaults match the values the
+scripts always used), plus an opt-in **soft monthly cap**: when
+`budgets.monthly_cost_usd` > 0 and the rolling 30-day sum of `cost_usd` in
+`state/runs.log` crosses it, every monitor run warns on stderr. Warn-only by design
+— the figure is an API-equivalent estimate, not subscription billing, and silently
+stopping the watch would cost more than it saves. Absent/`0`/non-numeric knobs fall
+back to the defaults; a missing `jq` skips the cost check with a note, never the run.
+
+## Phase 13 — guided config interview ✅ (shipped)
+
+Lower the biggest adoption barrier: output quality depends entirely on a well-written
+`monitor-config.yaml`, and new users shouldn't have to write YAML cold. `bin/init.sh`
+is a deterministic bash wizard (plain `read` prompts — no model in the loop, fully
+offline-capable) that collects the human-authored fields — closest-fit template
+(any `samples/` config or the blank-slate example), subject name/description, seed
+URLs, scope in/out, anchor name/type/relationship, competitors,
+`output.email_to`/`webhook_url`, `deployment.instance` — and substitutes them into
+the chosen template, preserving its comments and empty `derived:` blocks (never
+generating YAML from scratch). Validates as it goes: http(s) seed URLs, and every
+answer must round-trip exactly through the repo's `cfg_get`/`cfg_get_text` readers
+(correct YAML quoting for `&` / `'` / `"` / `#`). One optional `claude -p` review at
+the end (model `models.init`, inheriting `models.bootstrap`, then the CLI default;
+capped by `budgets.init_max_turns`, default 15) only *suggests* — sharper scope,
+better seeds, missed competitors — shown as a diff and applied only on an explicit
+yes; a failed/empty/invalid suggestion never loses the assembled draft. Refuses to
+overwrite without `--force`, assembles in a temp file and moves it into place
+atomically, and offers (never auto-runs) `bootstrap.sh` at the end.
+
+## Phase 14 — missed-signal capture ✅ (shipped)
+
+The recall side of calibration. Thumbs can only grade what WAS surfaced, so the
+precision headline (Phase 8) can't see a false negative — and "silence beats noise"
+makes misses invisible by design. The portal's Review tab gains a **"Report a missed
+signal"** box: paste the URL of something the monitor should have caught (plus an
+optional why-it-mattered note) and it's recorded to `state/feedback.jsonl` with
+verdict `missed` (stable per-URL id, so a re-report collapses to one row). Missed
+reports ride the existing two calibration clocks unchanged: live calibration injects
+them on the very next run (treat lookalikes as in-scope; give that source sweep
+attention), and the next bootstrap tunes the rubric AND the source ranking/feeds so
+items like it get swept at all. The Calibration card counts reported misses beside
+the precision figure to keep the headline honest.
+
+## Phase 15 — profile-refresh diff ✅ (shipped)
+
+The durable half of the learning loop ("grades consolidate at the next bootstrap")
+hinged on a review nobody is helped through: re-reading a whole profile. Make the
+refresh gate a 2-minute skim instead:
+- On a re-bootstrap (an approved `profile.yaml` exists), `bootstrap.sh` writes
+  **`profile.draft.diff`** — a unified diff of the draft vs the approved profile —
+  and folds it into the "draft ready for review" email as a *What changed vs the
+  approved profile* section (truncated past 200 lines; appended after the editorial
+  pass so the editor can never touch it). First run / identical draft / no `diff`
+  tool → a note, never a failure.
+- The portal's draft view (`/profile?draft=1`) leads with the same diff, computed
+  live via `difflib` so it can't go stale; the awaiting-review banner links to it.
+- Approval stays the deliberate local `cp` — this lowers the cost of the gate, it
+  doesn't move it.
+
+## Phase 16 — coverage integrity ✅ (shipped)
+
+Two small guards that keep the sweep's coverage from silently rotting:
+- **Feed health.** `bin/fetch.py --health` (passed by the monitor) persists per-feed
+  sweep health to `state/feedhealth.json`: last success, consecutive failures, and
+  the newest entry ever seen. A feed failing 3+ runs in a row warns loudly in the
+  run log, and the portal Overview gains a **Feed health** card — failing feeds
+  (with their streak), stale feeds (HTTP 200 but nothing new in 14+ days — dead by
+  another name), then healthy ones. Feeds dropped from the profile are pruned;
+  everything stays warning-only and stdlib-only.
+- **Catch-up lookback.** A slept-through or skipped run used to lose its window
+  forever — the next run still looked back only `lookback_hours`. Now, when the
+  last logged run (newest `state/runs.log` row) is older than this run's window,
+  the window widens to cover the gap — applied to both the feed pre-sweep and the
+  agent's own browsing (a `CATCH-UP WINDOW` prompt note) — by at most
+  `monitoring.catchup_max_hours` *extra* hours on top of the normal window (default
+  168, `0` disables; bounding the widening rather than the window lets weekly runs
+  catch up too) so a long-dormant deployment can't trigger an unbounded sweep.
+
+## Phase 17 — multi-recipient email ✅ (shipped)
+
+`output.email_to` is no longer a single address. A new `cfg_get_list` reader in
+`bin/config-lib.sh` parses it as either a scalar (back-compat), a comma-joined string,
+or a YAML list:
+```yaml
+output:
+  email_to:
+    - you@example.com
+    - teammate@example.com
+```
+The monitor and bootstrap collect the addresses into an array; `send_email` comma-joins
+them for the `To:` header and passes each as its own `msmtp` envelope recipient (fixing
+the old `msmtp "$to"` that would have mishandled more than one). Existing single-address
+configs are untouched. (The `output.distribution` block stays documentation-only — this
+covers the email fan-out people actually asked for, without the multi-channel machinery.)
+
+## Phase 18 — forward radar ("Coming up") ✅ (shipped)
+
+Reports looked strictly backward, but the sweep is full of **forward-dated, time-bounded
+facts** — earnings dates, "GA in Q3", conference keynotes, regulatory deadlines,
+announced launch windows. The forward radar records them as dated expectations
+(`state/horizon.jsonl`, append-only, latest-row-per-id like `feedback.jsonl`) as the
+triage agent sweeps, and re-checks them as they come due — so a slipped or
+silently-passed date becomes a finding (the dog that didn't bark). No new claude pass:
+recording rides the triage prompt, and the arithmetic + rendering are deterministic in
+`bin/horizon.py` (stdlib). Each run injects the **due** expectations (overdue/past-grace
+computed by precision-scaled grace constants) for the agent to judge met / moved /
+lapsed; the weekly digest gains a deterministic **Coming up** table (appended after the
+editor pass so kb/, email, webhook, and portal all carry it); the portal Overview gains
+a **Coming up** card and each dossier an **Expected** list. On by default with
+`tracking.enabled`; `tracking.horizon: false` disables it. Empty-day ethics unchanged —
+the radar only *adds* to a report, it never *causes* one. (Design:
+[`design-forward-radar.md`](design-forward-radar.md).)
+
+## Phase 19 — rubric backtest at the refresh gate ✅ (shipped)
+
+The refresh review saw what *changed* in the draft (Phase 15) but not what *effect*
+it has — a refreshed rubric can quietly regress, dropping the kind of item the user
+has consistently thumbed up, and the regression only shows weeks later, one missed
+signal at a time. Replay the user's graded items (`state/feedback.jsonl`) against the
+DRAFT rubric — **blind** (verdicts + recorded scores stripped), on the **monitor
+model** (the production scorer), numbers computed deterministically — and fold an
+agreement report into the review email and the portal draft view:
+- `bin/backtest.py` (stdlib, two modes): `prepare` filters deduped feedback to
+  up/down, caps at `relevance.backtest_max_items` (default 60, `0` = off; `< 10`
+  usable grades → skip), and emits a blind eval set; `render` joins the agent's
+  `{id, draft_score}` scores back to the withheld verdicts + the draft's threshold and
+  writes the agreement report (agreement %, the approved-profile **baseline** computed
+  free from each row's recorded score, and the would-drop / would-surface flip lists,
+  borderline-tagged within ±0.05 of threshold).
+- `backtest-prompt.md` + a fail-safe block in `bin/bootstrap.sh` after the Phase 15
+  diff: the model only **scores** (the one job needing judgment), the helper computes
+  the numbers (no model grading its own homework). Runs only on a refresh, only with a
+  draft + enough grades; capped by `budgets.backtest_max_turns` (default 30). Every
+  failure mode warns and skips — the draft is never at risk.
+- The portal's `/profile?draft=1` view gains a backtest card beside the diff card
+  (point-in-time, stamped with the scoring-pass date so staleness is visible).
+
+## Phase 20 — deep-research-grade bootstrap ✅ (shipped)
+
+Profile quality is the system's ceiling — every future run scores against what
+bootstrap produced — yet bootstrap was **one linear agent in one context window**: by
+mid-run the window is mostly fetched page text and the final synthesis works from a
+half-saturated context, a quality ceiling no turn-cap fixes. Deep Research's power is
+architectural, and we replicate its shape with **script-orchestrated `claude -p`
+passes** (deterministic orchestration in shell, judgment in prompts — the monitor's
+triage→deep-dive→editor pattern applied to bootstrap):
+- a **plan** pass (`research-plan-prompt.md`) decomposes the work into facets and writes
+  `state/.research/plan.json`; `bin/research.py validate-plan` clamps the count, slugifies
+  + de-dups the ids, and emits one facet per line for the shell (a bad plan → single-pass
+  fallback);
+- **parallel facet** passes (`research-facet-prompt.md`, `models.researcher`, batched
+  `budgets.research_parallel` at a time on bash 3.2) each research one facet in a fresh
+  context and write a cited notes file to `state/.research/notes/<id>.md` — the
+  compression step the synthesizer reads instead of raw pages;
+- the **synthesis** pass is today's `bootstrap-prompt.md`, now fed the notes manifest and
+  asked for a *How this draft was researched* provenance block;
+- then deterministic **feed verification** (`fetch.py --verify`: every draft feed must
+  actually serve a parseable feed) and an optional adversarial **challenge** pass
+  (`research-challenge-prompt.md`, `models.challenge`) attack the draft before the human
+  gate, both folded into the review email and the portal draft view.
+
+**Opt-in** via `models.researcher` (unset = today's single pass, byte-for-byte — the
+same guarantee `models.deepdive` gives the monitor); `models.challenge` and feed
+verification work in single-pass mode too. The draft is sacred: a failed plan/facet/
+challenge degrades to a stub note or single-pass, never a lost draft, and an interrupted
+run resumes with `--resume`. Every pass logs to `runs.log` (`pass`: `research-plan`,
+`research-facet:<id>`, `bootstrap`, `challenge`) so the soft monthly budget + `usage.sh`
+see it; extended thinking via `budgets.thinking_tokens`. ~4–10× bootstrap cost, spent at
+the refresh gate where quality compounds hardest; the daily monitor's economics are
+untouched. (Design:
+[`design-deep-research-bootstrap.md`](design-deep-research-bootstrap.md).)
+
+## Phase 21 — quiet detection (the dog that didn't bark) ✅ (shipped)
+
+The implicit half of what Phase 18 did for *stated* dates: an entity gone quiet well
+past its own recorded rhythm is itself a finding ("no release in 8 weeks vs a ~3-week
+norm"), and `observations.jsonl` already encodes that rhythm. `bin/cadence.py`
+(stdlib) computes per entity + event_type baselines — the **median gap** between
+distinct event dates, requiring `tracking.quiet_min_events` (default 4) — and on
+**weekly** runs the monitor injects a **QUIET ENTITIES** block for every entity silent
+past `max(tracking.quiet_factor × median, 14 days)` (factor default 3; the floor is a
+constant). The agent verifies each against that run's sweep: activity found → record
+the observation as usual; genuinely quiet → a **Quiet on** entry citing the computed
+numbers and the last event's source. Reported silences are remembered in
+`state/quiet.jsonl` (marked only after the report ships, and only for entities the
+shipped report names — an entry the agent dropped re-injects instead of vanishing;
+compacted latest-row-per-key past a constant 500-line bound, never tail-pruned) so
+the same silence never re-alarms; the flag self-voids when the entity resumes
+(`last_seen` advances), so a later quiet spell re-flags as a new episode. Baselines
+admit only sourced events (no source, no observation — an unsourced row can neither
+form a baseline nor advance `last_seen`). Each portal
+dossier shows the same arithmetic as a **Cadence** line on its event timeline.
+Mention-count metrics deliberately form no baselines (they'd measure our own sweep
+effort, not the entity); dailies are untouched; an empty weekly stays empty — quiet
+entities only *add* to a report. On by default with `tracking.enabled`;
+`tracking.quiet: false` disables it. Zero new claude passes. (Design:
+[`design-quiet-detection.md`](design-quiet-detection.md).)
+
 ## Backlog / possible next steps (not started)
 
-Ideas raised but not built — captured so they aren't lost:
+Ideas raised but not built — captured so they aren't lost. Each feature-sized
+item now has a detailed design of record, ready to build:
 
-- **Second delivery channel.** A Slack / Discord / Telegram (or generic webhook)
-  delivery option, so `output.distribution` becomes real instead of documentation.
-  Would parallel the email path: opt-in via config, fail-safe (never breaks the run),
-  same report content.
+- **Confidence-label resolution.** Items ship with high/medium/low confidence but
+  nothing checks whether high-confidence calls pan out more often than low ones;
+  even a crude sampled follow-up would tell us if the labels mean anything.
+  (Design: [`design-confidence-resolution.md`](design-confidence-resolution.md).)
+- **Standing questions / tasking.** Between refreshes the anchor's priorities are
+  frozen; an analyst can be re-briefed on Monday, the monitor can't. A portal box
+  (or `state/focus.md`) records a time-boxed tasking — "weight pricing news higher
+  this month", "watching for anyone shipping X" — injected into triage alongside
+  live calibration and expiring after N days so stale taskings can't skew scoring
+  indefinitely. Ephemeral priority shifts without a re-bootstrap.
+  (Design: [`design-standing-questions.md`](design-standing-questions.md).)
+- **Source promotion ("source nursery").** Feed health (Phase 16) catches dying
+  sources; nothing catches *missing* ones short of a full re-bootstrap. Track the
+  origin domain of every surfaced item; when a domain outside the ranked
+  `news_sources` earns repeated surfaced (or thumbed-up) items via the agentic
+  backstop, flag it as a promotion candidate — with feed discovery — in the weekly
+  digest and at the next refresh. The recall-side complement to Phase 8's
+  per-source hit rates. (Design: [`design-source-nursery.md`](design-source-nursery.md).)
+- **Evidence preservation.** Dossiers (Phase 10) compound for months but their
+  citations rot — pricing pages change, posts get deleted. At surfacing time,
+  store a bounded extracted-text snippet + content hash per cited URL (stdlib
+  fetch, pruned like `seen.jsonl`), so a dossier's claims stay verifiable after
+  the link dies; optionally also submit the URL to the Internet Archive.
+  (Design: [`design-evidence-preservation.md`](design-evidence-preservation.md).)
 - **Thread-friendly email subject.** Gmail collapses daily reports into one
   conversation because the subject prefix is stable. Option to lead the subject with
   the date or market (e.g. `<market> — daily <date>`) or add a per-run token so each
   report threads separately. (Or just turn off Gmail conversation view — a zero-code
-  workaround.)
+  workaround.) (Design: [`design-email-subject.md`](design-email-subject.md).)
 - **Tailor `docs/overview.md`** — swap the generic "Example Market"/Acme example for a
   real market + competitors if showing it to a specific audience.

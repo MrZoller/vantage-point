@@ -24,6 +24,12 @@ cp profile.draft.yaml profile.yaml                        # approve (the quality
 ./bin/monitor.sh daily                                    # first run
 ```
 
+Or let the wizard do the copying and filling: `./bin/init.sh` starts from any of these
+samples (or the blank-slate example), interviews you for the `<...>` bits — subject,
+anchor, seeds, scope, competitors, delivery — and writes `monitor-config.yaml` itself,
+leaving `derived:` empty for `bootstrap`. See "Guided setup" in the
+[README](../README.md).
+
 Notes:
 - The `<...>` placeholders (and the seed lists) are where your specifics go — the more
   accurate the seeds, the less the agent drifts. Everything under `derived:` is filled

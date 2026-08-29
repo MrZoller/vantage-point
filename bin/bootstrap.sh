@@ -5,6 +5,23 @@
 # the draft is a human step (the governance gate).
 set -euo pipefail
 
+# Optional flags. --resume keeps any state/.research notes from an interrupted deep-
+# research run and redoes only the missing facets (these runs are long + expensive);
+# without it the scratch dir is cleared at start (stale-run hygiene).
+# --if-stale turns the whole run into a no-op unless the approved profile is past
+# governance.profile_refresh_days. It exists so the monthly launchd refresh agent can
+# fire unconditionally and cost nothing when a refresh isn't due; a human running
+# bootstrap.sh by hand is always deliberate and is never gated.
+RESUME=""
+IF_STALE=""
+for _arg in "$@"; do
+  case "$_arg" in
+    --resume) RESUME=1 ;;
+    --if-stale) IF_STALE=1 ;;
+    *) echo "bootstrap.sh: unknown argument '$_arg' (only --resume, --if-stale)" >&2; exit 2 ;;
+  esac
+done
+
 # Project root = parent of this script's bin/ dir.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -21,8 +38,17 @@ export PATH="$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 CONFIG="monitor-config.yaml"
 PROMPT="bootstrap-prompt.md"
+BACKTEST_PROMPT="backtest-prompt.md"   # optional rubric backtest at the refresh gate
+PROFILE="profile.yaml"               # the currently-approved profile (absent on a first run)
 DRAFT="profile.draft.yaml"
 SUMMARY="profile.draft.summary.md"   # human-readable digest the agent writes alongside
+DIFF_FILE="profile.draft.diff"       # on a refresh: what the draft changes vs the approved profile
+# Written as the LAST act of a successful run, cleared at the start of every real one.
+# Its presence means "the run that produced the current draft finished" - which the
+# draft's own mtime does NOT: a run that dies after the agent has Written the draft
+# leaves a newer-than-profile file behind, and without this marker --if-stale would read
+# that wreckage as a draft awaiting review and skip forever.
+DRAFT_OK="state/.draft-complete"
 
 [ -f "$CONFIG" ] || { echo "missing $CONFIG" >&2; exit 1; }
 [ -f "$PROMPT" ] || { echo "missing $PROMPT" >&2; exit 1; }
@@ -30,8 +56,281 @@ SUMMARY="profile.draft.summary.md"   # human-readable digest the agent writes al
 # Config knobs (shared cfg_get; no YAML library). Absent/blank -> empty string.
 MODEL="$(cfg_get models bootstrap)"
 EDITOR_MODEL="$(cfg_get models editor)"   # optional editorial polish of the summary
-EMAIL_TO="$(cfg_get output email_to)"     # optional "draft ready for review" email
+EMAIL_TO=()                               # optional "draft ready for review" email(s)
+while IFS= read -r _addr; do              # output.email_to: scalar OR a YAML list
+  [ -n "$_addr" ] && EMAIL_TO+=("$_addr")
+done < <(cfg_get_list output email_to)
+EMAIL_IMAGES="$(cfg_get_bool output email_images 0)"   # embed the logo in email headers; default off
+LOGO_ASSET="$ROOT/assets/logo-email.png"               # brand logo used when EMAIL_IMAGES is on
 SUBJECT_NAME="$(cfg_get_text subject name)"
+
+# ---- failure notification ----
+# A scheduled bootstrap that dies mid-run is otherwise pure silence: nothing is emailed,
+# nothing is written, and the only trace is a launchd log nobody reads. Every pass below
+# appends to bootstrap.err, so a failure has an explanation to send. Installed here (not
+# earlier) because it needs output.email_to; the two checks above it - a missing config or
+# prompt - are the only failures it can't report, and neither survives a first install.
+# Fail-safe by construction: it never changes the exit code and never fails the run.
+# Both codes on purpose: shellcheck 0.10 split "function is never invoked" out of SC2317
+# into SC2329, so naming only one leaves the other version red - and CI's Linux leg pins
+# an older shellcheck than a current Homebrew one. An unknown code is silently ignored,
+# so naming both is portable. It fires at all because shellcheck does not model an EXIT
+# trap running at `exit`, and this script now ends with an unconditional `exit 0`.
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, by the `trap ... EXIT` below
+notify_failure() {
+  local rc=$?
+  trap - EXIT                       # a failure inside this handler must not re-enter it
+  [ "$rc" -eq 0 ] && exit 0
+  echo "[bootstrap] FAILED (exit $rc) - see bootstrap.err" >&2
+  if [ "${#EMAIL_TO[@]}" -gt 0 ] && command -v msmtp >/dev/null 2>&1; then
+    local body VP_TITLE VP_SUBTITLE VP_PREHEADER VP_FOOTER VP_LOGO=""
+    body="$(mktemp)" || exit "$rc"
+    # shellcheck disable=SC2016  # backticks are literal Markdown; %s are printf placeholders
+    {
+      printf '> **The bootstrap run failed (exit %s).** The approved profile is untouched and still in use.\n\n' "$rc"
+      printf 'Any `%s` in the checkout is from this failed run - treat it as incomplete. It is not marked reviewable, so the next scheduled refresh replaces it rather than mistaking it for a draft awaiting your approval.\n\n' "$DRAFT"
+      printf 'Checkout: `%s`\n\n' "$ROOT"
+      printf 'Re-run it on the host - a deep-research run can resume where it stopped:\n\n'
+      printf '```sh\ncd %s && ./bin/bootstrap.sh --resume\n```\n\n' "$ROOT"
+      printf -- '---\n\n## Last 60 lines of `bootstrap.err`\n\n```\n'
+      if [ -s bootstrap.err ]; then tail -n 60 bootstrap.err; else printf '(empty - the run died without writing to stderr)\n'; fi
+      printf '```\n'
+    } > "$body" 2>/dev/null || true
+    VP_TITLE="${SUBJECT_NAME:-Market intelligence}"
+    VP_SUBTITLE="Bootstrap failed"
+    VP_PREHEADER="Bootstrap exited $rc - the approved profile is untouched"
+    VP_FOOTER="Generated by Vantage Point (bootstrap)"
+    [ -n "${EMAIL_IMAGES:-}" ] && VP_LOGO="${LOGO_ASSET:-}"
+    if send_email "[Vantage Point: ${SUBJECT_NAME:-bootstrap}] bootstrap FAILED (exit $rc)" "$body" "${EMAIL_TO[@]}"; then
+      echo "[bootstrap] emailed the failure notice" >&2
+    else
+      echo "[bootstrap] WARNING: could not email the failure notice" >&2
+    fi
+    rm -f "$body"
+  fi
+  exit "$rc"
+}
+trap notify_failure EXIT
+
+# Is $DRAFT something a human could actually review? `-s` is not enough: a synthesis that
+# exits 0 having written a truncated fragment leaves a NONEMPTY file, and vouching for
+# that parks the refresh on garbage exactly as an empty one would. There is no YAML parser
+# here by design - that is why config-lib.sh is awk - so be honest about what this is: a
+# completeness HEURISTIC, not validation. It requires the one field the cadence itself
+# depends on and that bootstrap-prompt.md explicitly asks for: last_bootstrapped, under
+# subject or anchor. A write truncated before the derived blocks are finished loses it; a
+# write truncated after them does not, and this will not catch that one.
+draft_looks_complete() {
+  [ -s "$DRAFT" ] || return 1
+  local lb
+  # An EARLY required field and a LATE one, so the pair spans the document: checking only
+  # last_bootstrapped was too weak, because it sits near the top of the schema and a write
+  # truncated just after it still passed. relevance.rubric is the last thing
+  # bootstrap-prompt.md asks the agent to produce.
+  lb="$(cfg_get subject last_bootstrapped "$DRAFT" || true)"
+  case "$lb" in ''|null) lb="$(cfg_get anchor last_bootstrapped "$DRAFT" || true)" ;; esac
+  case "$lb" in ''|null) return 1 ;; esac
+  grep -q '^relevance:' "$DRAFT" || return 1
+  grep -q '[[:space:]]rubric:' "$DRAFT" || return 1
+  return 0
+}
+
+# ---- --if-stale: the daily refresh agent's no-op gate ----
+# Placed AFTER the failure trap and before anything touches the tree: it reads
+# profile.yaml, and a profile that exists but cannot be read must produce a notice rather
+# than a silent dead run. Nothing here mutates, so bootstrap.err from the last real run is
+# still evidence on the skip path. SKIPPING is the default: a bootstrap is the most expensive thing here
+# and its output needs human approval, so a timer may only start one for a reason.
+#   no profile.yaml     -> skip. Nothing is approved; a FIRST bootstrap is a deliberate
+#                          human act, not something a schedule should kick off.
+#   unreviewed draft    -> skip. The gate is human approval, and a second draft would
+#                          overwrite the first without moving it any closer to approved.
+#   window unset or 0   -> skip. The operator turned the staleness contract off.
+#                          (A draft with no completion marker is NOT pending - it is
+#                          debris from a failed run, and refreshing over it is right.)
+#   profile still young -> skip. Not due.
+#   otherwise           -> run - INCLUDING an unparseable last_bootstrapped. Guessing
+#                          "fresh" from an unreadable date reproduces the exact silent
+#                          rot this agent exists to prevent, so it counts as stale.
+if [ -n "$IF_STALE" ]; then
+  _skip=""
+  if [ ! -f "$PROFILE" ]; then
+    _skip="no approved $PROFILE yet - run ./bin/bootstrap.sh by hand for the first one"
+  elif [ -f "$DRAFT_OK" ] && [ -s "$DRAFT" ] && [ "$DRAFT" -nt "$PROFILE" ]; then
+    # An approval is `cp $DRAFT profile.yaml`, so an approved draft is always OLDER than
+    # the profile. Newer means it is still waiting for a human - but ONLY if the run that
+    # wrote it finished; see $DRAFT_OK. A draft from a failed run must never park the
+    # refresh, or one bad night disables the cadence permanently and silently.
+    _skip="$DRAFT is newer than $PROFILE - a draft is already waiting for review"
+  else
+    _refresh_days="$(cfg_get governance profile_refresh_days)"
+    case "$_refresh_days" in ''|0|*[!0-9]*) _refresh_days="" ;; esac
+    if [ -z "$_refresh_days" ]; then
+      _skip="governance.profile_refresh_days is unset or 0 - periodic refresh is off"
+    else
+      # The ONLY tolerant config read in this script, opted in here rather than by
+      # weakening cfg_get for everyone: an approved profile that exists but cannot be read
+      # must not kill the run before the failure notifier can report it. Empty falls
+      # through to the "unparseable -> treat as stale" branch below, which refreshes -
+      # the safe direction. Every other read still dies loudly on an I/O failure.
+      _last_boot="$(cfg_get subject last_bootstrapped "$PROFILE" || true)"
+      case "$_last_boot" in ''|null) _last_boot="$(cfg_get anchor last_bootstrapped "$PROFILE" || true)" ;; esac
+      case "$_last_boot" in null) _last_boot="" ;; esac
+      # GNU `date -d` vs BSD `date -j -f`; try both, same as monitor.sh's staleness check.
+      # An ABSENT date is rejected before either: GNU `date -d ""` succeeds and reports
+      # today, which would make a profile with no last_bootstrapped look 0d old and skip
+      # the refresh forever - the exact silent rot this gate exists to prevent, on the
+      # platform the cron recipe in the README targets. BSD already fails it; this makes
+      # both platforms agree.
+      if [ -z "$_last_boot" ]; then
+        _boot_epoch=""
+      else
+        _boot_epoch="$(date -d "$_last_boot" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$_last_boot" +%s 2>/dev/null || true)"
+      fi
+      if [ -z "$_boot_epoch" ]; then
+        echo "[bootstrap] --if-stale: can't read last_bootstrapped ('$_last_boot') from $PROFILE - treating it as stale" >&2
+      else
+        _age_days=$(( ( $(date +%s) - _boot_epoch ) / 86400 ))
+        # A date in the FUTURE (clock skew, or a typo'd year) parses fine but yields a
+        # negative age, which is <= any window and so reads as "fresh" - parking the
+        # refresh until that date plus the window, potentially years. Same failure as an
+        # unparseable date, so it takes the same branch: unusable means stale, because
+        # guessing "fresh" from a date we cannot trust is the silent rot this gate exists
+        # to prevent.
+        if [ "$_age_days" -lt 0 ]; then
+          echo "[bootstrap] --if-stale: last_bootstrapped ('$_last_boot') is in the future - treating it as stale" >&2
+        elif [ "$_age_days" -le "$_refresh_days" ]; then
+          _skip="profile is ${_age_days}d old (<= profile_refresh_days=$_refresh_days)"
+        else
+          echo "[bootstrap] --if-stale: profile is ${_age_days}d old (> profile_refresh_days=$_refresh_days) - refreshing" >&2
+        fi
+      fi
+    fi
+  fi
+  if [ -n "$_skip" ]; then
+    echo "[bootstrap] --if-stale: nothing to do - $_skip"
+    exit 0
+  fi
+fi
+
+
+# Only NOW mutate anything. Every line below can fail on a read-only filesystem or after
+# a permissions change, and under `set -e` a failure here exits the script - which before
+# the trap existed above would have been another silent dead refresh, the exact class of
+# failure this PR exists to remove. (If the truncation itself fails, the notice tails a
+# previous run's bootstrap.err; stale context beats no notice at all.)
+#
+# Retract the completion marker up front, so a run that dies anywhere below leaves no
+# claim that its draft is reviewable. Up front rather than in the trap because a SIGKILL,
+# a power cut, or a `launchctl bootout` never runs a trap - and those leave exactly the
+# half-written draft this guards against. The draft goes with it: nothing below reads the
+# previous one (the refresh diff is computed against $PROFILE, not the old draft), and
+# clearing it is what lets the post-synthesis check mean "THIS run produced a draft"
+# rather than "some draft is lying around" - otherwise a run whose synthesis exits 0
+# without writing would adopt a previous run's partial file and mark it reviewable.
+mkdir -p state
+rm -f "$DRAFT_OK" "$DRAFT"
+
+# One clean stderr log per run; every pass below appends to it.
+: > bootstrap.err
+
+# Per-pass turn caps (budgets: block) - the cost lever for these claude calls.
+# 0/absent/non-numeric -> the long-standing defaults.
+BOOTSTRAP_MAX_TURNS="$(cfg_get budgets bootstrap_max_turns)"
+EDITOR_MAX_TURNS="$(cfg_get budgets editor_max_turns)"
+BACKTEST_MAX_TURNS="$(cfg_get budgets backtest_max_turns)"     # rubric-backtest scoring pass
+case "$BOOTSTRAP_MAX_TURNS" in ''|0|*[!0-9]*) BOOTSTRAP_MAX_TURNS=80 ;; esac
+case "$EDITOR_MAX_TURNS"    in ''|0|*[!0-9]*) EDITOR_MAX_TURNS=15 ;; esac
+case "$BACKTEST_MAX_TURNS"  in ''|0|*[!0-9]*) BACKTEST_MAX_TURNS=30 ;; esac
+# How many newest graded items to replay under the draft rubric; 0 disables the
+# backtest. Passed through to backtest.py prepare, which also enforces the 10-grade
+# floor. Absent/blank -> the helper's own default (60).
+BACKTEST_MAX_ITEMS="$(cfg_get relevance backtest_max_items)"
+case "$BACKTEST_MAX_ITEMS" in *[!0-9]*) BACKTEST_MAX_ITEMS=60 ;; '') BACKTEST_MAX_ITEMS=60 ;; esac
+
+# Model for the backtest scoring pass: the MONITOR model, because production scoring
+# happens there -- backtesting on the bootstrap model would validate a rubric the
+# production scorer may read differently. Fall back to the CLI default (omit --model).
+BACKTEST_MODEL="$(cfg_get models monitor)"
+BT_MODEL_ARGS=()
+[ -n "$BACKTEST_MODEL" ] && BT_MODEL_ARGS=(--model "$BACKTEST_MODEL")
+
+# ---- deep-research pipeline (models.researcher; the opt-in) ----
+# Set models.researcher and the single linear research pass becomes Deep-Research-
+# shaped: a PLAN pass writes a facet list, parallel FACET passes (on this model) write
+# cited notes with fresh contexts, then the synthesis pass below (today's bootstrap
+# prompt) builds the draft FROM those notes. Unset = today's single pass, byte-for-byte
+# (the same guarantee models.deepdive gives the monitor). models.challenge is
+# independent: it attacks any draft, so it works in single-pass mode too.
+RESEARCHER_MODEL="$(cfg_get models researcher)"   # unset -> single-pass bootstrap
+CHALLENGE_MODEL="$(cfg_get models challenge)"      # unset -> no adversarial pass
+RESEARCH_PLAN_PROMPT="research-plan-prompt.md"
+RESEARCH_FACET_PROMPT="research-facet-prompt.md"
+RESEARCH_CHALLENGE_PROMPT="research-challenge-prompt.md"
+RESEARCH_DIR="state/.research"
+PLAN_JSON="$RESEARCH_DIR/plan.json"
+NOTES_DIR="$RESEARCH_DIR/notes"
+CHALLENGE_MD="profile.draft.challenge.md"   # adversarial verification report
+FEEDCHECK_MD="profile.draft.feedcheck.md"   # deterministic draft-feed verification
+
+# Per-pass caps for the pipeline (budgets: block; absent/0/non-numeric -> defaults).
+PLAN_MAX_TURNS="$(cfg_get budgets plan_max_turns)"
+FACET_MAX_TURNS="$(cfg_get budgets facet_max_turns)"
+RESEARCH_MAX_FACETS="$(cfg_get budgets research_max_facets)"
+RESEARCH_PARALLEL="$(cfg_get budgets research_parallel)"
+CHALLENGE_MAX_TURNS="$(cfg_get budgets challenge_max_turns)"
+FACET_TIMEOUT="$(cfg_get budgets facet_timeout_seconds)"   # per-facet wall-clock bound
+case "$PLAN_MAX_TURNS"      in ''|0|*[!0-9]*) PLAN_MAX_TURNS=15 ;; esac
+case "$FACET_MAX_TURNS"     in ''|0|*[!0-9]*) FACET_MAX_TURNS=25 ;; esac
+case "$RESEARCH_MAX_FACETS" in ''|0|*[!0-9]*) RESEARCH_MAX_FACETS=6 ;; esac
+case "$RESEARCH_PARALLEL"   in ''|0|*[!0-9]*) RESEARCH_PARALLEL=3 ;; esac
+case "$CHALLENGE_MAX_TURNS" in ''|0|*[!0-9]*) CHALLENGE_MAX_TURNS=30 ;; esac
+case "$FACET_TIMEOUT"       in ''|*[!0-9]*)   FACET_TIMEOUT=1200 ;; esac   # 0 = no bound
+
+# Extended thinking for the judgment-heavy passes (plan/synthesis/challenge). Exported
+# per-call as MAX_THINKING_TOKENS so it never leaks onto the facet/editor/backtest
+# passes. Absent/0/non-numeric -> the CLI default (no override): 0 is the documented
+# "CLI default" value, and exporting MAX_THINKING_TOKENS=0 would DISABLE thinking rather
+# than leave the default, so it must fall through to unset here too.
+THINKING_TOKENS="$(cfg_get budgets thinking_tokens)"
+case "$THINKING_TOKENS" in ''|0|*[!0-9]*) THINKING_TOKENS="" ;; esac
+THINK_ENV=()
+[ -n "$THINKING_TOKENS" ] && THINK_ENV=(env "MAX_THINKING_TOKENS=$THINKING_TOKENS")
+
+RESEARCHER_MODEL_ARGS=()
+[ -n "$RESEARCHER_MODEL" ] && RESEARCHER_MODEL_ARGS=(--model "$RESEARCHER_MODEL")
+CHALLENGE_MODEL_ARGS=()
+[ -n "$CHALLENGE_MODEL" ] && CHALLENGE_MODEL_ARGS=(--model "$CHALLENGE_MODEL")
+
+# Per-facet wall-clock bound (the monitor's TIMEOUT_CMD pattern): a stuck facet must
+# not hang the whole run. 0 or no timeout/gtimeout binary -> facets run turn-bounded
+# only (the monitor's stance), with a one-line note.
+FACET_TIMEOUT_CMD=()
+if [ "$FACET_TIMEOUT" != 0 ] && [ -n "$RESEARCHER_MODEL" ]; then
+  if   command -v timeout  >/dev/null 2>&1; then FACET_TIMEOUT_CMD=(timeout  "$FACET_TIMEOUT")
+  elif command -v gtimeout >/dev/null 2>&1; then FACET_TIMEOUT_CMD=(gtimeout "$FACET_TIMEOUT")
+  else echo "[bootstrap] note: no timeout/gtimeout - facets are turn-bounded only (brew install coreutils)" >&2
+  fi
+fi
+
+# Per-pass usage accounting (the pipeline is a 4-10x bootstrap, so its spend must be
+# visible). Mirrors the monitor's log_usage: one JSON row per pass to state/runs.log,
+# so the soft monthly budget + bin/usage.sh see bootstrap spend automatically. jq
+# missing -> a note, never a failed run.
+log_usage() {  # <pass-label> <run-json>
+  command -v jq >/dev/null 2>&1 || {
+    echo "[bootstrap] note: jq not found - usage not logged ($1)" >&2; return 0; }
+  mkdir -p state
+  printf '%s' "$2" | jq -c \
+    --arg ts "$(date -u +%FT%TZ)" --arg mode bootstrap --arg date "$(date +%F)" --arg pass "$1" \
+    '{timestamp:$ts, mode:$mode, date:$date, pass:$pass,
+      num_turns:.num_turns, duration_ms:.duration_ms, cost_usd:.total_cost_usd,
+      input_tokens:.usage.input_tokens, output_tokens:.usage.output_tokens,
+      cache_read_input_tokens:.usage.cache_read_input_tokens,
+      cache_creation_input_tokens:.usage.cache_creation_input_tokens,
+      session_id:.session_id}' >> state/runs.log \
+    || echo "[bootstrap] WARNING: could not parse run JSON ($1); usage not logged" >&2
+}
 
 # Fall back to the CLI default by omitting --model when the key is absent/blank.
 # Print a notice so a typo'd config is visible rather than silently defaulting.
@@ -60,18 +359,170 @@ if [ -s "$FEEDBACK" ]; then
   echo "[bootstrap] including $(printf '%s\n' "$FEEDBACK_DATA" | grep -c .) calibration grade(s) from $FEEDBACK" >&2
   FEEDBACK_NOTE="
 
-Human calibration grades - the user's thumbs up/down on past surfaced items
-(\`verdict\`: up = should have been surfaced, down = not relevant). Treat these as
-ground truth: tune \`relevance.rubric\` so it would score these correctly, and fold
-the clearest cases into \`relevance.calibration\` (relevant / not_relevant) in your draft.
+Human calibration grades - the user's verdicts on past output (\`verdict\`: up =
+should have been surfaced, down = not relevant, missed = a relevant item the monitor
+NEVER surfaced; the user reported its URL). Treat these as ground truth: tune
+\`relevance.rubric\` so it would score these correctly, and fold the clearest cases
+into \`relevance.calibration\` (relevant / not_relevant) in your draft. For \`missed\`
+items, also fix the recall side: make sure their sources are ranked appropriately in
+\`news_sources\` (with feeds where they exist) so items like them get swept at all.
 \`\`\`jsonl
 $FEEDBACK_DATA
 \`\`\`"
 fi
 
-echo "[bootstrap] model=${MODEL:-(CLI default)} researching subject + anchor -> $DRAFT"
+# One researcher pass over a single facet. Runs as a background job in the facet
+# batch, so it must NEVER abort the parent: it captures its own failure, writes either
+# real notes or a clearly-labelled stub note, and returns 0. Its run-JSON is stashed
+# for the parent to log serially after the batch (no concurrent runs.log writers).
+run_facet() {  # <facet-id> <facet-json>
+  local fid="$1" fjson="$2"
+  local note="$NOTES_DIR/$fid.md" errf="$RESEARCH_DIR/$fid.err" jsonf="$RESEARCH_DIR/$fid.json"
+  local rc=0 out
+  out="$(${FACET_TIMEOUT_CMD[@]+"${FACET_TIMEOUT_CMD[@]}"} claude -p "$(cat "$RESEARCH_FACET_PROMPT")
 
-claude -p "$(cat "$PROMPT")
+---
+YOUR FACET (research only this; teammates cover the rest):
+\`\`\`json
+$fjson
+\`\`\`
+
+Config for context (subject, anchor, seeds, scope):
+\`\`\`yaml
+$(cat "$CONFIG")
+\`\`\`
+
+Write your notes as valid Markdown to ./$note (the schema is in the prompt above)." \
+    ${RESEARCHER_MODEL_ARGS[@]+"${RESEARCHER_MODEL_ARGS[@]}"} \
+    --allowedTools "Read,Write,WebSearch,WebFetch" \
+    --disallowedTools "Bash,AskUserQuestion" \
+    --permission-mode acceptEdits \
+    --max-turns "$FACET_MAX_TURNS" \
+    --output-format json \
+    2> "$errf")" || rc=$?
+  if [ "$rc" -eq 0 ] && [ -s "$note" ]; then
+    printf '%s' "$out" > "$jsonf"
+  else
+    printf '# Facet: %s\n\nFACET FAILED - synthesis must treat this area as UNRESEARCHED (the researcher produced no notes; rc=%s). Cover it from the open web if you can, and flag it in the provenance block.\n' "$fid" "$rc" > "$note"
+    : > "$jsonf"
+    printf '%s\n' "$fid" >> "$RESEARCH_DIR/.failed"
+  fi
+}
+
+# ---- deep-research pipeline (models.researcher): plan -> parallel facets -> notes ----
+# Sets NOTES_NOTE, the manifest the synthesis pass grounds itself in. Every failure mode
+# leaves NOTES_NOTE empty, so synthesis falls back to today's full-web single pass -- a
+# broken pipeline must never cost the user a draft.
+NOTES_NOTE=""
+if [ -n "$RESEARCHER_MODEL" ]; then
+  if command -v python3 >/dev/null 2>&1 && [ -f bin/research.py ] \
+     && [ -f "$RESEARCH_PLAN_PROMPT" ] && [ -f "$RESEARCH_FACET_PROMPT" ]; then
+    if [ -n "$RESUME" ]; then
+      mkdir -p "$NOTES_DIR"
+      echo "[bootstrap] deep research: --resume (keeping existing notes under $NOTES_DIR)" >&2
+    else
+      rm -rf "$RESEARCH_DIR"; mkdir -p "$NOTES_DIR"
+    fi
+    rm -f "$RESEARCH_DIR/.failed"
+
+    # [1] PLAN pass (bootstrap model) -> plan.json. Reused on --resume if already present.
+    if [ -n "$RESUME" ] && [ -s "$PLAN_JSON" ]; then
+      echo "[bootstrap] deep research: reusing existing plan $PLAN_JSON" >&2
+    else
+      echo "[bootstrap] deep research: planning the investigation (model=${MODEL:-CLI default})" >&2
+      PLAN_RUN_JSON="$(${THINK_ENV[@]+"${THINK_ENV[@]}"} claude -p "$(cat "$RESEARCH_PLAN_PROMPT")
+
+---
+Config to plan the research over:
+\`\`\`yaml
+$(cat "$CONFIG")
+\`\`\`$FEEDBACK_NOTE" \
+        ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
+        --allowedTools "Read,Write,WebSearch,WebFetch" \
+        --disallowedTools "Bash,AskUserQuestion" \
+        --permission-mode acceptEdits \
+        --max-turns "$PLAN_MAX_TURNS" \
+        --output-format json \
+        2>> bootstrap.err)" && log_usage research-plan "$PLAN_RUN_JSON" \
+        || echo "[bootstrap] WARNING: plan pass failed - will try to validate any plan it wrote" >&2
+    fi
+
+    # [2] validate-plan: clamp to research_max_facets, slugify + de-dup ids. A missing /
+    # unparseable / empty plan yields no facets -> single-pass fallback below.
+    FACETS="$(python3 bin/research.py validate-plan --max "$RESEARCH_MAX_FACETS" "$PLAN_JSON" 2>> bootstrap.err || true)"
+    if [ -z "$FACETS" ]; then
+      echo "[bootstrap] WARNING: no usable research plan - falling back to single-pass bootstrap" >&2
+    else
+      FACET_LINES=()
+      while IFS= read -r _l; do [ -n "$_l" ] && FACET_LINES+=("$_l"); done <<EOF
+$FACETS
+EOF
+      n_facets="${#FACET_LINES[@]}"
+      echo "[bootstrap] deep research: $n_facets facet(s), $RESEARCH_PARALLEL at a time (model=$RESEARCHER_MODEL)" >&2
+
+      # [2] FACET passes, batched research_parallel at a time (bash 3.2 has no wait -n:
+      # fill a batch of background jobs, wait for it, launch the next).
+      running=0
+      for _line in ${FACET_LINES[@]+"${FACET_LINES[@]}"}; do
+        IFS=$'\t' read -r fid fgoal fjson <<<"$_line"
+        # Resume skips a facet only if its notes are non-empty, newer than the plan, AND
+        # not a FACET FAILED stub -- a stub from a transient failure must be retried, not
+        # treated as done (else a resume could synthesize from failed notes).
+        if [ -n "$RESUME" ] && [ -s "$NOTES_DIR/$fid.md" ] && [ "$NOTES_DIR/$fid.md" -nt "$PLAN_JSON" ] \
+           && ! grep -q '^FACET FAILED' "$NOTES_DIR/$fid.md"; then
+          echo "[bootstrap]   facet $fid: resume - keeping existing notes" >&2
+          # Drop any stale run-JSON from the prior attempt so the logging loop below
+          # doesn't re-log this skipped facet's spend (it didn't run this invocation).
+          rm -f "$RESEARCH_DIR/$fid.json"
+          continue
+        fi
+        run_facet "$fid" "$fjson" &
+        running=$((running + 1))
+        if [ "$running" -ge "$RESEARCH_PARALLEL" ]; then wait; running=0; fi
+      done
+      wait
+
+      failed_count=0
+      [ -f "$RESEARCH_DIR/.failed" ] && failed_count="$(wc -l < "$RESEARCH_DIR/.failed" | tr -d ' ')"
+      # Log each facet's spend serially now the batch is done.
+      for _line in ${FACET_LINES[@]+"${FACET_LINES[@]}"}; do
+        IFS=$'\t' read -r fid _g _j <<<"$_line"
+        [ -s "$RESEARCH_DIR/$fid.json" ] && log_usage "research-facet:$fid" "$(cat "$RESEARCH_DIR/$fid.json")"
+      done
+
+      if [ "$failed_count" -ge "$n_facets" ]; then
+        echo "[bootstrap] WARNING: every facet failed - synthesis runs with full web (single-pass behavior)" >&2
+      else
+        manifest=""
+        for _line in ${FACET_LINES[@]+"${FACET_LINES[@]}"}; do
+          IFS=$'\t' read -r fid fgoal _j <<<"$_line"
+          tag=""
+          grep -q '^FACET FAILED' "$NOTES_DIR/$fid.md" 2>/dev/null && tag="  - FAILED (treat as unresearched)"
+          manifest="$manifest
+- ./$NOTES_DIR/$fid.md  (goal: $fgoal)$tag"
+        done
+        echo "[bootstrap] deep research: $((n_facets - failed_count))/$n_facets facet(s) produced notes" >&2
+        NOTES_NOTE="
+
+RESEARCH NOTES - a team of researchers investigated this market in parallel; their
+compressed notes below are the PRIMARY input for your synthesis (you do NOT see the raw
+pages they read - only these digests). Read each via Read and GROUND every derived block
++ the rubric in them, citing from them. Use the web only to fill gaps a note marks LOW or
+thin, or where a facet FAILED. Notes manifest:$manifest
+
+ALSO add a \"How this draft was researched\" provenance block to the review summary: the
+facets run, which (if any) FAILED / are unresearched, the main sources consulted, and what
+a human should double-check. Honesty about coverage beats a tidy-looking draft."
+      fi
+    fi
+  else
+    echo "[bootstrap] WARNING: models.researcher set but research tooling is missing (python3 / bin/research.py / prompts) - single-pass bootstrap" >&2
+  fi
+fi
+
+echo "[bootstrap] model=${MODEL:-(CLI default)} synthesizing the draft -> $DRAFT${NOTES_NOTE:+ (from research notes)}"
+
+SYNTH_RUN_JSON="$(${THINK_ENV[@]+"${THINK_ENV[@]}"} claude -p "$(cat "$PROMPT")
 
 ---
 Below is the config you are profiling. Read its subject, anchor, seeds, scope,
@@ -87,17 +538,182 @@ summary is a digest of the draft, not a substitute for it.
 
 \`\`\`yaml
 $(cat "$CONFIG")
-\`\`\`$FEEDBACK_NOTE" \
+\`\`\`$FEEDBACK_NOTE$NOTES_NOTE" \
   ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
-  --disallowedTools "Bash" \
+  --disallowedTools "Bash,AskUserQuestion" \
   --permission-mode acceptEdits \
-  --max-turns 80 \
-  --output-format text \
-  2> bootstrap.err
+  --max-turns "$BOOTSTRAP_MAX_TURNS" \
+  --output-format json \
+  2>> bootstrap.err)"
+log_usage bootstrap "$SYNTH_RUN_JSON"
+
+# claude can exit 0 having never called Write, or having truncated the file. That is a
+# failed run, not a quiet one: everything below (diff, backtest, feedcheck, the review
+# email) would describe an empty draft, and the completion marker would then park the
+# monthly refresh on a file with nothing in it. Fail loudly instead - the notifier
+# explains it, and the next scheduled run tries again.
+if ! draft_looks_complete; then
+  echo "[bootstrap] synthesis exited 0 but produced no usable $DRAFT (empty, or no last_bootstrapped - a truncated write) - failing the run" >&2
+  exit 1
+fi
 
 echo
 echo "[bootstrap] draft written to $DRAFT"
+
+# ---- challenge pass: attack the draft's weakest claims (models.challenge) ----
+# An adversary with web access tries to BREAK the draft's highest-stakes, lowest-
+# confidence claims (missing player? defunct "competitor"? stale pricing? wrong source
+# rank?) before a human approves it. Works in either mode (it takes any draft). Non-
+# destructive like the deep-dive: the draft is backed up first and restored if the pass
+# fails or empties it; the report is folded into the review email after the diff/backtest.
+rm -f "$CHALLENGE_MD"
+if [ -n "$CHALLENGE_MODEL" ] && [ -s "$DRAFT" ] && [ -f "$RESEARCH_CHALLENGE_PROMPT" ]; then
+  echo "[bootstrap] challenge pass on $CHALLENGE_MODEL" >&2
+  cp "$DRAFT" "$DRAFT.pre-challenge"
+  ch_rc=0
+  CH_RUN_JSON="$(${THINK_ENV[@]+"${THINK_ENV[@]}"} claude -p "$(cat "$RESEARCH_CHALLENGE_PROMPT")
+
+---
+The draft profile to attack is ./$DRAFT. If the deep-research pipeline ran, the team's
+notes are under ./$NOTES_DIR/ (read them for what was and wasn't researched).
+
+Config for context:
+\`\`\`yaml
+$(cat "$CONFIG")
+\`\`\`
+
+Write your findings to ./$CHALLENGE_MD per the prompt above, and apply ONLY evidenced
+corrections to ./$DRAFT (downgrade, don't delete, what you can't verify)." \
+    ${CHALLENGE_MODEL_ARGS[@]+"${CHALLENGE_MODEL_ARGS[@]}"} \
+    --allowedTools "Read,Write,Edit,WebSearch,WebFetch" \
+    --disallowedTools "Bash,AskUserQuestion" \
+    --permission-mode acceptEdits \
+    --max-turns "$CHALLENGE_MAX_TURNS" \
+    --output-format json \
+    2>> bootstrap.err)" || ch_rc=$?
+  if [ "$ch_rc" -eq 0 ] && draft_looks_complete; then
+    log_usage challenge "$CH_RUN_JSON"
+    rm -f "$DRAFT.pre-challenge"
+    if [ -s "$CHALLENGE_MD" ]; then
+      echo "[bootstrap] challenge report written to $CHALLENGE_MD"
+    else
+      echo "[bootstrap] note: challenge pass found nothing to report" >&2
+    fi
+  else
+    if [ "$ch_rc" -eq 0 ]; then log_usage challenge "$CH_RUN_JSON"; fi   # it ran; account for spend
+    mv -f "$DRAFT.pre-challenge" "$DRAFT"
+    rm -f "$CHALLENGE_MD"
+    echo "[bootstrap] WARNING: challenge pass failed/emptied the draft - restored the draft, no challenge report" >&2
+  fi
+fi
+
+# ---- deterministic feed verification (fetch.py --verify) ----
+# A guessed feed URL otherwise only surfaces weeks later via feed health (Phase 16). At
+# the gate, fetch every subject.derived.feeds URL in the DRAFT and report which actually
+# serve a parseable feed -- folded into the review email. An aid, never a gate: any
+# trouble is a note and the draft is untouched. Runs in single-pass mode too.
+rm -f "$FEEDCHECK_MD"
+if [ -s "$DRAFT" ] && command -v python3 >/dev/null 2>&1 && [ -f bin/fetch.py ]; then
+  if python3 bin/fetch.py --verify --out "$FEEDCHECK_MD" "$DRAFT" 2>> bootstrap.err \
+     && [ -s "$FEEDCHECK_MD" ]; then
+    echo "[bootstrap] draft feed check written to $FEEDCHECK_MD"
+  else
+    rm -f "$FEEDCHECK_MD"
+    echo "[bootstrap] note: no draft feeds to verify (or verification skipped)" >&2
+  fi
+fi
+
+# ---- refresh diff: what this draft changes vs the approved profile ----
+# On a refresh the review gate should be a skim of WHAT CHANGED (what your grades
+# re-ranked, which sources moved) rather than a re-read of the whole profile. Write
+# a unified diff alongside the draft and fold it into the review email below.
+# First bootstrap (no approved profile), an identical draft, or no diff tool ->
+# skipped with a note, never a failure.
+rm -f "$DIFF_FILE"
+if [ -f "$PROFILE" ] && [ -s "$DRAFT" ]; then
+  if command -v diff >/dev/null 2>&1; then
+    diff_rc=0
+    diff -u "$PROFILE" "$DRAFT" > "$DIFF_FILE" || diff_rc=$?
+    if [ "$diff_rc" -ge 2 ]; then     # 0 = identical, 1 = differs, >= 2 = trouble
+      echo "[bootstrap] WARNING: diff failed (exit $diff_rc) - no $DIFF_FILE written" >&2
+      rm -f "$DIFF_FILE"
+    elif [ -s "$DIFF_FILE" ]; then
+      echo "[bootstrap] refresh diff written to $DIFF_FILE (draft vs approved $PROFILE)"
+    else
+      rm -f "$DIFF_FILE"
+      echo "[bootstrap] note: the draft is identical to the approved $PROFILE" >&2
+    fi
+  else
+    echo "[bootstrap] note: no diff tool found - skipping $DIFF_FILE" >&2
+  fi
+fi
+
+# ---- rubric backtest: how the DRAFT rubric scores items you already graded ----
+# The diff above shows WHAT changed; this shows WHAT EFFECT it has. Replay the
+# user's graded items (state/feedback.jsonl) under the draft rubric -- blind, on the
+# MONITOR model (the production scorer), numbers computed deterministically -- and
+# fold an agreement report into the review email + portal draft view. Runs only on a
+# refresh (profile.yaml exists), only when the draft was written, only when there are
+# enough up/down grades. Every failure mode warns and skips; the draft is never at risk.
+BACKTEST_JSONL="profile.draft.backtest.jsonl"   # the agent's {id, draft_score} scores
+BACKTEST_MD="profile.draft.backtest.md"         # the rendered agreement report
+rm -f "$BACKTEST_JSONL" "$BACKTEST_MD"          # stale-run hygiene, like rm -f "$DIFF_FILE"
+if [ -f "$PROFILE" ] && [ -s "$DRAFT" ] && [ -s "$FEEDBACK" ] \
+   && [ -f "$BACKTEST_PROMPT" ] && command -v python3 >/dev/null 2>&1 \
+   && [ -f bin/dedupe-feedback.py ] && [ -f bin/backtest.py ]; then
+  EVAL_SET="$(python3 bin/dedupe-feedback.py "$FEEDBACK" \
+              | python3 bin/backtest.py prepare --max "$BACKTEST_MAX_ITEMS")" || EVAL_SET=""
+  if [ -n "$EVAL_SET" ]; then
+    echo "[bootstrap] backtest: re-scoring graded items under the draft rubric (model=${BACKTEST_MODEL:-CLI default})" >&2
+    # Persist the prepared (blind) eval set so render's universe is exactly what the
+    # scorer was asked about -- a capped run must not report capped-out grades as
+    # "not scored". Materialize the whole prompt now (draft + eval inline) so the pass
+    # needs no repo files at all.
+    BT_EVAL="$(mktemp)"
+    printf '%s\n' "$EVAL_SET" > "$BT_EVAL"
+    BT_PROMPT="$(cat "$BACKTEST_PROMPT")
+
+---
+DRAFT profile YAML (the rubric under review):
+\`\`\`yaml
+$(cat "$DRAFT")
+\`\`\`
+
+Evaluation set (one JSON object per line; verdicts withheld on purpose):
+\`\`\`jsonl
+$EVAL_SET
+\`\`\`"
+    # Run the scorer in a throwaway scratch dir: with Read denied AND cwd isolated, an
+    # injected or misbehaving pass can only write inside the scratch dir -- it cannot
+    # reach (let alone silently clobber) the draft/summary/diff we tell the reviewer are
+    # unaffected. We copy only the scores file back.
+    BT_SCRATCH="$(mktemp -d)"
+    if ( cd "$BT_SCRATCH" && claude -p "$BT_PROMPT" \
+          ${BT_MODEL_ARGS[@]+"${BT_MODEL_ARGS[@]}"} \
+          --allowedTools "Write" \
+          --disallowedTools "Read,Bash,WebSearch,WebFetch,AskUserQuestion" \
+          --permission-mode acceptEdits \
+          --max-turns "$BACKTEST_MAX_TURNS" \
+          --output-format text \
+          2>> "$ROOT/bootstrap.err" ) \
+       && [ -s "$BT_SCRATCH/$BACKTEST_JSONL" ]; then
+      mv -f "$BT_SCRATCH/$BACKTEST_JSONL" "$BACKTEST_JSONL"
+      if python3 bin/backtest.py render --draft "$DRAFT" --approved "$PROFILE" \
+           --feedback "$FEEDBACK" --eval "$BT_EVAL" --scores "$BACKTEST_JSONL" --out "$BACKTEST_MD"; then
+        echo "[bootstrap] backtest report written to $BACKTEST_MD"
+      else
+        rm -f "$BACKTEST_MD"
+        echo "[bootstrap] WARNING: backtest render failed - skipping (draft unaffected)" >&2
+      fi
+    else
+      echo "[bootstrap] WARNING: backtest scoring pass failed/empty - skipping (draft unaffected)" >&2
+    fi
+    rm -rf "$BT_SCRATCH"; rm -f "$BT_EVAL"
+  else
+    echo "[bootstrap] note: too few up/down grades to backtest (or backtest disabled) - skipping" >&2
+  fi
+fi
 
 # ---- optional delivery: email the draft summary as a review aid ----
 # Approval stays a deliberate LOCAL step (cp draft -> profile.yaml); this only
@@ -116,9 +732,9 @@ low-confidence / uncertainty flag - faithfulness to the draft beats polish. Edit
 ./$SUMMARY in place and keep it valid Markdown." \
         --model "$EDITOR_MODEL" \
         --allowedTools "Read,Write,Edit" \
-        --disallowedTools "Bash,WebSearch,WebFetch" \
+        --disallowedTools "Bash,WebSearch,WebFetch,AskUserQuestion" \
         --permission-mode acceptEdits \
-        --max-turns 15 \
+        --max-turns "$EDITOR_MAX_TURNS" \
         --output-format text \
         2>> bootstrap.err && [ -s "$SUMMARY" ]; then
       rm -f "$SUMMARY.pre-ed"
@@ -128,11 +744,50 @@ low-confidence / uncertainty flag - faithfulness to the draft beats polish. Edit
       echo "[bootstrap] WARNING: editorial pass failed/emptied the summary - kept the unedited one" >&2
     fi
   fi
-  # Email the summary when output.email_to is set.
-  if [ -n "$EMAIL_TO" ]; then
+  # The summary is written by synthesis; a later challenge pass may have CORRECTED the
+  # draft after it, so the digest the email + portal lead with can contradict the
+  # corrected draft. Append an honest staleness caveat (after the editorial pass so it
+  # can't be polished away; it lands in both the file the portal reads and the email
+  # body built below). Deterministic - no re-summarize cost.
+  if [ -s "$CHALLENGE_MD" ]; then
+    # shellcheck disable=SC2016  # backticks are literal Markdown; %s is a printf placeholder
+    printf '\n\n---\n\n> _An adversarial **challenge pass** ran after this summary was written and may have corrected the draft. Where this digest and `%s` differ, the draft and the Challenge report below are authoritative._\n' \
+      "$DRAFT" >> "$SUMMARY"
+  fi
+  # Email the summary when output.email_to is set (one address or a list).
+  if [ "${#EMAIL_TO[@]}" -gt 0 ]; then
+    email_disp="$(IFS=', '; echo "${EMAIL_TO[*]}")"
     if command -v msmtp >/dev/null 2>&1; then
       DELIVER="$(mktemp)"
       cat "$SUMMARY" > "$DELIVER"
+      # On a refresh, the diff vs the approved profile is the real review surface --
+      # appended AFTER the (possibly editor-polished) summary, never edited itself.
+      if [ -s "$DIFF_FILE" ]; then
+        {
+          printf '\n\n---\n\n## What changed vs the approved profile\n\n```diff\n'
+          head -n 200 "$DIFF_FILE"
+          if [ "$(wc -l < "$DIFF_FILE")" -gt 200 ]; then
+            printf '... (truncated - the full diff is in %s)\n' "$DIFF_FILE"
+          fi
+          printf '```\n'
+        } >> "$DELIVER"
+      fi
+      # The rubric backtest -- what EFFECT the draft has -- appended after the diff,
+      # also post-editor so the editorial pass can never touch the numbers.
+      if [ -s "$BACKTEST_MD" ]; then
+        printf '\n\n---\n\n' >> "$DELIVER"
+        cat "$BACKTEST_MD" >> "$DELIVER"
+      fi
+      # Deterministic draft-feed verification, then the adversarial challenge report --
+      # both appended after the backtest, post-editor so neither is paraphrased away.
+      if [ -s "$FEEDCHECK_MD" ]; then
+        printf '\n\n---\n\n' >> "$DELIVER"
+        cat "$FEEDCHECK_MD" >> "$DELIVER"
+      fi
+      if [ -s "$CHALLENGE_MD" ]; then
+        printf '\n\n---\n\n' >> "$DELIVER"
+        cat "$CHALLENGE_MD" >> "$DELIVER"
+      fi
       # shellcheck disable=SC2016  # backticks are literal Markdown; %s are printf placeholders
       printf '\n\n---\n\n**To approve:** review `%s`, edit if needed, then run `cp %s profile.yaml` on the host. Nothing is monitored until you do.\n' \
         "$DRAFT" "$DRAFT" >> "$DELIVER"
@@ -140,8 +795,10 @@ low-confidence / uncertainty flag - faithfulness to the draft beats polish. Edit
       VP_SUBTITLE="Profile draft ready for review"
       VP_PREHEADER="$(email_preheader "$DELIVER")"
       VP_FOOTER="Generated by Vantage Point (bootstrap)"
-      if send_email "$EMAIL_TO" "[Vantage Point: ${SUBJECT_NAME:-draft}] profile draft ready for review" "$DELIVER"; then
-        echo "[bootstrap] emailed the draft summary to $EMAIL_TO"
+      VP_LOGO=""   # brand logo in the header when output.email_images is on
+      [ -n "${EMAIL_IMAGES:-}" ] && VP_LOGO="${LOGO_ASSET:-}"
+      if send_email "[Vantage Point: ${SUBJECT_NAME:-draft}] profile draft ready for review" "$DELIVER" "${EMAIL_TO[@]}"; then
+        echo "[bootstrap] emailed the draft summary to $email_disp"
       else
         echo "[bootstrap] WARNING: msmtp failed - draft is still in $DRAFT / $SUMMARY" >&2
       fi
@@ -156,3 +813,31 @@ fi
 
 echo "[bootstrap] Review it, edit as needed, then APPROVE with:"
 echo "             cp $DRAFT profile.yaml"
+[ -s "$DIFF_FILE" ] && echo "             (what changed vs the approved profile: $DIFF_FILE)"
+[ -s "$BACKTEST_MD" ] && echo "             (how the draft rubric scores your graded items: $BACKTEST_MD)"
+[ -s "$FEEDCHECK_MD" ] && echo "             (which draft feeds actually serve a feed: $FEEDCHECK_MD)"
+[ -s "$CHALLENGE_MD" ] && echo "             (adversarial challenge of the draft's claims: $CHALLENGE_MD)"
+# Optional: copy the digest too so the portal's Profile tab shows it for the approved
+# profile (it renders profile.summary.md like the bootstrap email; YAML stays the source).
+[ -f "$SUMMARY" ] && echo "             cp $SUMMARY profile.summary.md   # optional: nicer Profile tab"
+
+# Reached only on success, so the draft standing in the tree is a complete one: mark it
+# reviewable. This is what --if-stale trusts when it parks a refresh for human review.
+# Re-checked rather than assumed: the marker is the thing that can disable the cadence,
+# so it never gets written on the strength of an earlier check alone.
+if draft_looks_complete; then
+  : > "$DRAFT_OK"
+else
+  # The review email has already gone out by here, so exiting 0 would advertise a draft
+  # nothing vouches for and leave the next daily refresh free to overwrite it silently.
+  # Fail instead: the notifier says so, and the marker's absence keeps the cadence alive.
+  echo "[bootstrap] $DRAFT is not reviewable at the end of the run - failing rather than advertising it" >&2
+  exit 1
+fi
+
+# The `[ -f "$SUMMARY" ] && echo` further up leaves a non-zero status when no summary was
+# written. That used to be the script's LAST command, so it became the run's exit code -
+# harmless while nothing read it, a spurious failure email once the notifier does. The
+# marker write above happens to absorb it now; say so explicitly rather than depend on
+# which line happens to come last.
+exit 0
