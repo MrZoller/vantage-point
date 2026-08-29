@@ -25,6 +25,7 @@ Candidate record: {"title", "url", "published", "source", "feed"}.
 import json
 import os
 import re
+import signal
 import sys
 import urllib.error
 import urllib.request
@@ -262,20 +263,50 @@ class _RedirectHandler(urllib.request.HTTPRedirectHandler):
 
 _OPENER = urllib.request.build_opener(_RedirectHandler)
 
+FEED_DEADLINE_SECONDS = 20
+FEED_MAX_BYTES = 5 * 1024 * 1024
+FEED_READ_CHUNK_BYTES = 64 * 1024
 
-def fetch_feed(feed, timeout=20):
+
+class _FeedDeadlineExceeded(Exception):
+    pass
+
+
+def _raise_feed_deadline(_signum, _frame):
+    raise _FeedDeadlineExceeded
+
+
+def fetch_feed(feed, timeout=FEED_DEADLINE_SECONDS, max_bytes=FEED_MAX_BYTES):
     """Pull a feed's bytes and final URL after redirects.
 
     Returns (data, final_url, None) on success or (None, None, error_string) on any
-    network/OS error -- the single fetch path shared by the sweep and --verify so they
-    behave identically on a down or slow feed (and across python versions).
+    network/OS/limit error. `timeout` is one wall-clock budget for opening, redirects,
+    and reading, rather than urllib's per-socket-operation timeout. This is the single
+    fetch path shared by the sweep and --verify so they behave identically.
     """
     req = urllib.request.Request(feed, headers={"User-Agent": "vantage-point-fetch"})
+    previous_handler = signal.signal(signal.SIGALRM, _raise_feed_deadline)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout)
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
-            return resp.read(), resp.geturl(), None
+            chunks = []
+            size = 0
+            while True:
+                chunk = resp.read(min(FEED_READ_CHUNK_BYTES, max_bytes - size + 1))
+                if not chunk:
+                    return b"".join(chunks), resp.geturl(), None
+                size += len(chunk)
+                if size > max_bytes:
+                    return None, None, "response exceeds %d-byte limit" % max_bytes
+                chunks.append(chunk)
+    except _FeedDeadlineExceeded:
+        return None, None, "exceeded %g-second deadline" % timeout
     except (urllib.error.URLError, OSError) as exc:
         return None, None, str(exc)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
 
 
 def parse_entries(data):
