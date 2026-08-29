@@ -69,7 +69,9 @@ def _read_jsonl(path):
     malformed / non-object lines are skipped (the log is agent-written and
     hand-editable, so coerce rather than crash)."""
     try:
-        f = sys.stdin if path == "-" else open(path, encoding="utf-8")
+        # Replacement decoding keeps valid records on either side of a damaged
+        # byte; the affected row is rejected by the existing JSON parser below.
+        f = sys.stdin if path == "-" else open(path, encoding="utf-8", errors="replace")
     except (FileNotFoundError, OSError):
         return
     with f:
@@ -201,7 +203,9 @@ def cmd_mark(flags_path, as_of, report_path=None):
     report_text = None
     if report_path:
         try:
-            with open(report_path, encoding="utf-8") as f:
+            # A damaged report byte must not discard otherwise readable entity
+            # names and cause already-delivered silence flags to re-alert.
+            with open(report_path, encoding="utf-8", errors="replace") as f:
                 report_text = f.read().lower()
         except OSError:
             report_text = None

@@ -59,9 +59,10 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T18 (standard) — monitor.sh: triage claude's 2> truncates the feed-sweep diagnostics written moments earlier (Fixes #55)
   - acceptance: `bin/monitor.sh` preserves feed-sweep statistics and failure diagnostics in the run `.err` file when triage starts, and tests verify later stage stderr appends rather than erases earlier diagnostics
   - pr: 96
-- [~] T19 (standard) — dedupe-feedback.py: non-string id raises TypeError and aborts the whole bootstrap (Fixes #54)
+- [x] T19 (standard) — dedupe-feedback.py: non-string id raises TypeError and aborts the whole bootstrap (Fixes #54)
   - acceptance: `bin/dedupe-feedback.py` skips records whose id is not a string without traceback, preserves valid output, and does not abort `bin/bootstrap.sh`; tests cover an unhashable array/object id alongside valid feedback
-- [ ] T20 (standard) — portal.py: one invalid UTF-8 byte in any state file breaks every portal page (Fixes #53)
+  - pr: 97
+- [~] T20 (standard) — portal.py: one invalid UTF-8 byte in any state file breaks every portal page (Fixes #53)
   - acceptance: `bin/portal.py` tolerates invalid UTF-8 in JSONL state and kb reports without dropping the entire page, and `bin/cadence.py` applies equivalent tolerant reading; tests cover malformed bytes in each reader surface
 - [ ] T21 (standard) — portal.py: state-changing GET endpoints (/grade, /missed) have no CSRF/origin protection (Fixes #52)
   - acceptance: `bin/portal.py` rejects cross-origin state changes to `/grade` and `/missed` and prevents DNS-rebinding access through untrusted Host values, using POST plus a per-session token or equivalent origin/host protection; tests verify legitimate localhost actions still append feedback while forged cross-origin requests do not
