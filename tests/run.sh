@@ -5350,12 +5350,16 @@ YAML
   cat "$repo/monitor-config.yaml" > "$repo3/monitor-config.yaml"
   out="$( cd "$repo3" && NO_SUMMARY=1 MSG_OUT="$msg3" HOME="$home3" bash bin/bootstrap.sh 2>&1 )"; rc=$?
   assert_eq "a successful run with no summary exits 0" "0" "$rc"
-  [ -s "$repo3/profile.draft.yaml" ] \
-    && pass "the no-summary run keeps its complete draft" \
-    || fail "the no-summary run keeps its complete draft"
-  [ ! -e "$repo3/profile.draft.summary.md" ] \
-    && pass "the no-summary stub omits the optional summary" \
-    || fail "the no-summary stub omits the optional summary"
+  if [ -s "$repo3/profile.draft.yaml" ]; then
+    pass "the no-summary run keeps its complete draft"
+  else
+    fail "the no-summary run keeps its complete draft"
+  fi
+  if [ ! -e "$repo3/profile.draft.summary.md" ]; then
+    pass "the no-summary stub omits the optional summary"
+  else
+    fail "the no-summary stub omits the optional summary"
+  fi
   assert_contains "notes there was no summary to email" "$out" "no profile.draft.summary.md written"
   assert_contains "still prints draft review guidance" "$out" "Review it, edit as needed, then APPROVE with:"
   assert_contains "still prints the approval command" "$out" "cp profile.draft.yaml profile.yaml"
