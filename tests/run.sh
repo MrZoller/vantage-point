@@ -3360,13 +3360,14 @@ test_fetch_health
 
 echo "== monitor.sh: feeds the pre-fetched candidates to triage (and cleans up) =="
 test_monitor_fetch() {
-  local repo="$TMP/fetchrepo" dir="$TMP/feeds2" out args="$TMP/fetch_args" port ready="$TMP/static.monitor-fetch.ready"
+  local repo="$TMP/fetchrepo" dir="$TMP/feeds2" out args="$TMP/fetch_args" port ready="$TMP/static.monitor-fetch.ready" run_err run_err_path
   make_fake_repo "$repo"
   mkdir -p "$dir"
   write_feed_fixtures "$dir"
   cat > "$repo/stub/claude" <<'SH'
 #!/usr/bin/env bash
 [ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '%s\n' '[test triage] stderr marker' >&2
 printf '{"num_turns":1,"total_cost_usd":0.0}\n'
 exit 0
 SH
@@ -3383,10 +3384,15 @@ subject:
     last_bootstrapped: $(date +%F)
     feeds:
       - http://127.0.0.1:$port/rss.xml
+      - http://127.0.0.1:1/dead.xml
 anchor:
   derived:
     last_bootstrapped: $(date +%F)
 YAML
+  # A same-day rerun must start a fresh diagnostic log: stale failures from a prior
+  # run would otherwise be presented as current feed health.
+  run_err_path="$repo/kb/$(date +%F).daily.err"
+  printf '%s\n' '[test] stale prior-run sentinel' > "$run_err_path"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"
@@ -3396,6 +3402,11 @@ YAML
   assert_contains "prompt points at the right path" "$(cat "$args" 2>/dev/null)" "state/.candidates.daily.jsonl"
   if [ -f "$repo/state/.candidates.daily.jsonl" ]; then fail "candidates file cleaned up after the run"; else pass "candidates file cleaned up after the run"; fi
   if [ -s "$repo/state/feedhealth.json" ]; then pass "the sweep records feed health"; else fail "the sweep records feed health"; fi
+  run_err="$(cat "$run_err_path" 2>/dev/null)"
+  assert_not_contains "run stderr drops stale prior-run diagnostics" "$run_err" "[test] stale prior-run sentinel"
+  assert_contains "run stderr preserves feed failure diagnostics after triage" "$run_err" "dead.xml failed:"
+  assert_contains "run stderr preserves feed sweep statistics after triage" "$run_err" "candidate(s) from 2 feed(s) (1 feed(s) failed)"
+  assert_contains "run stderr also contains later triage stderr" "$run_err" "[test triage] stderr marker"
 
   # No feeds in the profile -> no candidates note, run unchanged.
   local repo2="$TMP/fetchrepo2" args2="$TMP/fetch_args2"

@@ -212,6 +212,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# One clean stderr log per run; the feed sweep and every agent pass append to it.
+: > "kb/${TODAY}.${MODE}.err"
+
 # Pass --model only when set; otherwise omit it so the CLI default applies.
 MODEL_ARGS=()
 if [ -n "$MODEL" ]; then
@@ -578,7 +581,7 @@ them. Do not write the queue when it's disabled.$CATCHUP_NOTE$CANDIDATES_NOTE$FE
   --permission-mode acceptEdits \
   --max-turns "$MONITOR_MAX_TURNS" \
   --output-format json \
-  2> "kb/${TODAY}.${MODE}.err")"
+  2>> "kb/${TODAY}.${MODE}.err")"
 
 # claude exited 0 (set -e would have aborted otherwise).
 # ---- log per-pass usage to state/runs.log ----
