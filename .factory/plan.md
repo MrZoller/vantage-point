@@ -56,8 +56,9 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T17 (standard) — backtest.py: baseline agreement deflated when a feedback row lacks a numeric score, flattering the draft (Fixes #56)
   - acceptance: `bin/backtest.py` calculates approved-profile baseline agreement with a denominator containing only rows that have a numeric baseline score, while draft agreement retains its own denominator; rendered output/tests distinguish unscored baseline rows
   - pr: 95
-- [~] T18 (standard) — monitor.sh: triage claude's 2> truncates the feed-sweep diagnostics written moments earlier (Fixes #55)
+- [R] T18 (standard) — monitor.sh: triage claude's 2> truncates the feed-sweep diagnostics written moments earlier (Fixes #55)
   - acceptance: `bin/monitor.sh` preserves feed-sweep statistics and failure diagnostics in the run `.err` file when triage starts, and tests verify later stage stderr appends rather than erases earlier diagnostics
+  - pr: 96
 - [ ] T19 (standard) — dedupe-feedback.py: non-string id raises TypeError and aborts the whole bootstrap (Fixes #54)
   - acceptance: `bin/dedupe-feedback.py` skips records whose id is not a string without traceback, preserves valid output, and does not abort `bin/bootstrap.sh`; tests cover an unhashable array/object id alongside valid feedback
 - [ ] T20 (standard) — portal.py: one invalid UTF-8 byte in any state file breaks every portal page (Fixes #53)
