@@ -516,8 +516,10 @@ def entity_cadence(name):
     if not factor > 0:
         factor = 3.0
     try:
-        min_events = max(1, int(cfg_get("tracking", "quiet_min_events") or 4))
+        min_events = int(cfg_get("tracking", "quiet_min_events") or 4)
     except ValueError:
+        min_events = 4
+    if min_events <= 0:
         min_events = 4
     today = datetime.now(timezone.utc).date()
     rows = []
