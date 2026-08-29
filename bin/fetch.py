@@ -65,21 +65,15 @@ def _url_scalar(value):
 
 
 def _flow_closing_index(value):
-    """Index of the flow list's closing bracket, ignoring quotes and URL IPv6."""
-    quote, depth = None, 0
+    """Index of the flow list's closing bracket, ignoring URL IPv6 brackets."""
+    depth = 0
     for index, char in enumerate(value):
-        if char in "'\"":
-            if quote == char:
-                quote = None
-            elif quote is None:
-                quote = char
-        elif quote is None:
-            if char == "[":
-                depth += 1
-            elif char == "]" and depth:
-                depth -= 1
-                if depth == 0:
-                    return index
+        if char == "[":
+            depth += 1
+        elif char == "]" and depth:
+            depth -= 1
+            if depth == 0:
+                return index
     return None
 
 

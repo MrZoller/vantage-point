@@ -2826,6 +2826,12 @@ YAML
   printf 'subject:\n  derived:\n    feeds: [http://127.0.0.1:%s/rss.xml]\n' "$port" > "$TMP/inline.yaml"
   python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-inline.jsonl" "$TMP/inline.yaml" 2>/dev/null
   assert_contains "an inline feeds list is parsed" "$(cat "$TMP/cand-inline.jsonl" 2>/dev/null)" "Fresh RSS story"
+  # An apostrophe is valid in an unquoted URL scalar, not a quote delimiter.
+  printf 'subject:\n  derived:\n    feeds: [http://127.0.0.1:%s/rss.xml?what'\''s-new]\n' "$port" > "$TMP/inline-apostrophe.yaml"
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-inline-apostrophe.jsonl" \
+    "$TMP/inline-apostrophe.yaml" 2>/dev/null
+  assert_contains "an apostrophe in a plain inline feed URL is parsed" \
+    "$(cat "$TMP/cand-inline-apostrophe.jsonl" 2>/dev/null)" "Fresh RSS story"
   # `#` is part of an unquoted URL unless whitespace introduces a YAML comment.
   # The candidate's feed provenance is the configured scalar, so it checks that the
   # fragment survives parsing rather than merely relying on HTTP to discard it.
