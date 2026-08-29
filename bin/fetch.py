@@ -33,17 +33,44 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin, urlparse
 
-FEED_ITEM_RE = re.compile(r"^(\s*)-\s*['\"]?(https?://\S+?)['\"]?\s*(?:#.*)?$")
-FEEDS_KEY_RE = re.compile(r"^(\s*)feeds:\s*(\[[^\]]*\])?\s*(?:#.*)?$")
+FEED_ITEM_RE = re.compile(r"^(\s*)-\s*(.*?)\s*$")
+FEEDS_KEY_RE = re.compile(r"^(\s*)feeds:\s*(.*?)\s*$")
+
+
+def _without_yaml_comment(value):
+    """Drop a YAML comment without mistaking a URL fragment for one.
+
+    This deliberately supports only the repository's small YAML subset: a `#`
+    starts a comment at the beginning of a scalar or after whitespace, unless it
+    is inside a quoted scalar. YAML's richer escaping rules remain out of scope.
+    """
+    quote = None
+    for index, char in enumerate(value):
+        if char in "'\"":
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+        elif char == "#" and quote is None and (
+                index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    return value.rstrip()
+
+
+def _url_scalar(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        value = value[1:-1]
+    return value if value.startswith(("http://", "https://")) else None
 
 
 def _inline_urls(bracketed):
     """URLs from an inline YAML list body like '[a, "b"]' (brackets included)."""
     urls = []
     for part in bracketed[1:-1].split(","):
-        part = part.strip().strip("'\"")
-        if part.startswith(("http://", "https://")):
-            urls.append(part)
+        url = _url_scalar(part)
+        if url is not None:
+            urls.append(url)
     return urls
 
 
@@ -57,27 +84,41 @@ def feeds_from(path):
             lines = f.read().splitlines()
     except OSError:
         return []
-    urls, in_feeds, key_indent = [], False, 0
+    urls, in_feeds, in_flow, flow_lines, key_indent = [], False, False, [], 0
     for line in lines:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
+        if in_flow:
+            flow_line = _without_yaml_comment(stripped)
+            flow_lines.append(flow_line)
+            if "]" in flow_line:
+                urls.extend(_inline_urls(" ".join(flow_lines)))
+                in_flow, flow_lines = False, []
+            continue
         m = FEEDS_KEY_RE.match(line)
         if m:
-            inline = m.group(2)
-            if inline is not None:              # `feeds: [...]` (possibly empty)
-                urls.extend(_inline_urls(inline))
+            value = _without_yaml_comment(m.group(2)).strip()
+            if value.startswith("["):
+                if "]" in value:               # `feeds: [...]` (possibly empty)
+                    urls.extend(_inline_urls(value))
+                else:                           # a flow list may span YAML lines
+                    in_flow, flow_lines = True, [value]
                 in_feeds = False
-            else:                               # bare `feeds:` -> a block list follows
+            elif not value:                     # bare `feeds:` -> a block list follows
                 in_feeds = True
                 key_indent = len(m.group(1))
+            else:
+                in_feeds = False
             continue
         if in_feeds:
-            fm = FEED_ITEM_RE.match(line)
+            fm = FEED_ITEM_RE.match(_without_yaml_comment(line))
             # YAML allows list items at the key's own indent or deeper.
             if fm and len(fm.group(1)) >= key_indent:
-                urls.append(fm.group(2))
-                continue
+                url = _url_scalar(fm.group(2))
+                if url is not None:
+                    urls.append(url)
+                    continue
             in_feeds = False
     return urls
 

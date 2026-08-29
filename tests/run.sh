@@ -2826,6 +2826,39 @@ YAML
   printf 'subject:\n  derived:\n    feeds: [http://127.0.0.1:%s/rss.xml]\n' "$port" > "$TMP/inline.yaml"
   python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-inline.jsonl" "$TMP/inline.yaml" 2>/dev/null
   assert_contains "an inline feeds list is parsed" "$(cat "$TMP/cand-inline.jsonl" 2>/dev/null)" "Fresh RSS story"
+  # `#` is part of an unquoted URL unless whitespace introduces a YAML comment.
+  # The candidate's feed provenance is the configured scalar, so it checks that the
+  # fragment survives parsing rather than merely relying on HTTP to discard it.
+  cat > "$TMP/fragment-and-comment.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/rss.xml#feed-fragment
+      - http://127.0.0.1:$port/atom.xml # YAML comment, not part of the URL
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-fragment.jsonl" \
+    "$TMP/fragment-and-comment.yaml" 2>/dev/null
+  out="$(cat "$TMP/cand-fragment.jsonl" 2>/dev/null)"
+  assert_contains "an unquoted feed URL keeps its # fragment" "$out" \
+    "\"feed\": \"http://127.0.0.1:$port/rss.xml#feed-fragment\""
+  assert_contains "whitespace before # begins a feed YAML comment" "$out" "Fresh Atom entry"
+  assert_not_contains "a feed YAML comment is not part of the URL" "$out" \
+    "atom.xml # YAML comment"
+  # YAML flow collections may span lines; they must not fall through as an empty feed
+  # list and silently disable the deterministic sweep.
+  cat > "$TMP/multiline-flow.yaml" <<YAML
+subject:
+  derived:
+    feeds: [
+      http://127.0.0.1:$port/rss.xml,
+      http://127.0.0.1:$port/atom.xml
+    ]
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-multiline-flow.jsonl" \
+    "$TMP/multiline-flow.yaml" 2>/dev/null
+  out="$(cat "$TMP/cand-multiline-flow.jsonl" 2>/dev/null)"
+  assert_contains "a multi-line flow feeds list is parsed" "$out" "Fresh RSS story"
+  assert_contains "a multi-line flow feeds list includes every URL" "$out" "Fresh Atom entry"
   # --max caps to the newest N (again: only correct under UTC normalization).
   python3 "$ROOT/bin/fetch.py" --hours 30 --max 1 --out "$TMP/cand1.jsonl" \
     "$TMP/feeds-profile.yaml" 2>/dev/null
