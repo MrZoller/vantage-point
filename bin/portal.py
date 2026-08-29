@@ -691,15 +691,23 @@ def signal_mix():
 # positive, so the grading COVERAGE is always reported alongside to keep the
 # headline honest. Items are bucketed by the date they were surfaced.
 
-def _surfaced_index():
-    """id -> {date, source} for surfaced (non-dropped) items in seen.jsonl.
-    Newest record per id wins (a rerun may append the same id again)."""
-    out, ids = {}, set()
+def _latest_seen_index():
+    """id -> newest record in seen.jsonl (including dropped records)."""
+    out = {}
     for rec in reversed(read_jsonl(SEEN)):
         rid = rec.get("id")
-        if not isinstance(rid, str) or not rid or rid in ids:
+        if not isinstance(rid, str) or not rid or rid in out:
             continue
-        ids.add(rid)
+        out[rid] = rec
+    return out
+
+
+def _surfaced_index(latest=None):
+    """id -> {date, source} for surfaced (non-dropped) items in seen.jsonl.
+    Newest record per id wins (a rerun may append the same id again)."""
+    latest = _latest_seen_index() if latest is None else latest
+    out = {}
+    for rid, rec in latest.items():
         if rec.get("signal") == "dropped":
             continue
         d = rec.get("date")
@@ -724,7 +732,9 @@ def calibration_stats():
     bucketed by its grade timestamp -- the same fallback precision_chart uses -- so
     the headline numbers can't silently drop valid recent grades on high-volume or
     low-retention installs."""
-    surfaced = _surfaced_index()
+    latest = _latest_seen_index()
+    surfaced = _surfaced_index(latest)
+    dropped = {rid for rid, rec in latest.items() if rec.get("signal") == "dropped"}
     graded = _latest_feedback()
     cutoff = (datetime.now(timezone.utc).date() - timedelta(days=30)).isoformat()
     n = ups = downs = 0
@@ -738,7 +748,7 @@ def calibration_stats():
         elif verdict == "down":
             downs += 1
     for rid, rec in graded.items():
-        if rid in surfaced:
+        if rid in surfaced or rid in dropped:
             continue
         verdict = rec.get("verdict")
         if verdict not in ("up", "down"):
@@ -757,13 +767,17 @@ def precision_chart():
     """Weekly bars of precision (% thumbs-up among graded items), over the same
     window as the other Activity charts. The faint full-height track marks weeks
     that have grades; weeks without grades render nothing (unknown, not zero)."""
-    surfaced = _surfaced_index()
+    latest = _latest_seen_index()
+    surfaced = _surfaced_index(latest)
+    dropped = {rid for rid, rec in latest.items() if rec.get("signal") == "dropped"}
     graded = _latest_feedback()
     if not graded:
         return ""
     start, weeks, today = _week_grid()
     wk = [[0, 0] for _ in range(weeks)]            # [ups, downs] per week
     for rid, rec in graded.items():
+        if rid in dropped:
+            continue
         verdict = rec.get("verdict")
         if verdict not in ("up", "down"):
             continue
