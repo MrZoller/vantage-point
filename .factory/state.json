@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": null,
-  "branch": null,
+  "current_task": "T20",
+  "branch": "factory/t20-tolerant-utf8-reading",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T14:51:00Z"
+  "updated": "2026-08-29T14:52:19Z"
 }
