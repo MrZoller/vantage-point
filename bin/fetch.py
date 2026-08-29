@@ -22,6 +22,7 @@ themselves are unusable. Stdlib only; http(s) feeds only.
 
 Candidate record: {"title", "url", "published", "source", "feed"}.
 """
+import http.client
 import json
 import os
 import re
@@ -301,7 +302,7 @@ def fetch_feed(feed, timeout=FEED_DEADLINE_SECONDS, max_bytes=FEED_MAX_BYTES):
                 chunks.append(chunk)
     except _FeedDeadlineExceeded:
         return None, None, "exceeded %g-second deadline" % timeout
-    except (urllib.error.URLError, OSError) as exc:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
         return None, None, str(exc)
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
