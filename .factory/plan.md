@@ -30,7 +30,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T8 (standard) — fetch.py: config parsing loses feeds — '#' truncation without whitespace, and multi-line flow lists yield zero feeds (Fixes #65)
   - acceptance: `bin/fetch.py` preserves `#` fragments in unquoted feed scalars unless whitespace starts a YAML comment, and either parses multi-line flow-list feeds or emits an explicit warning instead of silently yielding no feeds; tests cover both forms
   - pr: 87
-- [R] T9 (standard) — research.py/bootstrap.sh: unbounded facet slug length breaks the stub-note degradation contract (Fixes #64)
+- [x] T9 (standard) — research.py/bootstrap.sh: unbounded facet slug length breaks the stub-note degradation contract (Fixes #64)
   - acceptance: `bin/research.py` bounds filesystem-safe facet slugs before de-duplication so long ids/titles cannot exceed filename limits; `bin/bootstrap.sh` still writes a note or failure stub, JSON stash, and `.failed` marker and reports provenance accurately for a long facet
   - pr: 88
 - [ ] T10 (standard) — email-lib.sh: CID logo emits one giant base64 line on macOS, violating the SMTP 998-octet limit (Fixes #63)
