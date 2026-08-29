@@ -49,7 +49,7 @@ def _without_yaml_comment(value):
         if char in "'\"":
             if quote == char:
                 quote = None
-            elif quote is None:
+            elif quote is None and value[:index].strip() in ("", "-"):
                 quote = char
         elif char == "#" and quote is None and (
                 index == 0 or value[index - 1].isspace()):

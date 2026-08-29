@@ -2842,6 +2842,20 @@ YAML
     "$TMP/inline-apostrophe-followed.yaml" 2>/dev/null
   assert_contains "an apostrophe does not swallow a later inline feed" \
     "$(cat "$TMP/cand-inline-apostrophe-followed.jsonl" 2>/dev/null)" "Fresh Atom entry"
+  # The same plain-scalar rule applies to block-list URLs before a YAML comment.
+  cat > "$TMP/block-apostrophe-comment.yaml" <<YAML
+subject:
+  derived:
+    feeds:
+      - http://127.0.0.1:$port/rss.xml?what's-new # YAML comment
+      - http://127.0.0.1:$port/atom.xml
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-block-apostrophe-comment.jsonl" \
+    "$TMP/block-apostrophe-comment.yaml" 2>/dev/null; rc=$?
+  assert_eq "apostrophe plus comment in a block feed exits 0" "0" "$rc"
+  out="$(cat "$TMP/cand-block-apostrophe-comment.jsonl" 2>/dev/null)"
+  assert_not_contains "block feed YAML comment is stripped" "$out" "# YAML comment"
+  assert_contains "later block feed survives an apostrophe URL" "$out" "Fresh Atom entry"
   # `#` is part of an unquoted URL unless whitespace introduces a YAML comment.
   # The candidate's feed provenance is the configured scalar, so it checks that the
   # fragment survives parsing rather than merely relying on HTTP to discard it.
