@@ -29,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone, timedelta, date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1341,6 +1342,7 @@ RAW_HTML_CANARY = ("canary <script>alert(1)</script> <img src=x onerror=alert(2)
 _RENDERER = None       # None = not probed yet; False = nothing on the chain is safe
 _RENDERER_ID = None    # the winner's (path, mtime_ns, size, ino, dev) at probe time
 _RENDERER_RETRY = 0.0  # monotonic deadline after which a negative verdict is re-probed
+_RENDERER_LOCK = threading.Lock()  # held by the one thread allowed to run the probes
 # How long "nothing on the chain is safe" is believed before looking again. A negative
 # cached forever would strand a long-lived portal on the reduced-fidelity light renderer
 # after a transient gap -- mid-upgrade, or a renderer installed later -- where the old
@@ -1403,19 +1405,38 @@ def _safe_renderer():
     every render was considered and declined: it would double the subprocess cost of
     every report view to close a window the stat check already reduces to noise."""
     global _RENDERER, _RENDERER_ID, _RENDERER_RETRY
-    if _RENDERER is False and time.monotonic() >= _RENDERER_RETRY:
-        _RENDERER = None   # the negative verdict has aged out -- look again
-    if _RENDERER:
-        if _renderer_id(_RENDERER[0]) == _RENDERER_ID:
-            return _RENDERER
-        # The probed file is gone or different. Fall toward the light renderer while
-        # re-probing (never toward trusting the unknown binary), same as first call.
-        sys.stderr.write("[portal] %s changed on disk since it was probed; "
-                         "re-checking the renderer chain\n" % _RENDERER[0])
-        _RENDERER = None
-    if _RENDERER is None:
+    r = _RENDERER
+    if r:
+        if _renderer_id(r[0]) == _RENDERER_ID:
+            return r
+    elif r is False and time.monotonic() < _RENDERER_RETRY:
+        return False
+    # The cache needs work: first call, aged-out negative, or the winner changed on
+    # disk. Exactly ONE thread runs the probes -- each candidate is a subprocess with a
+    # 20s budget, so a request burst piling on N probe chains is a real backlog, not a
+    # benign duplicate. Everyone who loses the race renders this page via the escaping
+    # light renderer instead of waiting: degraded toward safety, and self-healing on
+    # the next request once the probing thread publishes its verdict.
+    if not _RENDERER_LOCK.acquire(blocking=False):
+        return False
+    try:
+        # Re-read under the lock: the previous holder may have settled the very state
+        # this thread queued up on.
+        r = _RENDERER
+        if r and _renderer_id(r[0]) == _RENDERER_ID:
+            return r
+        if r is False and time.monotonic() < _RENDERER_RETRY:
+            return False
+        if r:
+            # Reaching the probe with a cached winner means its file changed on disk.
+            sys.stderr.write("[portal] %s changed on disk since it was probed; "
+                             "re-checking the renderer chain\n" % r[0])
+        # Publish the provisional negative AND claim the retry window before probing,
+        # so peer threads read "recent negative -- use the light renderer" rather than
+        # "expired -- probe again" for the whole time the probes run.
         _RENDERER = False
         _RENDERER_ID = None
+        _RENDERER_RETRY = time.monotonic() + NEGATIVE_TTL_SECONDS
         for cmd, args in RENDERERS:
             before = _renderer_id(cmd)
             if before is None:
@@ -1432,9 +1453,9 @@ def _safe_renderer():
             # render through a different tool knows which one was skipped and why.
             sys.stderr.write("[portal] %s left raw HTML live on the canary; "
                              "skipping it\n" % cmd)
-        if _RENDERER is False:
-            _RENDERER_RETRY = time.monotonic() + NEGATIVE_TTL_SECONDS
-    return _RENDERER
+        return _RENDERER
+    finally:
+        _RENDERER_LOCK.release()
 
 
 def render_markdown(md):

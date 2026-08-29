@@ -5177,6 +5177,41 @@ PY
   assert_contains "an inline-only filter is rejected by the block canary" "$out" "PICKED False"
   assert_contains "no live block <style> reaches the page" "$out" "LIVEBLOCK False"
 
+  # A burst of concurrent first renders must trigger ONE probe chain, not one per
+  # thread: each candidate probe is a subprocess with a 20s budget, so a pile-on is a
+  # real backlog. Losing threads render via the escaping light renderer immediately.
+  local repo6="$TMP/pcanary6" count6="$TMP/pcanary6.count"
+  mkdir -p "$repo6/bin" "$repo6/stub" "$repo6/state" "$repo6/kb"
+  cp "$ROOT/bin/portal.py" "$repo6/bin/"
+  : > "$count6"
+  for r in pandoc cmark-gfm cmark; do
+    # shellcheck disable=SC2016  # $CANARY_COUNT must reach the stub unexpanded
+    printf '#!/usr/bin/env bash\nsleep 0.5\necho x >> "$CANARY_COUNT"\ncat\n' > "$repo6/stub/$r"
+    chmod +x "$repo6/stub/$r"
+  done
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo6" && PATH="$repo6/stub:$PATH" CANARY_COUNT="$count6" python3 - "$repo6/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, sys, threading
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+N = 6
+barrier = threading.Barrier(N)
+results = [None] * N
+def go(i):
+    barrier.wait()
+    results[i] = m.render_markdown("body <script>alert(1)</script>\n")
+ts = [threading.Thread(target=go, args=(i,)) for i in range(N)]
+for t in ts: t.start()
+for t in ts: t.join()
+print("ANYLIVE", any("<script" in r.lower() for r in results))
+print("ALLESCAPED", all("&lt;script&gt;" in r for r in results))
+PY
+)"
+  assert_contains "no thread of the burst serves live markup" "$out" "ANYLIVE False"
+  assert_contains "every thread of the burst serves the escaped body" "$out" "ALLESCAPED True"
+  local probes; probes="$(wc -l < "$count6" | tr -d ' ')"
+  assert_eq "a concurrent burst runs the probe chain once (3 candidates)" "3" "$probes"
+
   # The verdict must be pinned to the FILE that was probed, not the name: replace the
   # winning stub in place (brew upgrade's shape) and the next render has to notice,
   # re-probe, and refuse the now-unsafe binary instead of riding the cached verdict.
