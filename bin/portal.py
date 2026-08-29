@@ -2153,6 +2153,9 @@ def main():
             sys.exit(2)
         port = int(argv[0])
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    # Port zero asks the kernel to select a collision-free port. Report the actual
+    # binding so callers can use it rather than the requested sentinel.
+    port = httpd.server_address[1]
     print("[portal] http://localhost:%d/  (Ctrl-C to stop)" % port, file=sys.stderr)
     print("[portal] over SSH:  ssh -L %d:localhost:%d you@host" % (port, port), file=sys.stderr)
     try:

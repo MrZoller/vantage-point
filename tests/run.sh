@@ -25,6 +25,96 @@ assert_not_contains() {
   case "$2" in *"$3"*) fail "$1 (unexpectedly found [$3])" ;; *) pass "$1" ;; esac
 }
 
+# Server fixtures bind port zero and publish their kernel-selected port through a
+# ready file. This associates readiness with the process the test started rather
+# than any unrelated listener, and makes concurrent suite runs safe.
+stop_server() {  # <pid>
+  kill "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
+
+wait_portal_server() {  # <server-log> <server-pid> [timeout-seconds]
+  local out rc
+  out="$(python3 - "$1" "$2" "${3:-$WAIT_SERVER_BUDGET}" <<'PY'
+import os, re, sys, time
+log, pid, budget = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+start = time.monotonic()
+pattern = re.compile(r"\[portal\] http://localhost:(\d+)/")
+while True:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        print("gone %.2f" % (time.monotonic() - start))
+        sys.exit(1)
+    try:
+        match = pattern.search(open(log).read())
+        if match:
+            print("ok %s %.2f" % (match.group(1), time.monotonic() - start))
+            sys.exit(0)
+    except OSError:
+        pass
+    if time.monotonic() - start >= budget:
+        print("timeout %.2f" % (time.monotonic() - start))
+        sys.exit(1)
+    time.sleep(0.1)
+PY
+)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    SERVER_PORT="${out#ok }"; SERVER_PORT="${SERVER_PORT%% *}"
+    return 0
+  fi
+  printf '    wait_portal_server: process %s did not report readiness (%s)\n' "$2" "$out" >&2
+  if [ -s "$1" ]; then
+    sed 's/^/      /' "$1" >&2
+  fi
+  return 1
+}
+
+# portal.py imports its renderer and cadence helpers before it can bind or publish
+# its selected port. On a loaded macOS runner that cold import can exceed the
+# former 30-second deadline, even though the eventual server is healthy.
+WAIT_SERVER_BUDGET="${WAIT_SERVER_BUDGET:-60}"
+wait_server() {  # <ready-file> <server-pid> [server-log]
+  local out rc
+  out="$(python3 - "$1" "$2" "$WAIT_SERVER_BUDGET" <<'PY'
+import os, sys, time
+ready, pid, budget = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+start = time.monotonic()
+while True:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        print("gone %.2f" % (time.monotonic() - start))
+        sys.exit(1)
+    try:
+        port = int(open(ready).read().strip())
+        if 1 <= port <= 65535:
+            print("ok %d %.2f" % (port, time.monotonic() - start))
+            sys.exit(0)
+    except (OSError, ValueError):
+        pass
+    if time.monotonic() - start >= budget:
+        print("timeout %.2f" % (time.monotonic() - start))
+        sys.exit(1)
+    time.sleep(0.1)
+PY
+)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    SERVER_PORT="${out#ok }"; SERVER_PORT="${SERVER_PORT%% *}"
+    return 0
+  fi
+  {
+    printf '    wait_server: process %s did not publish readiness (%s)\n' "$2" "$out"
+    if [ -n "${3:-}" ] && [ -s "$3" ]; then
+      printf '    wait_server: server output follows --\n'
+      sed 's/^/      /' "$3"
+    elif [ -n "${3:-}" ]; then
+      printf '    wait_server: server produced no output (log %s is empty)\n' "$3"
+    fi
+  } >&2
+  return 1
+}
+
 # Write an msmtp stub that captures the message it's piped to into $MSG_OUT (which
 # the stub reads from its environment at runtime, so callers must `export` it). It
 # also records its recipient args (one per line) to $MSG_OUT.rcpt, so tests can assert
@@ -1643,7 +1733,7 @@ test_portal_args
 echo "== portal.py: serves overview/reports/review/profile/config + records grades =="
 test_portal_server() {
   if ! command -v curl >/dev/null 2>&1; then pass "portal server (skipped: no curl)"; return; fi
-  local repo="$TMP/psrvrepo" port=8791 page
+  local repo="$TMP/psrvrepo" port page slog="$TMP/portal.review.log"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
   cp "$ROOT/bin/portal.py" "$repo/bin/"
   printf 'version: 1\nsubject:\n  name: "Test Market & Co"\noutput:\n  email_to: ""\n' \
@@ -1664,8 +1754,10 @@ test_portal_server() {
     printf 'null\n'                                          # valid JSON, non-object -> must be skipped
     printf '{"id":"evil","title":"XSS attempt","signal":"opportunity","score":0.5,"url":"javascript:alert(1)"}\n'
   } > "$repo/state/seen.jsonl"
-  ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
+  ( cd "$repo" && exec python3 bin/portal.py 0 > "$slog" 2>&1 ) &
   local srv=$!
+  if ! wait_portal_server "$slog" "$srv"; then fail "portal server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
   page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
   assert_contains "review lists a surfaced item (skips the malformed line)" "$page" "Tudor GMT leak"
   assert_contains "each surfaced item carries a scroll anchor" "$page" 'class="item" id="item-0"'
@@ -1706,7 +1798,7 @@ test_portal_server() {
   assert_contains "a grade redirects back to its row, not the page top" \
     "$(curl -s -D - -o /dev/null "http://127.0.0.1:$port/grade?id=abc123&v=up" || true)" \
     "Location: /review#item-1"
-  kill "$srv" 2>/dev/null || true
+  stop_server "$srv"
   assert_contains "a grade is recorded to feedback.jsonl" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"verdict": "up"'
   assert_contains "the grade captures the item id" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"id": "abc123"'
 }
@@ -1715,12 +1807,14 @@ test_portal_server
 echo "== portal.py: missed-signal reports record a 'missed' verdict (recall loop) =="
 test_portal_missed() {
   if ! command -v curl >/dev/null 2>&1; then pass "portal missed signals (skipped: no curl)"; return; fi
-  local repo="$TMP/pmissrepo" port=8798 page fb
+  local repo="$TMP/pmissrepo" port page fb slog="$TMP/portal.missed.log"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
   cp "$ROOT/bin/portal.py" "$repo/bin/"
   printf 'version: 1\n' > "$repo/monitor-config.yaml"
-  ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
+  ( cd "$repo" && exec python3 bin/portal.py 0 > "$slog" 2>&1 ) &
   local srv=$!
+  if ! wait_portal_server "$slog" "$srv"; then fail "portal missed server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
   page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
   assert_contains "review offers the missed-signal form" "$page" 'action="/missed"'
   curl -s -o /dev/null "http://127.0.0.1:$port/missed?url=https%3A%2F%2Fex.com%2Fmissed-item&note=big%20launch" || true
@@ -1744,7 +1838,7 @@ test_portal_missed() {
   assert_contains "review lists the recorded miss" "$page" "ex.com/missed-item"
   page="$(curl -s "http://127.0.0.1:$port/" || true)"
   assert_contains "calibration card counts reported misses" "$page" "missed signal"
-  kill "$srv" 2>/dev/null || true
+  stop_server "$srv"
 }
 test_portal_missed
 
@@ -2101,7 +2195,7 @@ test_portal_feed_health
 
 echo "== portal.py: entity dossiers join observations + tagged/legacy items =="
 test_portal_entities() {
-  local repo="$TMP/pent" out py="$TMP/pent.py" port=8795 page
+  local repo="$TMP/pent" out py="$TMP/pent.py" port page
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
   cp "$ROOT/bin/portal.py" "$repo/bin/"
   {
@@ -2149,8 +2243,11 @@ PY
   assert_contains "a short entity matches whole tokens only (no 'Prepaid' for 'AI')" "$out" "MATCHED_AI a1"
 
   if ! command -v curl >/dev/null 2>&1; then pass "entity pages (skipped: no curl)"; return; fi
-  ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
+  local slog="$TMP/portal.entities.log"
+  ( cd "$repo" && exec python3 bin/portal.py 0 > "$slog" 2>&1 ) &
   local srv=$!
+  if ! wait_portal_server "$slog" "$srv"; then fail "entity portal server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
   page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/entities" || true)"
   assert_contains "entities index lists the entity" "$page" "Tudor BB58"
   assert_contains "entities index links the dossier" "$page" '/entity?e=Tudor%20BB58'
@@ -2163,7 +2260,7 @@ PY
   assert_contains "an unknown entity 404s gracefully" "$page" "Entity not found"
   page="$(curl -s "http://127.0.0.1:$port/" || true)"
   assert_contains "overview links a tracked entity to its dossier" "$page" '/entity?e=Tudor%20BB58'
-  kill "$srv" 2>/dev/null || true
+  stop_server "$srv"
 }
 test_portal_entities
 
@@ -2389,7 +2486,9 @@ class H(SimpleHTTPRequestHandler):
         super().__init__(*a, directory=sys.argv[1], **k)
     def log_message(self, *a):
         pass
-_Quiet(("127.0.0.1", int(sys.argv[2])), H).serve_forever()
+httpd = _Quiet(("127.0.0.1", int(sys.argv[2])), H)
+open(sys.argv[3], "w").write(str(httpd.server_address[1]))
+httpd.serve_forever()
 PY
 }
 
@@ -2419,125 +2518,25 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(b"ok")
     def log_message(self, *args):
         pass
-_Quiet(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+httpd = _Quiet(("127.0.0.1", int(sys.argv[1])), H)
+open(sys.argv[3], "w").write(str(httpd.server_address[1]))
+httpd.serve_forever()
 PY
-}
-
-# wait_port <port> [server-log] [server-pid]
-# Wait for something to listen on 127.0.0.1:<port>, then report.
-#
-# Polls from ONE python process instead of spawning a fresh one per iteration. The old
-# form spawned 25, which on the macOS runner is the difference between a nominal 5s budget
-# and a ~12s wall clock, and piles interpreter startups onto the machine that is already
-# the bottleneck.
-#
-# Built on what the previous commit's diagnostics reported from the macOS leg, identically
-# for all 7 failures: the server pid was still ALIVE, its log was EMPTY (no traceback),
-# lsof showed nothing bound on the port, and the last connect status was 35 - EWOULDBLOCK,
-# i.e. the probe TIMED OUT rather than being refused (61, which is what nothing-listening
-# gives locally). A live, silent, not-yet-bound server means the budget ran out before the
-# server finished starting - so stop spending that budget on interpreter startups, and
-# allow more of it.
-#
-# It still explains itself on failure, and now also when it succeeds LATE, so a runner
-# drifting back toward the limit is visible before it goes red again.
-WAIT_PORT_BUDGET="${WAIT_PORT_BUDGET:-30}"
-wait_port() {
-  local out rc secs
-  out="$(python3 - "$1" "$WAIT_PORT_BUDGET" <<'PY'
-import errno, os, socket, sys, time
-port, budget = int(sys.argv[1]), float(sys.argv[2])
-start = time.monotonic()
-last = "none"
-while True:
-    left = budget - (time.monotonic() - start)
-    if left <= 0:
-        break
-    s = socket.socket()
-    # Generous PER-ATTEMPT timeout, not a short one. errno 35 (EWOULDBLOCK) means the
-    # connect was still in progress when we gave up; nothing-listening answers 61
-    # (ECONNREFUSED) immediately instead. The macOS runner returned 35 on every attempt
-    # for 30s under a 0.5s per-attempt limit while curl - which imposes no such limit -
-    # fetched pages from servers started the same way. So a slow-completing loopback
-    # connect was being read as "not up yet" on every single poll.
-    s.settimeout(min(5.0, left))
-    rc = s.connect_ex(("127.0.0.1", port))
-    s.close()
-    if rc == 0:
-        print("ok %.2f" % (time.monotonic() - start))
-        sys.exit(0)
-    last = rc
-    time.sleep(0.1)
-# Render the status symbolically: the numbers differ per platform (ECONNREFUSED is 61 on
-# macOS, 111 on Linux), so a fixed legend would misdiagnose the very failure this prints.
-name = errno.errorcode.get(last, "?") if isinstance(last, int) else "?"
-desc = os.strerror(last) if isinstance(last, int) else ""
-print("timeout %.2f last=%s (%s: %s)" % (time.monotonic() - start, last, name, desc))
-sys.exit(1)
-PY
-)"; rc=$?
-  if [ "$rc" -eq 0 ]; then
-    secs="${out#ok }"
-    # Quiet under 2s; louder above, because silence is how this drifted to red unnoticed.
-    case "$secs" in
-      0.*|1.*) : ;;
-      *) printf '    wait_port: 127.0.0.1:%s took %ss to accept (budget %ss)\n' \
-           "$1" "$secs" "$WAIT_PORT_BUDGET" >&2 ;;
-    esac
-    return 0
-  fi
-  {
-    printf '    wait_port: gave up on 127.0.0.1:%s (%s)\n' "$1" "$out"
-    printf '    wait_port: ECONNREFUSED=nothing listening; ETIMEDOUT/EWOULDBLOCK=bound but not accepting\n'
-    if [ -n "${3:-}" ]; then
-      if kill -0 "$3" 2>/dev/null; then
-        printf '    wait_port: server pid %s is still alive (started, but never bound)\n' "$3"
-      else
-        printf '    wait_port: server pid %s is GONE (it exited instead of serving)\n' "$3"
-      fi
-    fi
-    if [ -n "${2:-}" ] && [ -s "$2" ]; then
-      printf '    wait_port: server output follows --\n'
-      sed 's/^/      /' "$2"
-    elif [ -n "${2:-}" ]; then
-      printf '    wait_port: server produced no output (log %s is empty)\n' "$2"
-    fi
-    if command -v lsof >/dev/null 2>&1; then
-      printf '    wait_port: lsof for port %s --\n' "$1"
-      lsof -nP -iTCP:"$1" 2>/dev/null | sed 's/^/      /' || true
-    fi
-    # lsof can come back empty without privileges, so ask the kernel a second way.
-    if command -v netstat >/dev/null 2>&1; then
-      printf '    wait_port: netstat rows for port %s --\n' "$1"
-      netstat -an 2>/dev/null | grep -E "[.:]$1[[:space:]]" | sed 's/^/      /' || true
-    fi
-    # THE decisive one. The portal tests reach their server on this same runner, in this
-    # same port range, bound the same way (portal.py binds 127.0.0.1 too) - they just wait
-    # with curl instead of a socket probe, and they pass. So this asks the only question
-    # left: is the SERVER unreachable, or is this PROBE broken? If curl gets bytes where
-    # connect_ex timed out for 30s, the probe is the bug and the servers were never at
-    # fault.
-    if command -v curl >/dev/null 2>&1; then
-      printf '    wait_port: curl cross-check --\n'
-      curl -s -m 5 -o /dev/null -w '      curl exit ok, http=%{http_code}, connect=%{time_connect}s\n' \
-        "http://127.0.0.1:$1/" 2>&1 || printf '      curl also failed (exit %s)\n' "$?"
-    fi
-  } >&2
-  return 1
 }
 
 echo "== webhook.py: posts one polyglot JSON payload (Slack text / Discord content) =="
 test_webhook_py() {
-  local srv="$TMP/caphttpd.py" body="$TMP/wh_body.json" probe="$TMP/wh_probe.py" out rc port=8793
+  local srv="$TMP/caphttpd.py" body="$TMP/wh_body.json" probe="$TMP/wh_probe.py" out rc port ready="$TMP/capture.webhook.ready"
   write_capture_httpd "$srv"
-  local slog="$TMP/srv.cap.$port.log"
-  python3 "$srv" "$port" "$body" > "$slog" 2>&1 &
+  local slog="$TMP/srv.cap.log"
+  python3 "$srv" 0 "$body" "$ready" > "$slog" 2>&1 &
   local pid=$!
-  if ! wait_port "$port" "$slog" "$pid"; then fail "capture server came up"; kill "$pid" 2>/dev/null; return; fi
+  if ! wait_server "$ready" "$pid" "$slog"; then fail "capture server came up"; stop_server "$pid"; return; fi
+  port="$SERVER_PORT"
   printf '# Daily\n\n- **Item** matters\n' | \
     python3 "$ROOT/bin/webhook.py" "http://127.0.0.1:$port/hook" "[VP: Test] daily 2026-06-09" daily 2026-06-09
   rc=$?
-  kill "$pid" 2>/dev/null || true
+  stop_server "$pid"
   assert_eq "exits 0 on a 2xx response" "0" "$rc"
   cat > "$probe" <<'PY'
 import json, sys
@@ -2578,11 +2577,10 @@ test_webhook_py
 
 echo "== monitor.sh: posts the report to output.webhook_url; a failed post can't fail the run =="
 test_monitor_webhook() {
-  local repo="$TMP/whrepo" out rc srv="$TMP/caphttpd2.py" body="$TMP/wh_mon.json" port=8794
+  local repo="$TMP/whrepo" out rc srv="$TMP/caphttpd2.py" body="$TMP/wh_mon.json" port ready="$TMP/capture.monitor.ready"
   make_fake_repo "$repo"
   # cfg_get re-enters a repeated top-level block, so appending a second output:
   # block is a valid way to set webhook_url on the fixture config.
-  printf 'output:\n  webhook_url: "http://127.0.0.1:%s/hook"\n' "$port" >> "$repo/monitor-config.yaml"
   cat > "$repo/stub/claude" <<'SH'
 #!/usr/bin/env bash
 printf 'webhook report body\n' > "kb/.$(date +%F).daily.partial.md"
@@ -2591,13 +2589,15 @@ exit 0
 SH
   chmod +x "$repo/stub/claude"
   write_capture_httpd "$srv"
-  local slog="$TMP/srv.cap.$port.log"
-  python3 "$srv" "$port" "$body" > "$slog" 2>&1 &
+  local slog="$TMP/srv.cap.monitor.log"
+  python3 "$srv" 0 "$body" "$ready" > "$slog" 2>&1 &
   local pid=$!
-  if ! wait_port "$port" "$slog" "$pid"; then fail "capture server came up"; kill "$pid" 2>/dev/null; return; fi
+  if ! wait_server "$ready" "$pid" "$slog"; then fail "capture server came up"; stop_server "$pid"; return; fi
+  port="$SERVER_PORT"
+  printf 'output:\n  webhook_url: "http://127.0.0.1:%s/hook"\n' "$port" >> "$repo/monitor-config.yaml"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
-  kill "$pid" 2>/dev/null || true
+  stop_server "$pid"
   assert_eq "run exits 0" "0" "$rc"
   assert_contains "announces the webhook post" "$out" "posted report to webhook"
   assert_contains "the posted payload carries the report" "$(cat "$body" 2>/dev/null)" "webhook report body"
@@ -2662,14 +2662,15 @@ PY
 
 echo "== fetch.py: deterministic feed sweep (window, dedup, cap, broken feeds) =="
 test_fetch_py() {
-  local dir="$TMP/feeds" out err rc port=8796
+  local dir="$TMP/feeds" out err rc port ready="$TMP/static.fetch.ready"
   mkdir -p "$dir"
   write_feed_fixtures "$dir"
-  local slog="$TMP/srv.feed.$port.log"
+  local slog="$TMP/srv.feed.log"
   write_static_httpd "$TMP/statichttpd.py"
-  python3 "$TMP/statichttpd.py" "$dir" "$port" > "$slog" 2>&1 &
+  python3 "$TMP/statichttpd.py" "$dir" 0 "$ready" > "$slog" 2>&1 &
   local srv=$!
-  if ! wait_port "$port" "$slog" "$srv"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
+  if ! wait_server "$ready" "$srv" "$slog"; then fail "feed server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
   cat > "$TMP/feeds-profile.yaml" <<YAML
 subject:
   derived:
@@ -2712,7 +2713,7 @@ YAML
   assert_eq "--max 1 keeps one candidate" "1" "$(wc -l < "$TMP/cand1.jsonl" | tr -d ' ')"
   assert_contains "--max keeps the newest (offset-normalized) candidate" \
     "$(cat "$TMP/cand1.jsonl")" "Offset story"
-  kill "$srv" 2>/dev/null || true
+  stop_server "$srv"
   # No feeds configured: exit 0, no output file, a clear note.
   printf 'subject:\n  derived:\n    feeds: []\n' > "$TMP/nofeeds.yaml"
   err="$( python3 "$ROOT/bin/fetch.py" --out "$TMP/none.jsonl" "$TMP/nofeeds.yaml" 2>&1 )"; rc=$?
@@ -2728,7 +2729,7 @@ echo "== fetch.py: follows a 308 redirect on every python on the box =="
 # failed every launchd monitor run under the system one. Guards bin/fetch.py's
 # _RedirectHandler; deleting either half of it must turn this red.
 test_fetch_308() {
-  local dir="$TMP/feeds-308" rc port=8801 srv py real seen="" slog
+  local dir="$TMP/feeds-308" rc port srv py real seen="" slog ready="$TMP/static.308.ready"
   mkdir -p "$dir"
   write_feed_fixtures "$dir"
   # python3 -m http.server cannot emit a 308, so serve one from a tiny handler.
@@ -2771,12 +2772,15 @@ class H(BaseHTTPRequestHandler):
         pass
 
 
-_Quiet(("127.0.0.1", PORT), H).serve_forever()
+httpd = _Quiet(("127.0.0.1", PORT), H)
+open(sys.argv[3], "w").write(str(httpd.server_address[1]))
+httpd.serve_forever()
 PYSRV
-  slog="$TMP/srv.308.$port.log"
-  python3 "$TMP/srv308.py" "$dir" "$port" > "$slog" 2>&1 &
+  slog="$TMP/srv.308.log"
+  python3 "$TMP/srv308.py" "$dir" 0 "$ready" > "$slog" 2>&1 &
   srv=$!
-  if ! wait_port "$port" "$slog" "$srv"; then fail "308 server came up"; kill "$srv" 2>/dev/null; return; fi
+  if ! wait_server "$ready" "$srv" "$slog"; then fail "308 server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
   printf 'subject:\n  derived:\n    feeds: [http://127.0.0.1:%s/redir.xml]\n' "$port" > "$TMP/f308.yaml"
   # The suite runs on PATH's python3 (often 3.11+, where 308 works unaided), but
   # launchd runs monitor.sh under /usr/bin/python3 -- 3.9 on macOS. Only running
@@ -2792,21 +2796,21 @@ PYSRV
     assert_contains "308 redirect is followed to the feed ($("$real" -V 2>&1))" \
       "$(cat "$TMP/cand308.jsonl" 2>/dev/null)" "Fresh RSS story"
   done
-  kill "$srv" 2>/dev/null || true
-  wait "$srv" 2>/dev/null || true   # reap it quietly; bash otherwise prints "Terminated"
+  stop_server "$srv"
 }
 test_fetch_308
 
 echo "== fetch.py: --health tracks per-feed sweep health across runs =="
 test_fetch_health() {
-  local dir="$TMP/feeds-h" err rc port=8799 fh="$TMP/feedhealth.json"
+  local dir="$TMP/feeds-h" err rc port fh="$TMP/feedhealth.json" ready="$TMP/static.health.ready"
   mkdir -p "$dir"
   write_feed_fixtures "$dir"
-  local slog="$TMP/srv.feed.$port.log"
+  local slog="$TMP/srv.feed.health.log"
   write_static_httpd "$TMP/statichttpd.py"
-  python3 "$TMP/statichttpd.py" "$dir" "$port" > "$slog" 2>&1 &
+  python3 "$TMP/statichttpd.py" "$dir" 0 "$ready" > "$slog" 2>&1 &
   local srv=$!
-  if ! wait_port "$port" "$slog" "$srv"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
+  if ! wait_server "$ready" "$srv" "$slog"; then fail "feed server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
   cat > "$TMP/health-profile.yaml" <<YAML
 subject:
   derived:
@@ -2848,7 +2852,7 @@ PY
   out="$(python3 "$probe" "$fh" "http://127.0.0.1:$port/rss.xml" "http://127.0.0.1:1/dead.xml")"
   assert_contains "consecutive failures accumulate across runs" "$out" "DEAD_FAILS 3"
   assert_contains "a repeatedly-failing feed warns loudly" "$(cat "$err")" "failed 3 runs in a row"
-  kill "$srv" 2>/dev/null || true
+  stop_server "$srv"
   # A feed removed from the config is dropped from the health file.
   printf 'subject:\n  derived:\n    feeds:\n      - http://127.0.0.1:1/dead.xml\n' > "$TMP/health-profile.yaml"
   python3 "$ROOT/bin/fetch.py" --hours 30 --health "$fh" \
@@ -2866,10 +2870,23 @@ test_fetch_health
 
 echo "== monitor.sh: feeds the pre-fetched candidates to triage (and cleans up) =="
 test_monitor_fetch() {
-  local repo="$TMP/fetchrepo" dir="$TMP/feeds2" out args="$TMP/fetch_args" port=8797
+  local repo="$TMP/fetchrepo" dir="$TMP/feeds2" out args="$TMP/fetch_args" port ready="$TMP/static.monitor-fetch.ready"
   make_fake_repo "$repo"
   mkdir -p "$dir"
   write_feed_fixtures "$dir"
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+exit 0
+SH
+  chmod +x "$repo/stub/claude"
+  local slog="$TMP/srv.feed.monitor-fetch.log"
+  write_static_httpd "$TMP/statichttpd.py"
+  python3 "$TMP/statichttpd.py" "$dir" 0 "$ready" > "$slog" 2>&1 &
+  local srv=$!
+  if ! wait_server "$ready" "$srv" "$slog"; then fail "feed server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
   cat > "$repo/profile.yaml" <<YAML
 subject:
   derived:
@@ -2880,22 +2897,10 @@ anchor:
   derived:
     last_bootstrapped: $(date +%F)
 YAML
-  cat > "$repo/stub/claude" <<'SH'
-#!/usr/bin/env bash
-[ -n "${CLAUDE_ARGS:-}" ] && printf '%s\n' "$*" > "$CLAUDE_ARGS"
-printf '{"num_turns":1,"total_cost_usd":0.0}\n'
-exit 0
-SH
-  chmod +x "$repo/stub/claude"
-  local slog="$TMP/srv.feed.$port.log"
-  write_static_httpd "$TMP/statichttpd.py"
-  python3 "$TMP/statichttpd.py" "$dir" "$port" > "$slog" 2>&1 &
-  local srv=$!
-  if ! wait_port "$port" "$slog" "$srv"; then fail "feed server came up"; kill "$srv" 2>/dev/null; return; fi
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_ARGS="$args" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"
-  kill "$srv" 2>/dev/null || true
+  stop_server "$srv"
   assert_contains "announces the feed sweep" "$out" "feed sweep:"
   assert_contains "prompt names the candidates file" "$(cat "$args" 2>/dev/null)" "PRE-FETCHED CANDIDATES"
   assert_contains "prompt points at the right path" "$(cat "$args" 2>/dev/null)" "state/.candidates.daily.jsonl"
@@ -3258,7 +3263,7 @@ test_monitor_stale_in_report
 
 echo "== portal.py: forward-radar Coming up card + dossier Expected list + export =="
 test_portal_coming_up() {
-  local repo="$TMP/pcu" out py="$TMP/pcu.py" port=8794 page
+  local repo="$TMP/pcu" out py="$TMP/pcu.py" port page
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
   cp "$ROOT/bin/portal.py" "$repo/bin/"
   cat > "$py" <<'PY'
@@ -3314,14 +3319,17 @@ PY
   rm -f "$repo/monitor-config.yaml"   # restore default-enabled for the live-server checks
 
   if ! command -v curl >/dev/null 2>&1; then pass "dossier Expected (skipped: no curl)"; return; fi
-  ( cd "$repo" && exec python3 bin/portal.py "$port" >/dev/null 2>&1 ) &
+  local slog="$TMP/portal.coming-up.log"
+  ( cd "$repo" && exec python3 bin/portal.py 0 > "$slog" 2>&1 ) &
   local srv=$!
+  if ! wait_portal_server "$slog" "$srv"; then fail "coming-up portal server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
   page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/" || true)"
   assert_contains "overview shows the Coming up card" "$page" "Coming up"
   page="$(curl -s "http://127.0.0.1:$port/entity?e=Competitor%20C" || true)"
   assert_contains "dossier shows the Expected list" "$page" "Expected"
   assert_contains "dossier shows the entity's expectation" "$page" "EU launch"
-  kill "$srv" 2>/dev/null || true
+  stop_server "$srv"
 }
 test_portal_coming_up
 
@@ -3802,17 +3810,18 @@ test_research_py
 
 echo "== fetch.py --verify: flags draft feeds that don't serve a parseable feed =="
 test_fetch_verify() {
-  local dir="$TMP/feeds-v" port=8795 rc
+  local dir="$TMP/feeds-v" port rc ready="$TMP/static.verify.ready"
   mkdir -p "$dir"; write_feed_fixtures "$dir"
   # A well-formed XML doc that is NOT a feed (a sitemap) must be flagged, not blessed as
   # a 0-entry feed -- the root element isn't rss/rdf/feed.
   printf '<?xml version="1.0"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://e/x</loc></url></urlset>\n' \
     > "$dir/sitemap.xml"
-  local slog="$TMP/srv.verify.$port.log"
+  local slog="$TMP/srv.verify.log"
   write_static_httpd "$TMP/statichttpd.py"
-  python3 "$TMP/statichttpd.py" "$dir" "$port" > "$slog" 2>&1 &
+  python3 "$TMP/statichttpd.py" "$dir" 0 "$ready" > "$slog" 2>&1 &
   local srv=$!
-  if ! wait_port "$port" "$slog" "$srv"; then fail "verify feed server came up"; kill "$srv" 2>/dev/null; return; fi
+  if ! wait_server "$ready" "$srv" "$slog"; then fail "verify feed server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
   cat > "$TMP/verify-draft.yaml" <<YAML
 subject:
   derived:
@@ -3823,7 +3832,7 @@ subject:
       - http://127.0.0.1:1/dead.xml
 YAML
   python3 "$ROOT/bin/fetch.py" --verify --out "$TMP/verify.md" "$TMP/verify-draft.yaml" 2>/dev/null; rc=$?
-  kill "$srv" 2>/dev/null || true
+  stop_server "$srv"
   assert_eq "verify exits 0 (an aid, never a gate)" "0" "$rc"
   local md; md="$(cat "$TMP/verify.md" 2>/dev/null)"
   assert_contains "reports the failing count" "$md" "3 of 4 draft feed(s) don't serve a parseable feed"
