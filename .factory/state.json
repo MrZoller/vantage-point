@@ -5,7 +5,7 @@
   "plan_approved": true,
   "current_task": "T21",
   "branch": "factory/t21-portal-csrf-protection",
-  "pr": null,
+  "pr": 99,
   "hold": false,
-  "updated": "2026-08-29T15:33:06Z"
+  "updated": "2026-08-29T15:55:09Z"
 }
