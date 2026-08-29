@@ -87,7 +87,7 @@ def _inline_urls(bracketed):
         if char in "'\"":
             if quote == char:
                 quote = None
-            elif quote is None:
+            elif quote is None and not "".join(current).strip():
                 quote = char
         elif quote is None:
             if char == "[":
