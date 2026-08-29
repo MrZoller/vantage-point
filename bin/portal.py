@@ -306,7 +306,9 @@ def read_jsonl(path):
     lines (these logs are append-only and agent-written, so a bad line is expected)."""
     out = []
     try:
-        with open(path, encoding="utf-8") as f:
+        # Replacement decoding preserves valid append-only rows around a damaged
+        # byte. The affected row then follows the ordinary malformed-JSON path.
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -1626,7 +1628,9 @@ def report_title(query):
 
 def _report_card(name, printable=False):
     """Render one report as a card with the email-style header chrome."""
-    with open(os.path.join(KB, name), encoding="utf-8") as f:
+    # Briefings are operator-facing artifacts: retain the readable content around
+    # a damaged byte rather than making one report break the whole reports page.
+    with open(os.path.join(KB, name), encoding="utf-8", errors="replace") as f:
         body = render_markdown(f.read())
     cls = "card printreport" if printable else "card"
     return ('<div class="%s"><div class="brand" style="margin-bottom:4px">'

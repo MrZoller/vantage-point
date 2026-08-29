@@ -1698,6 +1698,81 @@ PY
 }
 test_portal_export
 
+echo "== portal.py: invalid UTF-8 in state JSONL and reports cannot blank a page =="
+test_portal_invalid_utf8() {
+  local mode repo html out rc py
+  # Each export gets exactly one bad byte in ONE state-reader input. Keeping all the
+  # other files valid makes a failure identify the reader surface that rejected it.
+  for mode in observations seen horizon runs feedback; do
+    repo="$TMP/portal-utf8-$mode"
+    mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
+    cp "$ROOT/bin/portal.py" "$repo/bin/"
+    python3 - "$repo" "$mode" <<'PY'
+import json, os, sys
+from datetime import datetime, timezone
+
+root, bad = sys.argv[1:]
+state = os.path.join(root, "state")
+now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+rows = {
+    "observations.jsonl": [
+        {"timestamp": now, "entity": "Observation reader marker", "metric": "price", "value": 7}],
+    "seen.jsonl": [
+        {"id": "seen-marker", "date": now[:10], "signal": "opportunity", "title": "Seen marker",
+         "entities": ["Seen reader marker"], "source": "seen-reader.invalid"}],
+    "horizon.jsonl": [
+        {"id": "horizon-marker", "timestamp": now, "entity": "Horizon reader marker",
+         "event": "Horizon marker", "due": "2099-01-01", "due_precision": "day", "status": "pending"}],
+    "runs.log": [
+        {"timestamp": now, "mode": "daily", "pass": "triage", "cost_usd": 0.42}],
+    "feedback.jsonl": [
+        {"timestamp": now, "id": "seen-marker", "verdict": "up"}],
+}
+paths = {"observations": "observations.jsonl", "seen": "seen.jsonl", "horizon": "horizon.jsonl",
+         "runs": "runs.log", "feedback": "feedback.jsonl"}
+for name, records in rows.items():
+    path = os.path.join(state, name)
+    with open(path, "wb") as f:
+        for record in records:
+            f.write(json.dumps(record).encode("utf-8") + b"\n")
+        if paths[bad] == name:
+            f.write(b"\xff\n")
+PY
+    rc=0
+    ( cd "$repo" && python3 bin/portal.py --export >/dev/null ) || rc=$?
+    assert_eq "invalid UTF-8 in $mode state JSONL still exports the overview" "0" "$rc"
+    html="$(cat "$repo/kb/index.html" 2>/dev/null)"
+    case "$mode" in
+      observations) assert_contains "observations reader retains valid data around invalid UTF-8" "$html" "Observation reader marker" ;;
+      seen) assert_contains "seen reader retains valid data around invalid UTF-8" "$html" "seen-reader.invalid" ;;
+      horizon) assert_contains "horizon reader retains valid data around invalid UTF-8" "$html" "Horizon marker" ;;
+      runs) assert_contains "runs reader retains valid data around invalid UTF-8" "$html" "\$0.42" ;;
+      feedback) assert_contains "feedback reader retains valid data around invalid UTF-8" "$html" "seen-reader.invalid" ;;
+    esac
+  done
+
+  # The print view reads every report. One bad report must not prevent a neighbouring
+  # valid briefing from rendering, which is the useful operator-facing degradation.
+  repo="$TMP/portal-report-utf8"
+  mkdir -p "$repo/bin" "$repo/kb"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  printf '# Good report marker\n' > "$repo/kb/2026-01-02.daily.md"
+  printf '# Broken report\n\xff\n' > "$repo/kb/2026-01-01.daily.md"
+  py="$TMP/portal-report-utf8.py"
+  cat > "$py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.reports_inner({"print": ["1"]}))
+PY
+  rc=0
+  out="$(python3 "$py" "$repo/bin/portal.py")" || rc=$?
+  assert_eq "invalid UTF-8 in one kb report does not fail the combined reports page" "0" "$rc"
+  assert_contains "combined reports page retains a valid neighbouring briefing" "$out" "Good report marker"
+}
+test_portal_invalid_utf8
+
 echo "== demo-bundle.sh: packages the portal runtime + live data into a portable folder =="
 test_demo_bundle() {
   local repo="$TMP/demorepo" out="$TMP/demoout"
@@ -3968,8 +4043,9 @@ test_cadence_py() {
 
   # mark --report: only entities the delivered report actually names get flagged --
   # a silence the agent left out of the report must re-inject, not vanish unseen.
+  # A damaged byte elsewhere in that report must not hide readable entity names.
   local mflags="$TMP/cadencepy/markreport.jsonl" mreport="$TMP/cadencepy/report.md"
-  printf '# weekly\n\n## Quiet on\n- **A** has gone dark (no release in 13 weeks)\n' > "$mreport"
+  printf '# weekly\n\xff\n## Quiet on\n- **A** has gone dark (no release in 13 weeks)\n' > "$mreport"
   printf '%s\n' \
     '{"entity":"A","event_type":"release","last_seen":"2026-03-05"}' \
     '{"entity":"Xylo","event_type":"release","last_seen":"2026-03-01"}' \
@@ -3992,6 +4068,38 @@ test_cadence_py() {
   assert_contains "compact keeps unrelated keys" "$(cat "$cflags")" '"entity": "Y"'
 }
 test_cadence_py
+
+echo "== cadence.py: invalid UTF-8 in JSONL state is skipped without losing valid rows =="
+test_cadence_invalid_utf8() {
+  local repo="$TMP/cadence-utf8" obs="$TMP/cadence-utf8/obs.jsonl" flags="$TMP/cadence-utf8/quiet.jsonl" out rc
+  mkdir -p "$repo"
+  cp "$ROOT/bin/cadence.py" "$repo/"
+  # Fixed events yield a baseline for A. Insert a literal non-UTF-8 byte between
+  # records rather than a Unicode replacement character: this exercises file decoding,
+  # not JSON's malformed-line handling.
+  {
+    printf '%s\n' \
+      '{"timestamp":"2026-01-01T00:00:00Z","entity":"A","metric":"event","event_type":"release","source":"https://a/1"}' \
+      '{"timestamp":"2026-01-22T00:00:00Z","entity":"A","metric":"event","event_type":"release","source":"https://a/2"}'
+    printf '\xff\n'
+    printf '%s\n' \
+      '{"timestamp":"2026-02-12T00:00:00Z","entity":"A","metric":"event","event_type":"release","source":"https://a/3"}' \
+      '{"timestamp":"2026-03-05T00:00:00Z","entity":"A","metric":"event","event_type":"release","source":"https://a/4"}'
+  } > "$obs"
+  rc=0
+  out="$(python3 "$repo/cadence.py" quiet --as-of 2026-06-07 --factor 3 --min-events 4 "$obs" "$flags")" || rc=$?
+  assert_eq "invalid UTF-8 in observations does not fail cadence quiet" "0" "$rc"
+  assert_contains "cadence retains valid observations around invalid UTF-8" "$out" '"entity": "A"'
+
+  # quiet.jsonl uses the same reader on the suppression path. Its bad byte must not
+  # stop cadence from reading the valid observation baseline either.
+  printf '\xff\n{"entity":"other","event_type":"release","last_seen":"2026-01-01"}\n' > "$flags"
+  rc=0
+  out="$(python3 "$repo/cadence.py" quiet --as-of 2026-06-07 --factor 3 --min-events 4 "$obs" "$flags")" || rc=$?
+  assert_eq "invalid UTF-8 in quiet flags does not fail cadence quiet" "0" "$rc"
+  assert_contains "cadence still emits the unsuppressed valid baseline after bad flags" "$out" '"entity": "A"'
+}
+test_cadence_invalid_utf8
 
 echo "== monitor.sh: quiet detection injects QUIET ENTITIES (weekly), marks, suppresses =="
 test_monitor_quiet() {
