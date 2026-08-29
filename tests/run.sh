@@ -2048,7 +2048,9 @@ test_portal_server() {
   # The grade redirects back to the graded row (not the page top), so the portal
   # doesn't jump to the top after every thumb.
   assert_contains "a grade redirects back to its row, not the page top" \
-    "$(curl -s -D - -o /dev/null "http://127.0.0.1:$port/grade?id=abc123&v=up" || true)" \
+    "$(curl -s -D - -o /dev/null -X POST \
+      -H "Host: localhost:$port" -H "Origin: http://localhost:$port" \
+      --data 'id=abc123&v=up' "http://127.0.0.1:$port/grade" || true)" \
     "Location: /review#item-1"
   stop_server "$srv"
   assert_contains "a grade is recorded to feedback.jsonl" "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"verdict": "up"'
@@ -2056,14 +2058,11 @@ test_portal_server() {
 }
 test_portal_server
 
-echo "== portal.py: grade links preserve reserved characters in item ids =="
+echo "== portal.py: grade POSTs preserve reserved characters in item ids =="
 test_portal_grade_id_encoding() {
   if ! command -v curl >/dev/null 2>&1; then pass "portal grade id encoding (skipped: no curl)"; return; fi
-  local repo="$TMP/pgradeidrepo" port page slog="$TMP/portal.grade-id.log" feedback
+  local repo="$TMP/pgradeidrepo" port slog="$TMP/portal.grade-id.log" feedback
   local item_id='collision&equals=%#plus+space here'
-  local encoded_id='collision%26equals%3D%25%23plus%2Bspace%20here'
-  local up_href="/grade?id=$encoded_id&v=up"
-  local down_href="/grade?id=$encoded_id&v=down"
   mkdir -p "$repo/bin" "$repo/state"
   cp "$ROOT/bin/portal.py" "$repo/bin/"
   # "collision" is what an unencoded ampersand would submit as id. It must never
@@ -2076,12 +2075,10 @@ test_portal_grade_id_encoding() {
   local srv=$!
   if ! wait_portal_server "$slog" "$srv"; then fail "portal grade id encoding server came up"; stop_server "$srv"; return; fi
   port="$SERVER_PORT"
-  page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
-  assert_contains "up grade href percent-encodes every reserved id character" "$page" "href=\"$up_href\""
-  assert_contains "down grade href percent-encodes every reserved id character" "$page" "href=\"$down_href\""
-  # Use the rendered endpoint shape, rather than constructing a separate request,
-  # to cover the browser-facing link through to grade recording.
-  curl -s --globoff "http://127.0.0.1:$port$up_href" >/dev/null || true
+  # A form-encoded POST must preserve every reserved character in the id. This is
+  # the browser-facing replacement for the old state-changing grade link.
+  curl -s -X POST -H "Host: localhost:$port" -H "Origin: http://localhost:$port" \
+    --data-urlencode "id=$item_id" --data 'v=up' "http://127.0.0.1:$port/grade" >/dev/null || true
   stop_server "$srv"
   feedback="$(cat "$repo/state/feedback.jsonl" 2>/dev/null)"
   assert_contains "encoded grade endpoint records the complete intended id" "$feedback" \
@@ -2104,18 +2101,23 @@ test_portal_missed() {
   port="$SERVER_PORT"
   page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
   assert_contains "review offers the missed-signal form" "$page" 'action="/missed"'
-  curl -s -o /dev/null "http://127.0.0.1:$port/missed?url=https%3A%2F%2Fex.com%2Fmissed-item&note=big%20launch" || true
+  curl -s -o /dev/null -X POST -H "Host: localhost:$port" -H "Origin: http://localhost:$port" \
+    --data-urlencode 'url=https://ex.com/missed-item' --data-urlencode 'note=big launch' \
+    "http://127.0.0.1:$port/missed" || true
   fb="$(cat "$repo/state/feedback.jsonl" 2>/dev/null)"
   assert_contains "a report records verdict missed" "$fb" '"verdict": "missed"'
   assert_contains "the report carries the url" "$fb" 'https://ex.com/missed-item'
   assert_contains "the report carries the note" "$fb" 'big launch'
   # Same URL re-reported -> same id, so dedupe-feedback collapses to one row.
-  curl -s -o /dev/null "http://127.0.0.1:$port/missed?url=https%3A%2F%2Fex.com%2Fmissed-item" || true
+  curl -s -o /dev/null -X POST -H "Host: localhost:$port" -H "Origin: http://localhost:$port" \
+    --data-urlencode 'url=https://ex.com/missed-item' "http://127.0.0.1:$port/missed" || true
   assert_eq "re-reporting a URL reuses its stable id" "1" \
     "$(python3 "$ROOT/bin/dedupe-feedback.py" "$repo/state/feedback.jsonl" | grep -c .)"
   # A non-http(s) URL is rejected, not recorded.
   local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/missed?url=javascript%3Aalert(1)" || true)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Host: localhost:$port" -H "Origin: http://localhost:$port" \
+    --data-urlencode 'url=javascript:alert(1)' "http://127.0.0.1:$port/missed" || true)"
   assert_eq "a non-http(s) url is rejected with 400" "400" "$code"
   case "$(cat "$repo/state/feedback.jsonl")" in
     *javascript*) fail "a rejected url is not recorded" ;;
@@ -2128,6 +2130,99 @@ test_portal_missed() {
   stop_server "$srv"
 }
 test_portal_missed
+
+echo "== portal.py: feedback changes require trusted localhost POST requests =="
+test_portal_feedback_post_security() {
+  if ! command -v curl >/dev/null 2>&1; then pass "portal feedback POST security (skipped: no curl)"; return; fi
+  local repo="$TMP/portal-post-security" port slog="$TMP/portal.post-security.log"
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  printf '{"id":"post-grade","title":"POST-grade item","signal":"opportunity","score":0.9}\n' \
+    > "$repo/state/seen.jsonl"
+  # The sentinel makes no-mutation comparisons work even before a request has ever
+  # appended feedback (and avoids treating a missing feedback file as a pass).
+  printf '{"id":"sentinel","verdict":"up"}\n' > "$repo/state/feedback.jsonl"
+  ( cd "$repo" && exec python3 bin/portal.py 0 > "$slog" 2>&1 ) &
+  local srv=$!
+  if ! wait_portal_server "$slog" "$srv"; then fail "portal feedback POST security server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
+  local page
+  page="$(curl -s "http://127.0.0.1:$port/review" || true)"
+  assert_contains "missed feedback control renders as POST" "$page" \
+    '<form class="missed" method="post" action="/missed">'
+  assert_contains "grade feedback control renders as POST" "$page" \
+    '<form method="post" action="/grade">'
+
+  # GET remains strictly read-only even when it carries what used to be a valid
+  # state-changing query. Cover both endpoints before any legitimate POST appends.
+  cp "$repo/state/feedback.jsonl" "$repo/feedback.before"
+  curl -s -o /dev/null "http://127.0.0.1:$port/grade?id=post-grade&v=up" || true
+  curl -s -o /dev/null "http://127.0.0.1:$port/missed?url=https%3A%2F%2Fexample.com%2Fget-miss" || true
+  if cmp -s "$repo/feedback.before" "$repo/state/feedback.jsonl"; then
+    pass "GET grade and missed requests do not append feedback"
+  else
+    fail "GET grade and missed requests do not append feedback"
+  fi
+
+  # A real browser action from the portal's localhost origin uses form POSTs.
+  cp "$repo/state/feedback.jsonl" "$repo/feedback.before-grade-post"
+  curl -s -o /dev/null -X POST -H "Host: localhost:$port" -H "Origin: http://localhost:$port" \
+    --data 'id=post-grade&v=up' "http://127.0.0.1:$port/grade" || true
+  if cmp -s "$repo/feedback.before-grade-post" "$repo/state/feedback.jsonl"; then
+    fail "trusted localhost POST grade appends feedback"
+  else
+    pass "trusted localhost POST grade appends feedback"
+  fi
+  assert_contains "trusted localhost POST grade records its item" \
+    "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" '"id": "post-grade"'
+  cp "$repo/state/feedback.jsonl" "$repo/feedback.before-missed-post"
+  curl -s -o /dev/null -X POST -H "Host: localhost:$port" -H "Origin: http://localhost:$port" \
+    --data-urlencode 'url=https://example.com/legitimate-miss' --data-urlencode 'note=reported locally' \
+    "http://127.0.0.1:$port/missed" || true
+  if cmp -s "$repo/feedback.before-missed-post" "$repo/state/feedback.jsonl"; then
+    fail "trusted localhost POST missed report appends feedback"
+  else
+    pass "trusted localhost POST missed report appends feedback"
+  fi
+  assert_contains "trusted localhost POST missed report records its URL" \
+    "$(cat "$repo/state/feedback.jsonl" 2>/dev/null)" 'https://example.com/legitimate-miss'
+
+  # An attacker can target localhost from a foreign page but must not be able to
+  # change either kind of feedback merely by submitting a cross-origin form.
+  cp "$repo/state/feedback.jsonl" "$repo/feedback.before"
+  curl -s -o /dev/null -X POST -H "Host: localhost:$port" -H 'Origin: https://attacker.example' \
+    --data 'id=post-grade&v=down' "http://127.0.0.1:$port/grade" || true
+  curl -s -o /dev/null -X POST -H "Host: localhost:$port" -H 'Origin: https://attacker.example' \
+    --data-urlencode 'url=https://example.com/cross-origin-miss' "http://127.0.0.1:$port/missed" || true
+  if cmp -s "$repo/feedback.before" "$repo/state/feedback.jsonl"; then
+    pass "forged cross-origin POST grade and missed requests do not append feedback"
+  else
+    fail "forged cross-origin POST grade and missed requests do not append feedback"
+  fi
+
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Host: localhost:$port" \
+    --data 'id=post-grade&v=down' "http://127.0.0.1:$port/grade" || true)"
+  assert_eq "a POST without an Origin is rejected" "403" "$code"
+
+  # This reaches the loopback listener directly while claiming an attacker-owned
+  # Host, which models a DNS-rebinding request after evil.example resolves to 127.0.0.1.
+  cp "$repo/state/feedback.jsonl" "$repo/feedback.before"
+  curl -s -o /dev/null -X POST -H 'Host: attacker.example' -H 'Origin: http://attacker.example' \
+    --data 'id=post-grade&v=down' "http://127.0.0.1:$port/grade" || true
+  curl -s -o /dev/null -X POST -H 'Host: attacker.example' -H 'Origin: http://attacker.example' \
+    --data-urlencode 'url=https://example.com/rebinding-miss' "http://127.0.0.1:$port/missed" || true
+  if cmp -s "$repo/feedback.before" "$repo/state/feedback.jsonl"; then
+    pass "untrusted Host DNS-rebinding grade and missed requests do not append feedback"
+  else
+    fail "untrusted Host DNS-rebinding grade and missed requests do not append feedback"
+  fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: attacker.example' \
+    "http://127.0.0.1:$port/review" || true)"
+  assert_eq "an untrusted Host cannot read portal pages" "403" "$code"
+  stop_server "$srv"
+}
+test_portal_feedback_post_security
 
 echo "== portal.py: the draft view leads with a live diff vs the approved profile =="
 test_portal_draft_diff() {
