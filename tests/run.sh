@@ -70,7 +70,10 @@ PY
   return 1
 }
 
-WAIT_SERVER_BUDGET="${WAIT_SERVER_BUDGET:-30}"
+# portal.py imports its renderer and cadence helpers before it can bind or publish
+# its selected port. On a loaded macOS runner that cold import can exceed the
+# former 30-second deadline, even though the eventual server is healthy.
+WAIT_SERVER_BUDGET="${WAIT_SERVER_BUDGET:-60}"
 wait_server() {  # <ready-file> <server-pid> [server-log]
   local out rc
   out="$(python3 - "$1" "$2" "$WAIT_SERVER_BUDGET" <<'PY'
