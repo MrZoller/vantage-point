@@ -4206,7 +4206,7 @@ JSON
   # .json is the longest suffix, so a portable 255-byte filename component leaves 250
   # bytes for the stem. Two ids with an identical first 300 characters prove the bound
   # happens before de-duplication: both resulting safe stems must still be distinct.
-  local long_id long_len first_slug second_slug
+  local long_id long_len second_len first_slug second_slug
   long_id="$(python3 - <<'PY'
 print("x" * 300)
 PY
@@ -4218,7 +4218,9 @@ $out
 EOF
   second_slug="$(printf '%s\n' "$out" | python3 -c 'import sys; print(sys.stdin.read().splitlines()[1].split("\t")[0])')"
   long_len="$(printf '%s' "$first_slug" | wc -c | tr -d ' ')"
+  second_len="$(printf '%s' "$second_slug" | wc -c | tr -d ' ')"
   if [ "$long_len" -le 250 ]; then pass "bounds a facet slug for its .json stash filename"; else fail "bounds a facet slug for its .json stash filename (got $long_len bytes)"; fi
+  if [ "$second_len" -le 250 ]; then pass "keeps a de-duped facet slug within the filename bound"; else fail "keeps a de-duped facet slug within the filename bound (got $second_len bytes)"; fi
   if [ "$first_slug" != "$second_slug" ]; then pass "de-dups long facet slugs after bounding"; else fail "de-dups long facet slugs after bounding"; fi
 }
 test_research_py
