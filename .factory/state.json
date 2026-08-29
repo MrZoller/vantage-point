@@ -1,11 +1,11 @@
 {
   "project": "Vantage Point",
-  "phase": "build",
+  "phase": "idle",
   "spec_approved": true,
   "plan_approved": true,
   "current_task": null,
   "branch": null,
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T17:15:00Z"
+  "updated": "2026-08-29T17:16:20Z"
 }
