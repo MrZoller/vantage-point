@@ -1551,12 +1551,87 @@ test_portal_export() {
     *) pass "no raw unescaped markup leaks into the snapshot" ;;
   esac
   assert_contains "links a recent report" "$(cat "$html")" "2026-06-06.daily.md"
-  python3 - "$html" <<'PY'
-import sys, html.parser
-class P(html.parser.HTMLParser): pass
-P().feed(open(sys.argv[1]).read())
+  # A static snapshot must not retain the live server's root-relative routes:
+  # file:// and a plain static host have no /reports, /review, etc. Resolve every
+  # local anchor against the export directory so navigation only points at material
+  # carried by the export (or a same-document fragment).
+  local link_check rc
+  link_check="$(python3 - "$html" <<'PY'
+import html.parser, os, sys
+
+class Links(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.hrefs = []
+        self.anchors = set()
+    def handle_starttag(self, tag, attrs):
+        self.anchors.update(value for key, value in attrs if key in ("id", "name") and value)
+        if tag == "a":
+            self.hrefs.extend(value for key, value in attrs if key == "href" and value)
+
+page = sys.argv[1]
+parser = Links()
+parser.feed(open(page, encoding="utf-8").read())
+bad = []
+for href in parser.hrefs:
+    destination = href.split("#", 1)[0].split("?", 1)[0]
+    fragment = href.split("#", 1)[1] if "#" in href else ""
+    if not destination or "://" in destination or destination.startswith("mailto:"):
+        if fragment and not destination and fragment not in parser.anchors:
+            bad.append(href)
+        continue
+    if destination.startswith("/") or not os.path.exists(os.path.join(os.path.dirname(page), destination)):
+        bad.append(href)
+if bad:
+    print("dead static links: " + ", ".join(bad))
+    sys.exit(1)
 PY
-  assert_eq "kb/index.html parses as HTML" "0" "$?"
+)"; rc=$?
+  assert_eq "static export navigation resolves without the live portal" "0" "$rc"
+  assert_eq "static export link checker reports no dead links" "" "$link_check"
+  # HTMLParser deliberately accepts malformed markup. Check balanced tags instead,
+  # and prove this checker rejects the unmatched closing tag that HTMLParser missed.
+  local markup_check
+  markup_check="$(python3 - "$html" <<'PY'
+import html.parser, sys
+
+VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+class Balanced(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.stack = []
+    def handle_starttag(self, tag, attrs):
+        if tag not in VOID:
+            self.stack.append(tag)
+    def handle_startendtag(self, tag, attrs):
+        pass
+    def handle_endtag(self, tag):
+        if not self.stack or self.stack[-1] != tag:
+            raise ValueError("unexpected closing tag: " + tag)
+        self.stack.pop()
+    def close(self):
+        super().close()
+        if self.stack:
+            raise ValueError("unclosed tag: " + self.stack[-1])
+
+def validate(markup):
+    parser = Balanced()
+    parser.feed(markup)
+    parser.close()
+
+markup = open(sys.argv[1], encoding="utf-8").read()
+validate(markup)
+try:
+    validate(markup.replace("</nav>", "</section>", 1))
+except ValueError:
+    print("balanced and rejects a mismatched closing tag")
+else:
+    raise SystemExit("checker accepted a mismatched closing tag")
+PY
+)"; rc=$?
+  assert_eq "kb/index.html has balanced markup" "0" "$rc"
+  assert_eq "markup check detects a mismatched closing tag" \
+    "balanced and rejects a mismatched closing tag" "$markup_check"
 }
 test_portal_export
 
@@ -4454,11 +4529,12 @@ models:
 subject:
   name: "Test Market & Co"
 output:
-  email_to: "me@example.com"
+  email_to: "a@x.com, b@y.com"
 YAML
   out="$( cd "$repo" && CLAUDE_ARGS="$args" MSG_OUT="$msg" HOME="$home" bash bin/bootstrap.sh 2>&1 )"
   assert_contains "the research prompt asks for a review summary" "$(cat "$args" 2>/dev/null)" "review summary"
-  assert_contains "reports it emailed the summary" "$out" "emailed the draft summary"
+  assert_contains "reports comma-space-separated recipients after emailing the summary" \
+    "$out" "emailed the draft summary to a@x.com, b@y.com"
   if [ -f "$msg" ]; then
     assert_contains "subject says the draft is ready for review" "$(grep -i '^Subject:' "$msg")" "profile draft ready for review"
     assert_contains "subject names the monitored subject" "$(grep -i '^Subject:' "$msg")" "Test Market & Co"
@@ -4992,6 +5068,7 @@ test_init_review() {
   out="$( init_blanks y y n | CLAUDE_ARGS="$args" HOME="$home" bash "$repo/bin/init.sh" 2>&1 )"; rc=$?
   assert_eq "accepted-review run exits 0" "0" "$rc"
   assert_eq "approved suggestion is applied" "0.7" "$(cfg_get relevance threshold "$repo/monitor-config.yaml")"
+  if [ -f "$repo/init.err" ]; then fail "a successful review removes init.err"; else pass "a successful review removes init.err"; fi
   assert_contains "shows the suggestions as a diff" "$out" "threshold: 0.7"
   # Model resolution: models.init is commented in the template -> bootstrap model.
   assert_contains "notes the models.init fallback" "$out" "models.init not set"
