@@ -2859,6 +2859,28 @@ YAML
   out="$(cat "$TMP/cand-multiline-flow.jsonl" 2>/dev/null)"
   assert_contains "a multi-line flow feeds list is parsed" "$out" "Fresh RSS story"
   assert_contains "a multi-line flow feeds list includes every URL" "$out" "Fresh Atom entry"
+  cat > "$TMP/multiline-flow-ipv6.yaml" <<YAML
+subject:
+  derived:
+    feeds: [
+      http://[::1]:1/unreachable.xml,
+      http://127.0.0.1:$port/atom.xml
+    ]
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-multiline-ipv6.jsonl" \
+    "$TMP/multiline-flow-ipv6.yaml" 2>/dev/null
+  assert_contains "an IPv6 bracket does not close a multi-line flow list" \
+    "$(cat "$TMP/cand-multiline-ipv6.jsonl" 2>/dev/null)" "Fresh Atom entry"
+  cat > "$TMP/inline-comma.yaml" <<YAML
+subject:
+  derived:
+    feeds: ["http://127.0.0.1:$port/rss.xml?topics=ai,ml"]
+YAML
+  python3 "$ROOT/bin/fetch.py" --hours 30 --out "$TMP/cand-inline-comma.jsonl" \
+    "$TMP/inline-comma.yaml" 2>/dev/null
+  assert_contains "a quoted comma remains inside an inline feed URL" \
+    "$(cat "$TMP/cand-inline-comma.jsonl" 2>/dev/null)" \
+    "rss.xml?topics=ai,ml"
   # --max caps to the newest N (again: only correct under UTC normalization).
   python3 "$ROOT/bin/fetch.py" --hours 30 --max 1 --out "$TMP/cand1.jsonl" \
     "$TMP/feeds-profile.yaml" 2>/dev/null

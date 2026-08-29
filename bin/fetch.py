@@ -64,10 +64,51 @@ def _url_scalar(value):
     return value if value.startswith(("http://", "https://")) else None
 
 
+def _flow_closing_index(value):
+    """Index of the flow list's closing bracket, ignoring quotes and URL IPv6."""
+    quote, depth = None, 0
+    for index, char in enumerate(value):
+        if char in "'\"":
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+        elif quote is None:
+            if char == "[":
+                depth += 1
+            elif char == "]" and depth:
+                depth -= 1
+                if depth == 0:
+                    return index
+    return None
+
+
 def _inline_urls(bracketed):
     """URLs from an inline YAML list body like '[a, "b"]' (brackets included)."""
+    closing = _flow_closing_index(bracketed)
+    if closing is None:
+        return []
+    parts, current, quote, nested = [], [], None, 0
+    for char in bracketed[1:closing]:
+        if char in "'\"":
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+        elif quote is None:
+            if char == "[":
+                nested += 1
+            elif char == "]" and nested:
+                nested -= 1
+            elif char == "," and nested == 0:
+                parts.append("".join(current))
+                current = []
+                continue
+        current.append(char)
+    parts.append("".join(current))
+
     urls = []
-    for part in bracketed[1:-1].split(","):
+    for part in parts:
         url = _url_scalar(part)
         if url is not None:
             urls.append(url)
@@ -92,7 +133,7 @@ def feeds_from(path):
         if in_flow:
             flow_line = _without_yaml_comment(stripped)
             flow_lines.append(flow_line)
-            if "]" in flow_line:
+            if _flow_closing_index(" ".join(flow_lines)) is not None:
                 urls.extend(_inline_urls(" ".join(flow_lines)))
                 in_flow, flow_lines = False, []
             continue
@@ -100,7 +141,7 @@ def feeds_from(path):
         if m:
             value = _without_yaml_comment(m.group(2)).strip()
             if value.startswith("["):
-                if "]" in value:               # `feeds: [...]` (possibly empty)
+                if _flow_closing_index(value) is not None:  # complete flow list
                     urls.extend(_inline_urls(value))
                 else:                           # a flow list may span YAML lines
                     in_flow, flow_lines = True, [value]
