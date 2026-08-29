@@ -44,8 +44,9 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T13 (standard) — monitor.sh: triage prompt renders "DEEP-DIVE QUEUE: enabledopus." when deep-dive is on (Fixes #60)
   - acceptance: `bin/monitor.sh` renders the triage prompt's deep-dive state as exactly `enabled` or `disabled`; tests cover a configured model without concatenating its name into the state
   - pr: 91
-- [~] T14 (standard) — fetch.py: no total deadline or size cap on feed fetches — a slow-drip feed stalls the whole run (Fixes #59)
+- [R] T14 (standard) — fetch.py: no total deadline or size cap on feed fetches — a slow-drip feed stalls the whole run (Fixes #59)
   - acceptance: `bin/fetch.py` reads feeds with a total wall-clock deadline and finite byte cap, treating either breach as a per-feed warning/failure while continuing subsequent feeds; tests cover slow-drip and oversized responses
+  - pr: 92
 - [ ] T15 (standard) — demo-bundle.sh: a broken symlink in state/ or kb/ aborts the build, leaving a partial bundle (Fixes #58)
   - acceptance: `bin/demo-bundle.sh` handles dangling symlinks in `state/` or `kb/` with a warning/skip rather than aborting, and still produces the launcher, `START-HERE.md`, copied content, relocation, smoke-test result, and tarball expected of a completed bundle
 - [ ] T16 (standard) — monitor.sh: missing last_bootstrapped silently disables the profile-staleness check on Linux (Fixes #57)
