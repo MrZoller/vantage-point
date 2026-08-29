@@ -224,7 +224,7 @@ def _latest_verdicts(feedback_path):
         with open(feedback_path, encoding="utf-8") as f:
             for obj in _read_jsonl(f):
                 rid = obj.get("id")
-                if not rid or obj.get("verdict") not in ("up", "down"):
+                if not isinstance(rid, str) or not rid or obj.get("verdict") not in ("up", "down"):
                     continue
                 prev = latest.get(rid)
                 if prev is None or _ts(obj) >= _ts(prev):

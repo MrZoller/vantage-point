@@ -5480,6 +5480,21 @@ test_backtest_py() {
   assert_contains "render agrees on the 10 concordant items" "$md" "10 / 12"
   assert_contains "render tags a near-threshold flip borderline" "$md" "(borderline)"
 
+  # Hand-edited feedback can contain JSON array/object ids. They are unhashable, so
+  # render must skip them without losing the valid feedback records around them.
+  local bad_feedback="$d/feedback_unhashable_ids.jsonl" rc render_out
+  cp "$d/feedback.jsonl" "$bad_feedback"
+  printf '%s\n' \
+    '{"timestamp":"2026-06-03T00:00:00Z","id":["bad"],"verdict":"up"}' \
+    '{"timestamp":"2026-06-03T00:00:01Z","id":{"bad":"id"},"verdict":"down"}' \
+    >> "$bad_feedback"
+  rc=0
+  render_out="$(python3 "$ROOT/bin/backtest.py" render --draft "$d/draft.yaml" \
+    --feedback "$bad_feedback" --scores "$d/scores.jsonl" --out "$d/unhashable.md" 2>&1)" || rc=$?
+  assert_eq "render skips unhashable feedback ids without failing" "0" "$rc"
+  assert_not_contains "render skips unhashable feedback ids without a traceback" "$render_out" "Traceback"
+  assert_contains "render retains valid feedback around unhashable ids" "$(cat "$d/unhashable.md" 2>/dev/null)" "10 / 12"
+
   # Out-of-range draft scores (1.2, -0.1) are invalid model output -> counted as not
   # scored, never folded into the agreement/flip arithmetic.
   printf '%s\n' "$BT_CANNED_SCORES" \
