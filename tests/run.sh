@@ -3531,10 +3531,14 @@ test_portal_cadence() {
   local repo="$TMP/pcad" out
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb"
   cp "$ROOT/bin/portal.py" "$ROOT/bin/cadence.py" "$repo/bin/"
+  # portal.entity_cadence() measures the silence against the UTC date, so the fixture
+  # has to be laid out in UTC too: built from the LOCAL date, the assertions below are
+  # off by a day whenever the two disagree (any evening west of Greenwich), which is
+  # invisible on the always-UTC CI runners and fails only on a developer's machine.
   python3 - "$repo/state/observations.jsonl" <<'PY'
 import json, sys
-from datetime import date, timedelta
-today = date.today()
+from datetime import datetime, timedelta, timezone
+today = datetime.now(timezone.utc).date()
 with open(sys.argv[1], "w") as f:
     for d in (153, 132, 111, 90):
         f.write(json.dumps({"timestamp": (today - timedelta(days=d)).isoformat() + "T07:00:00Z",
