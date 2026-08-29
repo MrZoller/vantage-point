@@ -3652,7 +3652,7 @@ test_monitor_quiet_compact
 
 echo "== portal.py and monitor.sh: invalid quiet_min_events uses the default threshold =="
 test_quiet_min_events_normalization() {
-  local repo="$TMP/quietminevents" base="$TMP/quiet_min_events_base.yaml" obsbase="$TMP/quiet_min_events_obs.jsonl" out value
+  local repo="$TMP/quietminevents" base="$TMP/quiet_min_events_base.yaml" obsbase="$TMP/quiet_min_events_obs.jsonl" out value unicode_digit
   make_fake_repo "$repo"
   # Three evenly-spaced events make a valid cadence only if the configured minimum is
   # accepted below the documented default of four. Keep the last event far enough back
@@ -3682,7 +3682,8 @@ PY
   # 0, a negative number, and non-numeric text are all invalid to monitor.sh. The
   # portal must fall back to the same default (4), rather than displaying this
   # three-event cadence as a quiet finding.
-  for value in 0 -1 invalid; do
+  unicode_digit="$(printf '\331\243')" # U+0663 ARABIC-INDIC DIGIT THREE
+  for value in 0 -1 invalid "$unicode_digit"; do
     cp "$base" "$repo/monitor-config.yaml"
     cp "$obsbase" "$repo/state/observations.jsonl"
     python3 - "$repo/monitor-config.yaml" "$value" <<'PY'

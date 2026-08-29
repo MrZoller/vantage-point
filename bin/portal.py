@@ -515,12 +515,13 @@ def entity_cadence(name):
         factor = 3.0
     if not factor > 0:
         factor = 3.0
-    try:
-        min_events = int(cfg_get("tracking", "quiet_min_events") or 4)
-    except ValueError:
+    raw_min_events = cfg_get("tracking", "quiet_min_events")
+    if not raw_min_events.isascii() or not raw_min_events.isdigit():
         min_events = 4
-    if min_events <= 0:
-        min_events = 4
+    else:
+        min_events = int(raw_min_events)
+        if min_events == 0:
+            min_events = 4
     today = datetime.now(timezone.utc).date()
     rows = []
     for b in mod.baselines(OBS, min_events):
