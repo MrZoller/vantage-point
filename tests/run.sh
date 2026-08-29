@@ -3396,7 +3396,9 @@ class LocalDate(date):
 class FixedDatetime:
     @classmethod
     def now(cls, tz=None):
-        return datetime(2026, 1, 2, 0, 30, tzinfo=timezone.utc)
+        if tz is timezone.utc:
+            return datetime(2026, 1, 2, 0, 30, tzinfo=timezone.utc)
+        return datetime(2026, 1, 1, 23, 30)
 m.date = LocalDate
 m.datetime = FixedDatetime
 with open(m.HORIZON) as f:
