@@ -20,6 +20,7 @@ kb/
 dist/
 *.err
 *.log
+.factory/logs/
 
 # --- secrets / local mailer config ---
 .msmtprc
