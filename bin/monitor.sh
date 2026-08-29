@@ -578,7 +578,7 @@ them. Do not write the queue when it's disabled.$CATCHUP_NOTE$CANDIDATES_NOTE$FE
   --permission-mode acceptEdits \
   --max-turns "$MONITOR_MAX_TURNS" \
   --output-format json \
-  2> "kb/${TODAY}.${MODE}.err")"
+  2>> "kb/${TODAY}.${MODE}.err")"
 
 # claude exited 0 (set -e would have aborted otherwise).
 # ---- log per-pass usage to state/runs.log ----
