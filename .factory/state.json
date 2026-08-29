@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T8",
-  "branch": "factory/t8-feed-config-parsing",
-  "pr": 87,
+  "current_task": null,
+  "branch": null,
+  "pr": null,
   "hold": false,
-  "updated": "2026-08-29T06:47:58Z"
+  "updated": "2026-08-29T07:22:01Z"
 }
