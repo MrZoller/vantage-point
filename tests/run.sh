@@ -1709,7 +1709,16 @@ test_demo_bundle() {
   printf '{"timestamp":"2026-06-01T07:00:00Z","entity":"Acme","metric":"event","event_type":"x","value":"hi","source":"u"}\n' \
     > "$repo/state/observations.jsonl"
   printf 'r\n' > "$repo/kb/2026-06-06.daily.md"
-  ( cd "$repo" && bash bin/demo-bundle.sh --out "$out" --tar >/dev/null 2>&1 )
+  # Broken links must not abort the whole bundle: keep ordinary data in both trees,
+  # while omitting the links that cannot be dereferenced off-machine.
+  ln -s "$repo/missing-state.jsonl" "$repo/state/dangling-state.jsonl"
+  ln -s "$repo/missing-report.md" "$repo/kb/dangling-report.md"
+  local bundle_err
+  bundle_err="$( cd "$repo" && bash bin/demo-bundle.sh --out "$out" --tar 2>&1 1>/dev/null )"
+  assert_contains "warns when a dangling state symlink is skipped" "$bundle_err" \
+    "state/dangling-state.jsonl is a dangling symlink - skipped"
+  assert_contains "warns when a dangling kb symlink is skipped" "$bundle_err" \
+    "kb/dangling-report.md is a dangling symlink - skipped"
   # The portal runtime travels with the bundle (portal.py is required; cadence.py is the
   # one sibling it loads by path).
   for f in bin/portal.py bin/portal.sh bin/cadence.py; do
@@ -1720,6 +1729,16 @@ test_demo_bundle() {
   if [ -f "$out/profile.yaml" ]; then pass "bundle ships profile.yaml"; else fail "bundle ships profile.yaml"; fi
   if [ -f "$out/state/observations.jsonl" ]; then pass "bundle ships state/"; else fail "bundle ships state/"; fi
   if [ -f "$out/kb/2026-06-06.daily.md" ]; then pass "bundle ships kb/ reports"; else fail "bundle ships kb/ reports"; fi
+  if [ ! -e "$out/state/dangling-state.jsonl" ] && [ ! -L "$out/state/dangling-state.jsonl" ]; then
+    pass "bundle omits dangling state symlinks"
+  else
+    fail "bundle omits dangling state symlinks"
+  fi
+  if [ ! -e "$out/kb/dangling-report.md" ] && [ ! -L "$out/kb/dangling-report.md" ]; then
+    pass "bundle omits dangling kb symlinks"
+  else
+    fail "bundle omits dangling kb symlinks"
+  fi
   # A one-command launcher and an orientation note land at the bundle root.
   if [ -x "$out/start-demo.sh" ]; then pass "bundle has an executable start-demo.sh"; else fail "bundle has an executable start-demo.sh"; fi
   if [ -f "$out/START-HERE.md" ]; then pass "bundle has START-HERE.md"; else fail "bundle has START-HERE.md"; fi
