@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": null,
-  "branch": null,
+  "current_task": "T2",
+  "branch": "factory/t2-minor-findings-grab-bag",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T03:04:08Z"
+  "updated": "2026-08-29T03:05:18Z"
 }
