@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T14",
-  "branch": "factory/t14-feed-fetch-limits",
-  "pr": 92,
+  "current_task": null,
+  "branch": null,
+  "pr": null,
   "hold": false,
-  "updated": "2026-08-29T09:35:29Z"
+  "updated": "2026-08-29T09:40:48Z"
 }
