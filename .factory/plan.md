@@ -27,9 +27,10 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T7 (standard) — fetch.py: relative entry links resolved against the pre-redirect feed URL (Fixes #66)
   - acceptance: `bin/fetch.py` retains the final URL returned after redirects and resolves relative entry links against it; tests cover a configured feed redirecting to another origin before returning a relative entry URL
   - pr: 86
-- [~] T8 (standard) — fetch.py: config parsing loses feeds — '#' truncation without whitespace, and multi-line flow lists yield zero feeds (Fixes #65)
+- [x] T8 (standard) — fetch.py: config parsing loses feeds — '#' truncation without whitespace, and multi-line flow lists yield zero feeds (Fixes #65)
   - acceptance: `bin/fetch.py` preserves `#` fragments in unquoted feed scalars unless whitespace starts a YAML comment, and either parses multi-line flow-list feeds or emits an explicit warning instead of silently yielding no feeds; tests cover both forms
-- [ ] T9 (standard) — research.py/bootstrap.sh: unbounded facet slug length breaks the stub-note degradation contract (Fixes #64)
+  - pr: 87
+- [~] T9 (standard) — research.py/bootstrap.sh: unbounded facet slug length breaks the stub-note degradation contract (Fixes #64)
   - acceptance: `bin/research.py` bounds filesystem-safe facet slugs before de-duplication so long ids/titles cannot exceed filename limits; `bin/bootstrap.sh` still writes a note or failure stub, JSON stash, and `.failed` marker and reports provenance accurately for a long facet
 - [ ] T10 (standard) — email-lib.sh: CID logo emits one giant base64 line on macOS, violating the SMTP 998-octet limit (Fixes #63)
   - acceptance: `bin/email-lib.sh` emits CID image base64 in explicitly normalized 76-character lines on both macOS and GNU tooling; tests exercise a logo large enough to exceed the SMTP line limit
