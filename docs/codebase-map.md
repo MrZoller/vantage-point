@@ -167,9 +167,14 @@ to its own copied state.
   newer draft is not treated as pending. Conversely, the completion marker and
   draft/profile mtimes are operationally significant; moving or manually
   editing these files can change refresh behavior.
-- The optional portal export and demo bundle include accumulated intelligence,
-  recipient addresses, and webhook configuration verbatim. The bundle is not a
-  redaction or privacy boundary.
+- Two different privacy surfaces, neither redacted: the static portal export
+  (`kb/index.html`) renders only the Overview snapshot -- accumulated
+  intelligence, but no live configuration ([`export_static()`](../bin/portal.py)
+  renders `overview_inner(static=True)`). The demo bundle is the broader one:
+  [`bin/demo-bundle.sh`](../bin/demo-bundle.sh) copies `monitor-config.yaml`,
+  the approved profile, and `state/` verbatim, so recipient addresses and
+  webhook URLs travel with it. Neither is a redaction boundary; the bundle also
+  carries live config secrets.
 - The roadmap contains designs for confidence resolution, standing questions,
   source nursery, evidence preservation, and subject threading that are not
   implemented. Do not infer those capabilities from the design documents:
