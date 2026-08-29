@@ -76,8 +76,9 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T24 (standard) — webhook.py: a redirect silently drops the report payload, then reports success (Fixes #49)
   - acceptance: `bin/webhook.py` refuses HTTP redirects instead of following them as a bodyless GET, exits nonzero with guidance to use the final webhook URL, and tests verify redirected payloads are never reported as delivered
   - pr: 101
-- [~] T25 (standard) — fetch.py: uncaught http.client exceptions from one feed kill the entire sweep (Fixes #48)
+- [R] T25 (standard) — fetch.py: uncaught http.client exceptions from one feed kill the entire sweep (Fixes #48)
   - acceptance: `bin/fetch.py` catches `http.client.HTTPException` failures such as `IncompleteRead`, `BadStatusLine`, and `LineTooLong` per feed, continues processing other feeds, and updates feed-health output; tests cover malformed/incomplete server responses
+  - pr: 102
 - [!] T26 (trivial) — parked review minors (batch)
   - acceptance: confirmed non-blocking review findings parked during backlog delivery are collected here and shipped together when the batch is made runnable
   - PR #82: make Review and dossier latest-row readers reserve IDs whose newest seen row is `dropped`, so older surfaced rows cannot reappear for grading.
