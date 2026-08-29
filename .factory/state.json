@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": null,
-  "branch": null,
+  "current_task": "T21",
+  "branch": "factory/t21-portal-csrf-protection",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T15:31:42Z"
+  "updated": "2026-08-29T15:33:06Z"
 }
