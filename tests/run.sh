@@ -2185,6 +2185,10 @@ seen = [
     {"id": "b1", "date": d1, "signal": "shift", "title": "bad", "source": "beta.com", "url": "https://b"},
     {"id": "u1", "date": d0, "signal": "shift", "title": "ungraded", "source": "beta.com", "url": "https://b2"},
     {"id": "dr", "date": d0, "signal": "dropped", "title": "dropped", "source": "alpha.com"},
+    # A rerun first surfaced this item, then dropped it. Counts must use the newest
+    # record per id, just as the Review and dossier views do.
+    {"id": "later-dropped", "date": d0, "signal": "threat", "title": "was surfaced", "source": "alpha.com"},
+    {"id": "later-dropped", "date": d0, "signal": "dropped", "title": "now dropped", "source": "alpha.com"},
     {"id": "oo", "date": old, "signal": "threat", "title": "out of window", "source": "alpha.com", "url": "https://a3"},
 ]
 with open(os.path.join(root, "state", "seen.jsonl"), "w") as f:
@@ -2196,6 +2200,7 @@ fb = [
     {"timestamp": now, "id": "g1", "verdict": "up"},
     {"timestamp": now, "id": "g2", "verdict": "up"},
     {"timestamp": now, "id": "b1", "verdict": "down"},
+    {"timestamp": now, "id": "later-dropped", "verdict": "up"},  # latest seen row excludes it
     {"timestamp": now, "id": "pruned1", "verdict": "down"},  # item pruned from seen.jsonl
 ]
 with open(os.path.join(root, "state", "feedback.jsonl"), "w") as f:
@@ -2211,8 +2216,10 @@ card = m.calibration_card()
 print("PRECISION_LINE", "50% precision" in card and "(2 up of 4 graded)" in card)
 print("COVERAGE_LINE", "80% coverage" in card)
 print("CHART_SVG", card.count("<svg"))
+print("CHART_RATE", "50% up (2 of 4 graded)" in card)
 print("ALPHA_RATE", "100% (2/2)" in card)
 print("BETA_RATE", "0% (0/1)" in card)
+print("ALPHA_SURFACED", next(r["surfaced"] for r in m.source_stats() if r["source"] == "alpha.com"))
 open(os.path.join(root, "state", "feedback.jsonl"), "w").close()
 print("EMPTY_CARD", repr(m.calibration_card()))
 PY
@@ -2223,8 +2230,10 @@ PY
   assert_contains "precision is over graded items only (2/4 = 50%)" "$out" "PRECISION_LINE True"
   assert_contains "coverage keeps the headline honest (4/5 graded)" "$out" "COVERAGE_LINE True"
   assert_contains "renders the weekly precision SVG" "$out" "CHART_SVG 1"
+  assert_contains "weekly precision excludes a graded item later dropped" "$out" "CHART_RATE True"
   assert_contains "per-source hit rate: alpha.com 100%" "$out" "ALPHA_RATE True"
   assert_contains "per-source hit rate: beta.com 0%" "$out" "BETA_RATE True"
+  assert_contains "a later dropped record is excluded from its source's surfaced count" "$out" "ALPHA_SURFACED 3"
   assert_contains "card is omitted until the first grade exists" "$out" "EMPTY_CARD ''"
 }
 test_portal_calibration

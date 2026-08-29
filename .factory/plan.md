@@ -9,9 +9,10 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T1 (standard) — tests: fixed server ports + identity-blind wait_port make server tests flaky under contention (Fixes #78)
   - acceptance: server-backed cases in `tests/run.sh` use OS-assigned ports (including portal and capture/static servers), wait for the server they started rather than any listener, and terminate then `wait` for each server; repeated or concurrent suite runs do not fail `test_fetch_verify` through a port collision
   - pr: 80
-- [~] T2 (standard) — Minor findings grab-bag: init.err litter, dead nav links in static export, vacuous test assertion, cosmetic nits (Fixes #71)
+- [x] T2 (standard) — Minor findings grab-bag: init.err litter, dead nav links in static export, vacuous test assertion, cosmetic nits (Fixes #71)
   - acceptance: successful `bin/init.sh` review removes `init.err`; `bin/portal.py` static exports contain usable static navigation; `tests/run.sh` replaces the non-validating HTMLParser assertion with a check that can detect the targeted malformed output; `bin/bootstrap.sh` renders recipient lists with comma-space separators; and `bin/email-lib.sh` documents the msmtp status behavior it actually provides
-- [ ] T3 (standard) — portal.py: calibration coverage counts first-record-per-id while Review/dossiers use newest — dropped items inflate the denominator (Fixes #70)
+  - pr: 81
+- [~] T3 (standard) — portal.py: calibration coverage counts first-record-per-id while Review/dossiers use newest — dropped items inflate the denominator (Fixes #70)
   - acceptance: `bin/portal.py` builds calibration and source surfaced counts from the newest record per id and excludes ids whose newest record is `signal: "dropped"`, matching Review and dossier visibility; portal tests cover a surfaced-then-dropped id
 - [ ] T4 (standard) — portal.py: Coming-up card uses local date.today() while every other portal date is UTC (Fixes #69)
   - acceptance: `bin/portal.py` computes the Coming-up card date in UTC so expectation timing and cadence/quiet displays use the same day boundary; tests cover a local-date/UTC-date boundary
