@@ -5115,6 +5115,27 @@ PY
   assert_contains "the light renderer serves it escaped" "$out" "ESCAPED True"
   assert_contains "still no live <script> with the whole chain unsafe" "$out" "LIVE False"
 
+  # A DENYLIST renderer -- drops the famous tags (script/img) but passes unknown raw
+  # HTML through -- must be rejected by the canary's generic sentinel: under this
+  # portal's CSP a surviving <style> alone can restyle the whole page.
+  local repo4="$TMP/pcanary4"
+  mkdir -p "$repo4/bin" "$repo4/stub" "$repo4/state" "$repo4/kb"
+  cp "$ROOT/bin/portal.py" "$repo4/bin/"
+  printf '#!/usr/bin/env bash\nsed -E "s|<(/?)(script\|img)[^>]*>||g"\n' > "$repo4/stub/cmark-gfm"
+  chmod +x "$repo4/stub/cmark-gfm"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( cd "$repo4" && PATH="$repo4/stub:$PATH" python3 - "$repo4/bin/portal.py" 2>&1 <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("portal", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("PICKED", m._safe_renderer())
+body = m.render_markdown("body <style>p{display:none}</style>\n")
+print("LIVESTYLE", "<style" in body.lower())
+PY
+)"
+  assert_contains "a script/img-only denylist renderer is rejected" "$out" "PICKED False"
+  assert_contains "no live <style> reaches the page" "$out" "LIVESTYLE False"
+
   # The verdict must be pinned to the FILE that was probed, not the name: replace the
   # winning stub in place (brew upgrade's shape) and the next render has to notice,
   # re-probe, and refuse the now-unsafe binary instead of riding the cached verdict.

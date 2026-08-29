@@ -1321,8 +1321,15 @@ RENDERERS = (("pandoc", ["-f", "gfm-raw_html", "-t", "html"]),
              ("cmark", []))
 
 # Fed to a candidate renderer to see what it does with raw HTML. A renderer that leaves
-# a live tag behind is not used, whatever its flags claim.
-RAW_HTML_CANARY = "canary <script>alert(1)</script> <img src=x onerror=alert(2)>\n"
+# any of these live is not used, whatever its flags claim. Four probes because they
+# catch different failure classes: <script> is the headline tag every filter drops;
+# <img onerror=> survives GFM tagfilter, which drops script but not img; <style> is the
+# tag that stays DANGEROUS under this portal's CSP (style-src 'unsafe-inline', so a
+# surviving <style> can restyle or blank the whole page); and <vpcanary> is a made-up
+# element no denylist has ever heard of, so a filter that strips known-bad tags while
+# passing unknown raw HTML through is caught by the sentinel it cannot have listed.
+RAW_HTML_CANARY = ("canary <script>alert(1)</script> <img src=x onerror=alert(2)> "
+                   "<style>p{}</style> <vpcanary>x</vpcanary>\n")
 
 _RENDERER = None      # None = not probed yet; False = nothing on the chain is safe
 _RENDERER_ID = None   # the winner's (path, mtime_ns, size, ino, dev) at probe time
@@ -1338,11 +1345,11 @@ def _neutralizes_raw_html(cmd, args):
     if p.returncode != 0 or not p.stdout.strip():
         return False
     low = p.stdout.lower()
-    # The canary's only tags are <script> and <img>, so either one surviving as a real
-    # tag means raw HTML passed through. Match the TAG rather than the `onerror` text: a
-    # renderer that escapes the canary leaves `onerror` behind as inert characters, and
-    # rejecting it for that would refuse a renderer that is doing exactly the right thing.
-    return "<script" not in low and "<img" not in low
+    # Any canary tag surviving as a real tag means raw HTML passed through. Match the
+    # TAGS rather than attribute text like `onerror`: a renderer that escapes the canary
+    # leaves the attribute behind as inert characters (&lt;img src=x onerror=...&gt;),
+    # and rejecting it for that would refuse a renderer doing exactly the right thing.
+    return not any(t in low for t in ("<script", "<img", "<style", "<vpcanary"))
 
 
 def _renderer_id(cmd):
