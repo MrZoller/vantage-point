@@ -188,15 +188,18 @@ _OPENER = urllib.request.build_opener(_RedirectHandler)
 
 
 def fetch_feed(feed, timeout=20):
-    """Pull a feed's bytes. Returns (data, None) on success or (None, error_string)
-    on any network/OS error -- the single fetch path shared by the sweep and --verify
-    so they behave identically on a down or slow feed (and across python versions)."""
+    """Pull a feed's bytes and final URL after redirects.
+
+    Returns (data, final_url, None) on success or (None, None, error_string) on any
+    network/OS error -- the single fetch path shared by the sweep and --verify so they
+    behave identically on a down or slow feed (and across python versions).
+    """
     req = urllib.request.Request(feed, headers={"User-Agent": "vantage-point-fetch"})
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
-            return resp.read(), None
+            return resp.read(), resp.geturl(), None
     except (urllib.error.URLError, OSError) as exc:
-        return None, str(exc)
+        return None, None, str(exc)
 
 
 def parse_entries(data):
@@ -338,7 +341,7 @@ def verify_feeds(files, out_path):
 
     good, bad = [], []
     for feed in feeds:
-        data, err = fetch_feed(feed)
+        data, _final_url, err = fetch_feed(feed)
         if err is not None:
             bad.append((feed, err))
             continue
@@ -408,7 +411,7 @@ def main():
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     candidates, urls_emitted, failed, outcomes = [], set(), 0, {}
     for feed in feeds:
-        data, err = fetch_feed(feed)
+        data, final_url, err = fetch_feed(feed)
         if err is not None:
             failed += 1
             outcomes[feed] = (False, err)
@@ -425,10 +428,12 @@ def main():
         for title, link, when in entries:
             if not title or not link:
                 continue
-            # Resolve a relative entry link (e.g. "/posts/123") against the feed URL
-            # BEFORE dedup, so the stored url is fetchable and matches the absolute
-            # urls already in the seen file. Absolute links pass through unchanged.
-            link = urljoin(feed, link)
+            # Resolve a relative entry link (e.g. "/posts/123") against the final feed
+            # URL after redirects BEFORE dedup, so the stored URL is fetchable and
+            # matches absolute URLs already in the seen file. Absolute links pass
+            # through unchanged; health and provenance remain keyed to the configured
+            # feed URL.
+            link = urljoin(final_url, link)
             if link in seen or link in urls_emitted:
                 continue
             if when is not None and when < cutoff:
