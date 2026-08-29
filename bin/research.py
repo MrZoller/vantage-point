@@ -24,13 +24,27 @@ import re
 import sys
 
 DEFAULT_MAX = 6
+# Facet ids become sibling .md, .err, and .json filenames. Keep the stem within
+# the portable 255-byte component limit even with the longest suffix (".json").
+MAX_SLUG_LENGTH = 250
 
 
 def _slug(text):
     """A filesystem-safe facet id: lowercase, non [a-z0-9-] -> '-', collapsed and
-    trimmed. Empty when `text` has nothing usable."""
+    trimmed, then bounded for use as a filename stem. Empty when `text` has
+    nothing usable."""
     s = re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")
-    return re.sub(r"-{2,}", "-", s)
+    return re.sub(r"-{2,}", "-", s)[:MAX_SLUG_LENGTH].rstrip("-")
+
+
+def _deduplicate_slug(base, seen):
+    """Return an unused bounded slug, reserving space for its numeric suffix."""
+    slug, n = base, 2
+    while slug in seen:
+        suffix = "-%d" % n
+        slug = base[: MAX_SLUG_LENGTH - len(suffix)].rstrip("-") + suffix
+        n += 1
+    return slug
 
 
 def _parse_max(argv):
@@ -78,10 +92,9 @@ def validate_plan(argv):
         slug = _slug(facet.get("id") or "") or _slug(facet.get("title") or "")
         if not slug:
             continue
-        base, n = slug, 2
-        while slug in seen:          # keep ids unique -> one notes file per facet
-            slug = "%s-%d" % (base, n)
-            n += 1
+        # Bound first, then reserve room for any collision suffix: every unique id
+        # must remain safe as each notes/diagnostic/stash filename, not just the first.
+        slug = _deduplicate_slug(slug, seen)
         seen.add(slug)
         facet["id"] = slug           # normalize the id the synthesizer/notes will use
         # Collapse ALL whitespace (newlines + tabs included) in the human-facing goal:
