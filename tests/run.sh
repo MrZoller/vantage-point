@@ -1879,6 +1879,41 @@ test_portal_server() {
 }
 test_portal_server
 
+echo "== portal.py: grade links preserve reserved characters in item ids =="
+test_portal_grade_id_encoding() {
+  if ! command -v curl >/dev/null 2>&1; then pass "portal grade id encoding (skipped: no curl)"; return; fi
+  local repo="$TMP/pgradeidrepo" port page slog="$TMP/portal.grade-id.log" feedback
+  local item_id='collision&equals=%#plus+space here'
+  local encoded_id='collision%26equals%3D%25%23plus%2Bspace%20here'
+  local up_href="/grade?id=$encoded_id&v=up"
+  local down_href="/grade?id=$encoded_id&v=down"
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/portal.py" "$repo/bin/"
+  # "collision" is what an unencoded ampersand would submit as id. It must never
+  # receive the grade intended for the full id below.
+  {
+    printf '{"id":"collision","title":"Truncated collision sentinel","signal":"opportunity","score":0.1}\n'
+    printf '{"id":"%s","title":"Reserved-character item","signal":"opportunity","score":0.9}\n' "$item_id"
+  } > "$repo/state/seen.jsonl"
+  ( cd "$repo" && exec python3 bin/portal.py 0 > "$slog" 2>&1 ) &
+  local srv=$!
+  if ! wait_portal_server "$slog" "$srv"; then fail "portal grade id encoding server came up"; stop_server "$srv"; return; fi
+  port="$SERVER_PORT"
+  page="$(curl -s --retry 8 --retry-delay 1 --retry-connrefused "http://127.0.0.1:$port/review" || true)"
+  assert_contains "up grade href percent-encodes every reserved id character" "$page" "href=\"$up_href\""
+  assert_contains "down grade href percent-encodes every reserved id character" "$page" "href=\"$down_href\""
+  # Use the rendered endpoint shape, rather than constructing a separate request,
+  # to cover the browser-facing link through to grade recording.
+  curl -s --globoff "http://127.0.0.1:$port$up_href" >/dev/null || true
+  stop_server "$srv"
+  feedback="$(cat "$repo/state/feedback.jsonl" 2>/dev/null)"
+  assert_contains "encoded grade endpoint records the complete intended id" "$feedback" \
+    '"id": "collision&equals=%#plus+space here"'
+  assert_not_contains "encoded grade endpoint does not record the truncated collision sentinel" "$feedback" \
+    '"id": "collision"'
+}
+test_portal_grade_id_encoding
+
 echo "== portal.py: missed-signal reports record a 'missed' verdict (recall loop) =="
 test_portal_missed() {
   if ! command -v curl >/dev/null 2>&1; then pass "portal missed signals (skipped: no curl)"; return; fi

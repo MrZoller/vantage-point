@@ -1712,7 +1712,7 @@ def review_inner(just=None):
     if not items:
         parts.append('<p class="muted">No surfaced items yet.</p>')
     for idx, it in enumerate(items):
-        rid = esc(it.get("id"))
+        rid = esc(quote(str(it.get("id")), safe=""))
         v = verdicts.get(it.get("id"))
         up = " on" if v == "up" else ""
         down = " on" if v == "down" else ""
