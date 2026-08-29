@@ -181,7 +181,7 @@ Notes:
 ## Email delivery (optional)
 
 Reports always land in `kb/`. To also email them, install msmtp and add a config.
-For Google Workspace (e.g. `zoller.ai`), SMTP requires an **App Password**, not your
+For Google Workspace (e.g. `yourdomain.com`), SMTP requires an **App Password**, not your
 account password — generate one at myaccount.google.com → Security → App passwords
 (needs 2-Step Verification on).
 
@@ -196,15 +196,15 @@ logfile        ~/.msmtp.log
 account        default
 host           smtp.gmail.com
 port           587
-from           you@zoller.ai
-user           you@zoller.ai
+from           you@example.com
+user           you@example.com
 password       <16-char app password>
 ```
 Lock it down — msmtp refuses a world-readable file that holds a password:
 ```
 chmod 600 ~/.msmtprc
 ```
-Verify standalone (`echo "test" | msmtp you@zoller.ai`), then set the recipient in
+Verify standalone (`echo "test" | msmtp you@example.com`), then set the recipient in
 `monitor-config.yaml`:
 ```yaml
 output:
