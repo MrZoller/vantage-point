@@ -5076,7 +5076,8 @@ test_portal_renderer_canary() {
   # accept this one: keying on the `onerror` text instead of the tag would reject a
   # renderer for leaving the escaped canary's inert characters behind.
   printf '#!/usr/bin/env bash\nsed -e "s/</\&lt;/g" -e "s/>/\&gt;/g"\n' > "$repo/stub/cmark-gfm"
-  chmod +x "$repo/stub/pandoc" "$repo/stub/cmark-gfm"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo/stub/cmark"
+  chmod +x "$repo/stub/pandoc" "$repo/stub/cmark-gfm" "$repo/stub/cmark"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( cd "$repo" && PATH="$repo/stub:$PATH" python3 - "$repo/bin/portal.py" 2>&1 <<'PY'
 import importlib.util, sys
@@ -5122,7 +5123,9 @@ PY
   mkdir -p "$repo4/bin" "$repo4/stub" "$repo4/state" "$repo4/kb"
   cp "$ROOT/bin/portal.py" "$repo4/bin/"
   printf '#!/usr/bin/env bash\nsed -E "s|<(/?)(script\|img)[^>]*>||g"\n' > "$repo4/stub/cmark-gfm"
-  chmod +x "$repo4/stub/cmark-gfm"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo4/stub/pandoc"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo4/stub/cmark"
+  chmod +x "$repo4/stub/cmark-gfm" "$repo4/stub/pandoc" "$repo4/stub/cmark"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( cd "$repo4" && PATH="$repo4/stub:$PATH" python3 - "$repo4/bin/portal.py" 2>&1 <<'PY'
 import importlib.util, sys
@@ -5143,7 +5146,9 @@ PY
   mkdir -p "$repo5/bin" "$repo5/stub" "$repo5/state" "$repo5/kb"
   cp "$ROOT/bin/portal.py" "$repo5/bin/"
   printf '#!/usr/bin/env bash\nsed -E "s/(.)<[^>]*>/\\1/g"\n' > "$repo5/stub/cmark-gfm"
-  chmod +x "$repo5/stub/cmark-gfm"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo5/stub/pandoc"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo5/stub/cmark"
+  chmod +x "$repo5/stub/cmark-gfm" "$repo5/stub/pandoc" "$repo5/stub/cmark"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( cd "$repo5" && PATH="$repo5/stub:$PATH" python3 - "$repo5/bin/portal.py" 2>&1 <<'PY'
 import importlib.util, sys
@@ -5164,7 +5169,11 @@ PY
   mkdir -p "$repo3/bin" "$repo3/stub" "$repo3/state" "$repo3/kb"
   cp "$ROOT/bin/portal.py" "$repo3/bin/"
   printf '#!/usr/bin/env bash\nsed -e "s/</\&lt;/g" -e "s/>/\&gt;/g"\n' > "$repo3/stub/cmark-gfm"
-  chmod +x "$repo3/stub/cmark-gfm"
+  # The scenario is about cmark-gfm; pandoc and cmark are stubbed unsafe so a SAFE host
+  # binary of either name can never satisfy the chain and mask the swap under test.
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo3/stub/pandoc"
+  printf '#!/usr/bin/env bash\ncat\n' > "$repo3/stub/cmark"
+  chmod +x "$repo3/stub/cmark-gfm" "$repo3/stub/pandoc" "$repo3/stub/cmark"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( cd "$repo3" && PATH="$repo3/stub:$PATH" REPO3="$repo3" python3 - "$repo3/bin/portal.py" 2>&1 <<'PY'
 import importlib.util, os, sys, time
