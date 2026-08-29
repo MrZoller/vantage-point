@@ -3673,15 +3673,14 @@ SH
     "$(cat "$repo2/kb/$(date +%F).daily.md" 2>/dev/null)" "The approved profile is stale"
 
   # The same empty-date hole on the monitor side: an absent last_bootstrapped must be
-  # REPORTED as unparseable, not silently read as "today" (GNU date) and so never stale.
-  # Passes on macOS either way; it guards the Linux leg.
+  # reported distinctly, not passed to GNU date as "today" and so read as fresh.
   local repo4="$TMP/staleblank"
   make_fake_repo "$repo4" "2000-01-01"
   printf 'subject:\n  derived:\n    name: no-date-here\n' > "$repo4/profile.yaml"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( HOME="$TMP/fakehome" PATH="$repo4/stub:$PATH" bash "$repo4/bin/monitor.sh" daily 2>&1 )"
   assert_contains "an absent last_bootstrapped is called out, not read as fresh" \
-    "$out" "couldn't parse profile last_bootstrapped"
+    "$out" "no last_bootstrapped"
 
   # A FUTURE date is the third way into the same hole: it parses, so it never reaches the
   # "couldn't parse" branch, but its negative age is never -gt the window either - so the
@@ -3750,6 +3749,49 @@ SH
   fi
 }
 test_monitor_stale_in_report
+
+echo "== monitor.sh: an absent bootstrap date skips both platform parsers =="
+test_monitor_missing_bootstrap_date() {
+  # GNU date accepts `date -d ""` as today while BSD date rejects it. Model both
+  # parser paths explicitly: neither may be reached when the profile has no date.
+  local platform repo out parser_log
+  for platform in gnu bsd; do
+    repo="$TMP/missingboot-$platform"
+    make_fake_repo "$repo" "2000-01-01"
+    printf 'subject:\n  derived:\n    name: no-date-here\n' > "$repo/profile.yaml"
+    parser_log="$repo/date-parser.log"
+    cat > "$repo/stub/date" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  -d)
+    printf 'gnu\n' >> "$DATE_PARSER_LOG"
+    if [ "$DATE_PLATFORM" = gnu ]; then printf '0\n'; exit 0; fi
+    exit 1
+    ;;
+  -j)
+    printf 'bsd\n' >> "$DATE_PARSER_LOG"
+    if [ "$DATE_PLATFORM" = bsd ]; then printf '0\n'; exit 0; fi
+    exit 1
+    ;;
+esac
+exec /bin/date "$@"
+SH
+    chmod +x "$repo/stub/date"
+    # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+    out="$( DATE_PARSER_LOG="$parser_log" DATE_PLATFORM="$platform" HOME="$TMP/fakehome" \
+            PATH="$repo/stub:$PATH" bash "$repo/bin/monitor.sh" daily 2>&1 )"
+    assert_contains "$platform: the absent field gets its own note" \
+      "$out" "no last_bootstrapped"
+    assert_not_contains "$platform: absence is not reported as a malformed date" \
+      "$out" "couldn't parse profile last_bootstrapped"
+    if [ -s "$parser_log" ]; then
+      fail "$platform: does not pass an empty date to a platform parser"
+    else
+      pass "$platform: does not pass an empty date to a platform parser"
+    fi
+  done
+}
+test_monitor_missing_bootstrap_date
 
 echo "== portal.py: forward-radar Coming up card + dossier Expected list + export =="
 test_portal_coming_up() {

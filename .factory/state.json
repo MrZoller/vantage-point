@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T15",
-  "branch": "factory/t15-dangling-demo-symlinks",
+  "current_task": "T16",
+  "branch": "factory/t16-missing-bootstrap-date",
   "pr": null,
   "hold": false,
-  "updated": "2026-08-29T09:41:54Z"
+  "updated": "2026-08-29T10:09:30Z"
 }
