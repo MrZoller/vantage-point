@@ -39,7 +39,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T11 (standard) — monitor.sh: deepdive_max_items: 0 empties the queue after the non-empty check, launching a pointless deep-dive pass (Fixes #62)
   - acceptance: `bin/monitor.sh` treats `deepdive_max_items: 0` as disabling/skipping deep-dive work or rechecks the truncated queue, and tests verify no `claude` deep-dive invocation occurs for an empty post-cap queue
   - pr: 90
-- [R] T12 (standard) — usage.sh: one runs.log row without a valid timestamp aborts the whole rollup (Fixes #61)
+- [x] T12 (standard) — usage.sh: one runs.log row without a valid timestamp aborts the whole rollup (Fixes #61)
   - acceptance: `bin/usage.sh` skips JSONL rows with missing/invalid timestamps and malformed or truncated lines while retaining valid rows in the rollup; every non-numeric aggregate field is treated as zero; tests verify the command remains successful and reports valid usage and totals
   - pr: 103
 - [x] T13 (standard) — monitor.sh: triage prompt renders "DEEP-DIVE QUEUE: enabledopus." when deep-dive is on (Fixes #60)
@@ -85,6 +85,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
   - PR #82: make Review and dossier latest-row readers reserve IDs whose newest seen row is `dropped`, so older surfaced rows cannot reappear for grading.
   - PR #82: retain dropped tombstone state (or distinguish it from an ordinary pruned surfaced record) for the calibration fallback after `seen.jsonl` pruning.
   - PR #100: make the `NO_SUMMARY` bootstrap regression assert `state/.draft-complete`, preserving the documented reviewability marker invariant.
+  - PR #103: require a successfully parsed timestamp before usage-window comparison so malformed timestamps never enter a pre-epoch cutoff rollup.
 
 ## Risks
 

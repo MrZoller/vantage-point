@@ -1,11 +1,11 @@
 {
   "project": "Vantage Point",
-  "phase": "build",
+  "phase": "idle",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": "T12",
-  "branch": "factory/t12-tolerant-usage-log",
-  "pr": 103,
+  "current_task": null,
+  "branch": null,
+  "pr": null,
   "hold": false,
-  "updated": "2026-09-04T11:45:11Z"
+  "updated": "2026-09-04T11:54:42Z"
 }
