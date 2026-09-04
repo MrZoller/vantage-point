@@ -20,7 +20,7 @@ the later extraction inherits the fixed reclaim / B — hold T22 until the
 lock-lib design lands / C — drop T22 into the extraction work itself.
 **A:** A) proceed Answered by Chris via factory-ui. [factory-answer-intake: 7af81b1b-0d08-44a1-8432-42e4b86887e9]
 
-## Q2 (task T12, open) — Should usage harden every numeric field or keep T12 scoped to damaged JSON and timestamps?
+## Q2 (task T12, consumed) — Should usage harden every numeric field or keep T12 scoped to damaged JSON and timestamps?
 Parked branch: factory/t12-tolerant-usage-log
 Context: T12 now parses `runs.log` line by line and its full suite passes, but
 the required second panel blocked because a valid JSON row with a current
@@ -32,7 +32,7 @@ Options considered: A — broaden T12 by treating every non-numeric aggregate
 field as zero and test all usage totals / B — keep the issue scope and narrow
 the new documentation to JSON/timestamp tolerance / C — drop the documentation
 update and ship only the exact issue #61 fix.
-**A:** A — broaden T12 by treating every non-numeric aggregate field as zero and test all usage totals. Answered by Chris via the operator session ask (2026-09-04); recorded by the operator.
+**A:** A — broaden T12 by treating every non-numeric aggregate field as zero and test all usage totals Answered by Chris via factory-ui. [factory-answer-intake: 6e8f5440-7bff-4c10-9e2b-4ece718e9d43]
 
 <!-- factory-question-timestamps-required-below -->
 
