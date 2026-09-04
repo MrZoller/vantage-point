@@ -36,7 +36,7 @@ update and ship only the exact issue #61 fix.
 
 <!-- factory-question-timestamps-required-below -->
 
-## Q3 (task T22, open, filed-at 2026-09-04T11:23:56Z) — Which portable lock boundary should replace timed reclaim-mutex takeover?
+## Q3 (task T22, consumed, filed-at 2026-09-04T11:23:56Z) — Which portable lock boundary should replace timed reclaim-mutex takeover?
 Parked branch: factory/t22-serialize-stale-lock-reclaim
 Context:
 Observable failure: A scheduled monitor starts after an earlier process pauses during lock setup; the maintainer sees two monitor runs writing the same state files even though the second run was supposed to skip.
@@ -55,4 +55,4 @@ Owner: lock-library maintainer.
 Day-to-day consequence: the known stale-lock race remains unfixed until that follow-up is designed and shipped.
 Cost or risk: one design serves both scripts, but a high-impact concurrency bug stays open for longer.
 Recommendation rationale: A removes abandoned-guard recovery from wall-clock guessing while preserving automatic recovery with a runtime the project already requires.
-**A:**
+**A:** A — use the Python-stdlib fcntl.flock guard only around stale-lock reclamation, with Bash retaining the monitor owner token and final mkdir arbitration. Question recommends A; operator independent assessment also A, on three grounds: T22 acceptance requires unattended recovery (B abandons it); Chris answered Q1 "A — proceed, fix in place now" today, which C would reverse; and engine precedent (factory-db kernel-arbitrated exclusivity; the 2026-09-04 stall-watchdog review rounds) shows timer-based takeover of a tokenless shared mutex is structurally unsound, while flock release-on-death provides exactly the arbitration the panel proof demands, with Python already a required runtime. Answered by the operator session under the agreed-recommendation delegation.

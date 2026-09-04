@@ -153,7 +153,9 @@ case "$LAST_BOOT" in null) LAST_BOOT="" ;; esac
 # matter how long it runs (claude + email/render), and regardless of whether a
 # timeout is configured or enforceable.
 LOCK="state/.lock"
+RECLAIM_LOCK="$LOCK.reclaim"
 LOCK_SETUP_GRACE=30   # secs a lock may sit without an owner token before its creator is assumed dead
+LOCK_OWNER=""
 
 proc_start() {  # normalized start time of pid $1 (empty if it isn't running)
   # If ps lacks `-o lstart=` (rare), this is empty for every pid and the staleness
@@ -161,22 +163,50 @@ proc_start() {  # normalized start time of pid $1 (empty if it isn't running)
   # just without recycled-PID detection.
   ps -o lstart= -p "$1" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'
 }
+LOCK_OWNER="$$ $(proc_start "$$")"
 
-lock_age_secs() {  # age (s) of the lock dir; huge if it's gone
-  local mtime
-  mtime="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || echo 0)"
+lock_age_secs() {  # age (s) of the lock dir named by $1; huge if it's gone
+  local path="$1" mtime
+  mtime="$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0)"
   echo "$(( $(date +%s) - mtime ))"
+}
+
+# Serialize stale-lock removal with a kernel-owned guard. Bash opens descriptor 9
+# before Python applies flock to that inherited open-file description; the lock
+# remains held by Bash until it closes its copy. Process death therefore releases
+# the guard without any age-based takeover race.
+acquire_reclaim_lock() {
+  exec 9>> "$RECLAIM_LOCK" || return 1
+  if python3 "$ROOT/bin/flock-fd.py" 9; then
+    return 0
+  fi
+  exec 9>&-
+  return 1
+}
+
+release_reclaim_lock() {
+  exec 9>&- || true
+}
+
+write_lock_owner() {
+  # noclobber makes owner publication an atomic claim even if a process was
+  # paused after mkdir and another reclaimer replaced the directory meanwhile.
+  ( set -C; printf '%s\n' "$LOCK_OWNER" > "$LOCK/owner" ) 2>/dev/null || return 1
+  [ "$(cat "$LOCK/owner" 2>/dev/null || true)" = "$LOCK_OWNER" ]
 }
 
 # Acquire the lock. Returns 0 (owned) or 1 (held by a live run / lost a reclaim race).
 acquire_lock() {
-  mkdir "$LOCK" 2>/dev/null && return 0   # uncontended
-  local owner oldpid oldstart
+  if mkdir "$LOCK" 2>/dev/null; then
+    write_lock_owner
+    return
+  fi
+  local owner oldpid oldstart current
   owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
   if [ -z "$owner" ]; then
     # Lock dir exists but the owner token isn't written yet: another acquirer is
     # mid-setup (milliseconds). Treat as active only briefly; longer => it died there.
-    if [ "$(lock_age_secs)" -lt "$LOCK_SETUP_GRACE" ]; then return 1; fi
+    if [ "$(lock_age_secs "$LOCK")" -lt "$LOCK_SETUP_GRACE" ]; then return 1; fi
   else
     oldpid="${owner%% *}"
     oldstart="${owner#* }"
@@ -185,17 +215,40 @@ acquire_lock() {
       return 1
     fi
   fi
+  acquire_reclaim_lock || return 1
+  current="$(cat "$LOCK/owner" 2>/dev/null || true)"
+  if [ "$current" != "$owner" ]; then
+    release_reclaim_lock
+    return 1
+  fi
+  if [ -z "$current" ]; then
+    if [ "$(lock_age_secs "$LOCK")" -lt "$LOCK_SETUP_GRACE" ]; then
+      release_reclaim_lock
+      return 1
+    fi
+  else
+    oldpid="${current%% *}"
+    oldstart="${current#* }"
+    if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null && [ "$(proc_start "$oldpid")" = "$oldstart" ]; then
+      release_reclaim_lock
+      return 1
+    fi
+  fi
   echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown})" >&2
-  # Reclaim race-safely: rename the inspected dir out of the way (only one renamer
-  # of a given dir can win), then let the final mkdir be the sole ownership arbiter
-  # - concurrent reclaimers can't both end up owning.
-  mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"
-  mkdir "$LOCK" 2>/dev/null
+  rm -rf "$LOCK"
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    release_reclaim_lock
+    return 1
+  fi
+  if ! write_lock_owner; then
+    release_reclaim_lock
+    return 1
+  fi
+  release_reclaim_lock
+  return 0
 }
 
-if acquire_lock; then
-  printf '%s %s\n' "$$" "$(proc_start "$$")" > "$LOCK/owner"
-else
+if ! acquire_lock; then
   echo "[monitor:$MODE] another run is in progress - skipping" >&2
   exit 0
 fi
@@ -203,8 +256,12 @@ fi
 # Release the lock on exit, and surface a hard failure (a set -e abort - e.g. the
 # claude run errored or timed out) that would otherwise vanish into the launchd log.
 cleanup() {
-  local rc=$?
-  rm -rf "$LOCK" 2>/dev/null || true
+  local rc=$? owner
+  release_reclaim_lock
+  owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
+  if [ "$owner" = "$LOCK_OWNER" ]; then
+    rm -rf "$LOCK" 2>/dev/null || true
+  fi
   if [ "$rc" -ne 0 ]; then
     echo "[monitor:$MODE] run FAILED (exit $rc) - see kb/${TODAY}.${MODE}.err" >&2
   fi

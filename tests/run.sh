@@ -1061,7 +1061,7 @@ make_fake_repo() {
   # so 2099 worked here only by relying on the bug. Now it warns, as it should.
   local repo="$1" lastboot="${2:-$(date +%F)}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
-  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" \
+  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/flock-fd.py" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" \
      "$ROOT/bin/webhook.py" "$ROOT/bin/fetch.py" "$ROOT/bin/horizon.py" \
      "$ROOT/bin/cadence.py" "$repo/bin/"
   cp_libs "$repo/bin"
@@ -1144,6 +1144,231 @@ test_lock_reused_pid() {
   if [ -f "$marker" ]; then pass "claude ran after reclaiming recycled-PID lock"; else fail "claude ran after reclaiming recycled-PID lock"; fi
 }
 test_lock_reused_pid
+
+echo "== monitor.sh: a delayed initial creator cannot overwrite a replacement owner =="
+test_delayed_initial_lock_owner_claim() {
+  local repo="$TMP/delayed-lock-owner" marker="$TMP/delayed-lock-claude"
+  local first rc owner i
+  make_fake_repo "$repo"
+  # Pause the first mkdir after it has made .lock but before monitor.sh can
+  # publish owner. The parent replaces that incomplete lock with a live owner,
+  # then lets the delayed creator attempt its atomic owner claim.
+  cat > "$repo/stub/mkdir" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "state/.lock" ] && [ ! -e "$DELAYED_LOCK_READY" ]; then
+  /bin/mkdir "$@" || exit $?
+  : > "$DELAYED_LOCK_READY"
+  i=0
+  while [ ! -e "$DELAYED_LOCK_RELEASE" ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  exit 0
+fi
+exec /bin/mkdir "$@"
+SH
+  chmod +x "$repo/stub/mkdir"
+  (
+    cd "$repo" || exit 1
+    # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+    CLAUDE_RAN="$marker" DELAYED_LOCK_READY="$TMP/delayed-lock-ready" \
+      DELAYED_LOCK_RELEASE="$TMP/delayed-lock-release" HOME="$TMP/fakehome" \
+      PATH="$repo/stub:$PATH" bash bin/monitor.sh daily > "$TMP/delayed-lock.out" 2>&1
+  ) & first=$!
+  i=0
+  while [ ! -f "$TMP/delayed-lock-ready" ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  if [ ! -f "$TMP/delayed-lock-ready" ]; then
+    fail "delayed initial creator reached owner-publication pause"
+    : > "$TMP/delayed-lock-release"
+    wait "$first" || true
+    return
+  fi
+  rm -rf "$repo/state/.lock"
+  mkdir "$repo/state/.lock"
+  owner="$$ $(proc_start "$$")"
+  printf '%s\n' "$owner" > "$repo/state/.lock/owner"
+  : > "$TMP/delayed-lock-release"
+  wait "$first"; rc=$?
+  assert_eq "delayed initial creator exits 0 after losing owner claim" "0" "$rc"
+  assert_eq "atomic owner claim preserves the replacement owner" "$owner" "$(cat "$repo/state/.lock/owner")"
+  if [ -f "$marker" ]; then fail "delayed initial creator does not enter after replacement"; else pass "delayed initial creator does not enter after replacement"; fi
+}
+test_delayed_initial_lock_owner_claim
+
+echo "== monitor.sh: fcntl serializes concurrent stale-lock reclaimers =="
+test_concurrent_stale_lock_reclaim() {
+  local repo="$TMP/concurrent-reclaim" marker="$TMP/concurrent-claude" gate="$TMP/reclaim-gate"
+  local first second rc1 rc2 calls real_python
+  make_fake_repo "$repo"
+  mkdir -p "$repo/state/.lock" "$gate"
+  printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"
+  real_python="$(command -v python3)"
+  # Pause both contenders immediately before the real inherited-FD flock call.
+  # They therefore race at the kernel boundary, not at a filesystem mutex or by
+  # scheduler coincidence; the wrapper delegates the actual flock to the helper.
+  cat > "$repo/stub/python3" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "$FLOCK_HELPER" ] && [ "${2:-}" = "9" ]; then
+  helper="$1"
+  fd="$2"
+  mkdir "$FLOCK_BARRIER/arrival.$$" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 100 ]; do
+    set -- "$FLOCK_BARRIER"/arrival.*
+    if [ -d "$1" ] && [ -d "${2:-}" ]; then break; fi
+    sleep 0.02
+    i=$((i + 1))
+  done
+  set -- "$helper" "$fd"
+fi
+exec "$REAL_PYTHON3" "$@"
+SH
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$CLAUDE_RAN"
+sleep 1
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+SH
+  chmod +x "$repo/stub/python3" "$repo/stub/claude"
+  (
+    cd "$repo" || exit 1
+    # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+    CLAUDE_RAN="$marker" FLOCK_BARRIER="$gate" FLOCK_HELPER="$repo/bin/flock-fd.py" \
+      REAL_PYTHON3="$real_python" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+      bash bin/monitor.sh daily > "$TMP/concurrent-first.out" 2>&1
+  ) & first=$!
+  (
+    cd "$repo" || exit 1
+    # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+    CLAUDE_RAN="$marker" FLOCK_BARRIER="$gate" FLOCK_HELPER="$repo/bin/flock-fd.py" \
+      REAL_PYTHON3="$real_python" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+      bash bin/monitor.sh weekly > "$TMP/concurrent-second.out" 2>&1
+  ) & second=$!
+  wait "$first"; rc1=$?
+  wait "$second"; rc2=$?
+  assert_eq "first concurrent stale-lock reclaimer exits 0" "0" "$rc1"
+  assert_eq "second concurrent stale-lock reclaimer exits 0" "0" "$rc2"
+  calls=0
+  [ -f "$marker" ] && calls="$(wc -l < "$marker" | tr -d ' ')"
+  assert_eq "concurrent stale-lock reclaimers invoke monitor work exactly once" "1" "$calls"
+}
+test_concurrent_stale_lock_reclaim
+
+echo "== monitor.sh: a stale reclaimer rechecks an owner replaced before its fcntl guard =="
+test_stale_reclaimer_loses_replaced_owner() {
+  local repo="$TMP/replaced-reclaim-owner" marker="$TMP/replaced-reclaim-claude"
+  local ready="$TMP/replaced-reclaim-ready" release="$TMP/replaced-reclaim-release"
+  local reclaimer rc owner real_python i
+  make_fake_repo "$repo"
+  mkdir -p "$repo/state/.lock"
+  # This impossible token is stale, so the reclaimer reads it before it reaches
+  # the wrapper's pause immediately ahead of flock-fd.py.
+  printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"
+  real_python="$(command -v python3)"
+  cat > "$repo/stub/python3" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "$FLOCK_HELPER" ] && [ "${2:-}" = "9" ]; then
+  : > "$FLOCK_BARRIER_READY"
+  i=0
+  while [ ! -e "$FLOCK_BARRIER_RELEASE" ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+fi
+exec "$REAL_PYTHON3" "$@"
+SH
+  chmod +x "$repo/stub/python3"
+  (
+    cd "$repo" || exit 1
+    # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+    CLAUDE_RAN="$marker" FLOCK_BARRIER_READY="$ready" FLOCK_BARRIER_RELEASE="$release" \
+      FLOCK_HELPER="$repo/bin/flock-fd.py" REAL_PYTHON3="$real_python" HOME="$TMP/fakehome" \
+      PATH="$repo/stub:$PATH" bash bin/monitor.sh daily > "$TMP/replaced-reclaim.out" 2>&1
+  ) & reclaimer=$!
+  i=0
+  while [ ! -f "$ready" ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  if [ ! -f "$ready" ]; then
+    fail "stale reclaimer reached the fcntl-guard pause"
+    : > "$release"
+    wait "$reclaimer" || true
+    return
+  fi
+  # A different stale token isolates the generation check: the later liveness
+  # check would also consider this owner reclaimable if equality were not tested.
+  owner="2147483645 y"
+  printf '%s\n' "$owner" > "$repo/state/.lock/owner"
+  : > "$release"
+  wait "$reclaimer"; rc=$?
+  assert_eq "stale reclaimer exits 0 after replacement owner wins" "0" "$rc"
+  assert_contains "stale reclaimer skips after replacement owner wins" "$(cat "$TMP/replaced-reclaim.out")" "in progress - skipping"
+  assert_eq "stale reclaimer preserves the replacement lock owner" "$owner" "$(cat "$repo/state/.lock/owner")"
+  if [ -f "$marker" ]; then fail "stale reclaimer does not invoke claude after replacement"; else pass "stale reclaimer does not invoke claude after replacement"; fi
+}
+test_stale_reclaimer_loses_replaced_owner
+
+echo "== monitor.sh: inherited-FD fcntl guard releases on holder death =="
+test_fcntl_guard_liveness_and_recovery() {
+  local repo="$TMP/fcntl-guard" marker="$TMP/fcntl-claude" ready="$TMP/fcntl-ready"
+  local holder out rc calls real_python i
+  make_fake_repo "$repo"
+  mkdir -p "$repo/state/.lock"
+  printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$CLAUDE_RAN"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+SH
+  chmod +x "$repo/stub/claude"
+  real_python="$(command -v python3)"
+  # exec keeps fd 9 open in one killable process after flock-fd.py has applied
+  # the advisory lock. Killing that process is the kernel-release condition.
+  (
+    cd "$repo" || exit 1
+    exec 9>> state/.lock.reclaim
+    "$real_python" bin/flock-fd.py 9 || exit 1
+    : > "$ready"
+    exec sleep 30
+  ) & holder=$!
+  i=0
+  while [ ! -f "$ready" ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  if [ ! -f "$ready" ]; then
+    fail "fcntl guard holder acquired its inherited-FD lock"
+    kill "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
+    return
+  fi
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "live fcntl guard run exits 0" "0" "$rc"
+  assert_contains "live fcntl guard cannot be overtaken" "$out" "in progress - skipping"
+  if [ -f "$marker" ]; then fail "monitor work does not run while fcntl guard is live"; else pass "monitor work does not run while fcntl guard is live"; fi
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" weekly 2>&1 )"; rc=$?
+  assert_eq "run after killed fcntl guard exits 0" "0" "$rc"
+  assert_contains "run after killed fcntl guard reclaims automatically" "$out" "reclaiming stale lock"
+  if [ -f "$repo/state/.lock.reclaim" ]; then pass "persistent fcntl guard file remains after recovery"; else fail "persistent fcntl guard file remains after recovery"; fi
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "later run with persistent fcntl guard file exits 0" "0" "$rc"
+  calls=0
+  [ -f "$marker" ] && calls="$(wc -l < "$marker" | tr -d ' ')"
+  assert_eq "persistent fcntl guard file does not block later monitor work" "2" "$calls"
+}
+test_fcntl_guard_liveness_and_recovery
 
 echo "== monitor.sh: reclaims stale lock, prunes state, warns on stale profile =="
 test_full_run() {

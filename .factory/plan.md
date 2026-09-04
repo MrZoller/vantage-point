@@ -39,8 +39,9 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T11 (standard) — monitor.sh: deepdive_max_items: 0 empties the queue after the non-empty check, launching a pointless deep-dive pass (Fixes #62)
   - acceptance: `bin/monitor.sh` treats `deepdive_max_items: 0` as disabling/skipping deep-dive work or rechecks the truncated queue, and tests verify no `claude` deep-dive invocation occurs for an empty post-cap queue
   - pr: 90
-- [~] T12 (standard) — usage.sh: one runs.log row without a valid timestamp aborts the whole rollup (Fixes #61)
+- [x] T12 (standard) — usage.sh: one runs.log row without a valid timestamp aborts the whole rollup (Fixes #61)
   - acceptance: `bin/usage.sh` skips JSONL rows with missing/invalid timestamps and malformed or truncated lines while retaining valid rows in the rollup; every non-numeric aggregate field is treated as zero; tests verify the command remains successful and reports valid usage and totals
+  - pr: 103
 - [x] T13 (standard) — monitor.sh: triage prompt renders "DEEP-DIVE QUEUE: enabledopus." when deep-dive is on (Fixes #60)
   - acceptance: `bin/monitor.sh` renders the triage prompt's deep-dive state as exactly `enabled` or `disabled`; tests cover a configured model without concatenating its name into the state
   - pr: 91
@@ -68,7 +69,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T21 (standard) — portal.py: state-changing GET endpoints (/grade, /missed) have no CSRF/origin protection (Fixes #52)
   - acceptance: `bin/portal.py` rejects cross-origin state changes to `/grade` and `/missed` and prevents DNS-rebinding access through untrusted Host values, using POST plus a per-session token or equivalent origin/host protection; tests verify legitimate localhost actions still append feedback while forged cross-origin requests do not
   - pr: 99
-- [!] T22 (standard) — monitor.sh: stale-lock reclaim race can leave two monitors running concurrently (Fixes #51)
+- [~] T22 (standard) — monitor.sh: stale-lock reclaim race can leave two monitors running concurrently (Fixes #51)
   - acceptance: `bin/monitor.sh` serializes stale-lock reclamation, re-verifies the inspected owner/token before removing a lock, preserves final `mkdir` ownership arbitration, and reclaims an abandoned reclaim mutex after the setup grace; a contention test proves two reclaimers cannot both own the monitor lock; proceed with the in-place fix before the later lock-lib extraction
 - [x] T23 (standard) — bootstrap.sh: a successful run exits 1 whenever no draft summary was written (Fixes #50)
   - acceptance: `bin/bootstrap.sh` exits successfully when synthesis writes `profile.draft.yaml` without the optional summary, still prints the appropriate completion guidance, and has an end-to-end test for a draft-without-summary stub
@@ -84,6 +85,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
   - PR #82: make Review and dossier latest-row readers reserve IDs whose newest seen row is `dropped`, so older surfaced rows cannot reappear for grading.
   - PR #82: retain dropped tombstone state (or distinguish it from an ordinary pruned surfaced record) for the calibration fallback after `seen.jsonl` pruning.
   - PR #100: make the `NO_SUMMARY` bootstrap regression assert `state/.draft-complete`, preserving the documented reviewability marker invariant.
+  - PR #103: require a successfully parsed timestamp before usage-window comparison so malformed timestamps never enter a pre-epoch cutoff rollup.
 
 ## Risks
 
