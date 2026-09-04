@@ -20,7 +20,8 @@ the later extraction inherits the fixed reclaim / B — hold T22 until the
 lock-lib design lands / C — drop T22 into the extraction work itself.
 **A:**
 
-## Q2 (task T12, open; parked branch: factory/t12-tolerant-usage-log) — Should usage harden every numeric field or keep T12 scoped to damaged JSON and timestamps?
+## Q2 (task T12, open) — Should usage harden every numeric field or keep T12 scoped to damaged JSON and timestamps?
+Parked branch: factory/t12-tolerant-usage-log
 Context: T12 now parses `runs.log` line by line and its full suite passes, but
 the required second panel blocked because a valid JSON row with a current
 timestamp and a string-valued cost/turn field can still abort aggregation.
