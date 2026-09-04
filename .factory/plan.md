@@ -68,7 +68,7 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T21 (standard) — portal.py: state-changing GET endpoints (/grade, /missed) have no CSRF/origin protection (Fixes #52)
   - acceptance: `bin/portal.py` rejects cross-origin state changes to `/grade` and `/missed` and prevents DNS-rebinding access through untrusted Host values, using POST plus a per-session token or equivalent origin/host protection; tests verify legitimate localhost actions still append feedback while forged cross-origin requests do not
   - pr: 99
-- [~] T22 (standard) — monitor.sh: stale-lock reclaim race can leave two monitors running concurrently (Fixes #51)
+- [!] T22 (standard) — monitor.sh: stale-lock reclaim race can leave two monitors running concurrently (Fixes #51)
   - acceptance: `bin/monitor.sh` serializes stale-lock reclamation, re-verifies the inspected owner/token before removing a lock, preserves final `mkdir` ownership arbitration, and reclaims an abandoned reclaim mutex after the setup grace; a contention test proves two reclaimers cannot both own the monitor lock; proceed with the in-place fix before the later lock-lib extraction
 - [x] T23 (standard) — bootstrap.sh: a successful run exits 1 whenever no draft summary was written (Fixes #50)
   - acceptance: `bin/bootstrap.sh` exits successfully when synthesis writes `profile.draft.yaml` without the optional summary, still prints the appropriate completion guidance, and has an end-to-end test for a draft-without-summary stub

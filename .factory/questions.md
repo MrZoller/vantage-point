@@ -33,3 +33,26 @@ field as zero and test all usage totals / B — keep the issue scope and narrow
 the new documentation to JSON/timestamp tolerance / C — drop the documentation
 update and ship only the exact issue #61 fix.
 **A:** A — broaden T12 by treating every non-numeric aggregate field as zero and test all usage totals. Answered by Chris via the operator session ask (2026-09-04); recorded by the operator.
+
+<!-- factory-question-timestamps-required-below -->
+
+## Q3 (task T22, open, filed-at 2026-09-04T11:23:56Z) — Which portable lock boundary should replace timed reclaim-mutex takeover?
+Parked branch: factory/t22-serialize-stale-lock-reclaim
+Context:
+Observable failure: A scheduled monitor starts after an earlier process pauses during lock setup; the maintainer sees two monitor runs writing the same state files even though the second run was supposed to skip.
+Engine detail: The second review panel proved that any timer-based removal of a tokenless Bash `mkdir` mutex can overtake a process that later resumes, so the current patch cannot both auto-recover that setup window and guarantee one owner.
+Options considered: A — use a Python-standard-library `fcntl.flock` guard only around stale-lock reclamation, with Bash retaining the monitor owner token and final `mkdir` arbitration (recommended) / B — keep the Bash `mkdir` guard but never auto-reclaim a tokenless reclaim mutex, requiring manual removal after a crash in its setup window / C — leave T22 parked until the planned shared lock-library extraction defines one locking boundary for monitor and bootstrap
+Option A: A short Python helper locks an inherited file descriptor while Bash revalidates and replaces a stale monitor lock; process death releases the guard automatically.
+Owner: application maintainer.
+Day-to-day consequence: stale-lock recovery remains automatic on the supported macOS and Linux hosts.
+Cost or risk: the lock path gains a dependency on Python's Unix-only `fcntl` module, while Python is already a required runtime for this project.
+Option B: Bash refuses to overtake a tokenless reclaim mutex at any age and prints manual recovery guidance.
+Owner: deployment operator.
+Day-to-day consequence: after the narrow crash window, scheduled monitors remain skipped until the operator removes `state/.lock.reclaim`.
+Cost or risk: mutual exclusion stays dependency-free, but unattended recovery no longer meets T22's current acceptance criterion.
+Option C: The existing partial implementation remains parked and T22 resumes only when the shared lock-library design is ready.
+Owner: lock-library maintainer.
+Day-to-day consequence: the known stale-lock race remains unfixed until that follow-up is designed and shipped.
+Cost or risk: one design serves both scripts, but a high-impact concurrency bug stays open for longer.
+Recommendation rationale: A removes abandoned-guard recovery from wall-clock guessing while preserving automatic recovery with a runtime the project already requires.
+**A:**
