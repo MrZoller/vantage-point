@@ -4650,6 +4650,50 @@ test_usage_empty() {
 }
 test_usage_empty
 
+echo "== usage.sh: skips malformed and timestampless runs.log rows =="
+test_usage_skips_bad_rows() {
+  local repo="$TMP/usagebadrows" out rc now
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/usage.sh" "$repo/bin/"
+  now="$(date -u +%FT%TZ)"
+  {
+    printf '{"timestamp":"%s","mode":"daily","num_turns":7,"cost_usd":0.12}\n' "$now"
+    printf '{"timestamp":"%s","mode":"daily","num_turns":99\n' "$now"  # truncated JSON
+    printf '{"mode":"daily","num_turns":99,"cost_usd":9.99}\n'                # no timestamp
+    printf '{"timestamp":"not-a-timestamp","mode":"weekly","num_turns":99,"cost_usd":9.99}\n'
+  } > "$repo/state/runs.log"
+  out="$( bash "$repo/bin/usage.sh" 30 2>&1 )"; rc=$?
+  assert_eq "exits 0 while skipping malformed usage rows" "0" "$rc"
+  assert_contains "retains only the valid current run" "$out" "runs:    1"
+  assert_contains "skipped rows do not inflate usage turns" "$out" "turns:   7"
+  assert_contains "skipped rows do not inflate usage cost" "$out" "cost:    \$0.12"
+}
+test_usage_skips_bad_rows
+
+echo "== usage.sh: treats non-numeric aggregate fields as zero =="
+test_usage_tolerates_non_numeric_aggregates() {
+  local repo="$TMP/usagenonnumeric" out rc now
+  mkdir -p "$repo/bin" "$repo/state"
+  cp "$ROOT/bin/usage.sh" "$repo/bin/"
+  now="$(date -u +%FT%TZ)"
+  {
+    # A numeric neighbor establishes the totals; each otherwise valid current JSON row
+    # has one aggregate value that must contribute zero rather than aborting jq.
+    printf '{"timestamp":"%s","mode":"daily","num_turns":7,"cost_usd":0.12,"input_tokens":100,"output_tokens":200,"cache_read_input_tokens":300}\n' "$now"
+    printf '{"timestamp":"%s","mode":"daily","cost_usd":"unknown"}\n' "$now"
+    printf '{"timestamp":"%s","mode":"daily","num_turns":"unknown"}\n' "$now"
+    printf '{"timestamp":"%s","mode":"daily","input_tokens":"unknown"}\n' "$now"
+    printf '{"timestamp":"%s","mode":"daily","output_tokens":"unknown"}\n' "$now"
+    printf '{"timestamp":"%s","mode":"daily","cache_read_input_tokens":"unknown"}\n' "$now"
+  } > "$repo/state/runs.log"
+  out="$( bash "$repo/bin/usage.sh" 30 2>&1 )"; rc=$?
+  assert_eq "exits 0 with non-numeric aggregate fields" "0" "$rc"
+  assert_contains "retains numeric neighboring cost" "$out" "cost:    \$0.12"
+  assert_contains "retains numeric neighboring turns" "$out" "turns:   7"
+  assert_contains "retains numeric neighboring token aggregates" "$out" "tokens:  in 100, out 200, cache-read 300"
+}
+test_usage_tolerates_non_numeric_aggregates
+
 # An isolated bootstrap.sh checkout with a stub `claude`. The stub is installed under
 # the fake HOME's .npm-global/bin, which bootstrap.sh PREPENDS to PATH - so it wins
 # over any real claude on the host, keeping the test hermetic (no network call).

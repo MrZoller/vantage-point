@@ -18,13 +18,17 @@ esac
 command -v jq >/dev/null 2>&1 || { echo "jq not found - install it (brew install jq / apt install jq)" >&2; exit 1; }
 [ -f "$LOG" ] || { echo "no $LOG yet - run bin/monitor.sh first" >&2; exit 0; }
 
-# Slurp the log, keep rows within the window, and total the usage fields. A run can
-# log multiple pass rows (triage + deepdive); count runs from triage/legacy rows
-# only (so deep-dive doesn't inflate the count), but sum cost/turns across all rows.
-# Missing fields default to 0 so a partial line never breaks the rollup.
-jq -rs --argjson days "$DAYS" '
+# Read the JSONL as raw text so a crash-truncated row cannot prevent valid rows
+# from being rolled up. A run can log multiple pass rows (triage + deepdive);
+# count runs from triage/legacy rows only (so deep-dive doesn't inflate the
+# count), but sum cost/turns across all rows. Missing or non-numeric aggregate
+# fields default to 0 so one hand-edited value cannot abort the whole rollup.
+jq -Rrs --argjson days "$DAYS" '
+  def number_or_zero: if type == "number" then . else 0 end;
+  split("\n") | map(fromjson? | select(type == "object"))
+  |
   (now - ($days * 86400)) as $cutoff
-  | map(select((.timestamp | fromdateiso8601) >= $cutoff))                as $all
+  | map(select((((.timestamp? // "") | fromdateiso8601?) // 0) >= $cutoff)) as $all
   | ($all | map(select((.pass // "triage") == "triage")))                 as $runs
   | "window:  last \($days) days",
     "runs:    \($runs | length)",
@@ -32,7 +36,7 @@ jq -rs --argjson days "$DAYS" '
                    else ($runs | group_by(.mode) | map("\(.[0].mode)=\(length)") | join(", ")) end),
     "passes:  " + (if ($all | length) == 0 then "-"
                    else ($all | group_by(.pass // "triage") | map("\(.[0].pass // "triage")=\(length)") | join(", ")) end),
-    "cost:    $\(((((($all | map(.cost_usd // 0) | add) // 0)) * 100) | round) / 100) (API-equivalent estimate)",
-    "turns:   \(($all | map(.num_turns // 0) | add) // 0)",
-    "tokens:  in \(($all | map(.input_tokens // 0) | add) // 0), out \(($all | map(.output_tokens // 0) | add) // 0), cache-read \(($all | map(.cache_read_input_tokens // 0) | add) // 0)"
+    "cost:    $\(((((($all | map(.cost_usd | number_or_zero) | add) // 0)) * 100) | round) / 100) (API-equivalent estimate)",
+    "turns:   \(($all | map(.num_turns | number_or_zero) | add) // 0)",
+    "tokens:  in \(($all | map(.input_tokens | number_or_zero) | add) // 0), out \(($all | map(.output_tokens | number_or_zero) | add) // 0), cache-read \(($all | map(.cache_read_input_tokens | number_or_zero) | add) // 0)"
 ' "$LOG"
