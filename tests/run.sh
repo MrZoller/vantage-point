@@ -1299,7 +1299,9 @@ SH
     wait "$reclaimer" || true
     return
   fi
-  owner="$$ $(proc_start "$$")"
+  # A different stale token isolates the generation check: the later liveness
+  # check would also consider this owner reclaimable if equality were not tested.
+  owner="2147483645 y"
   printf '%s\n' "$owner" > "$repo/state/.lock/owner"
   : > "$release"
   wait "$reclaimer"; rc=$?
