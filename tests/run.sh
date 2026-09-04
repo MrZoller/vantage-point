@@ -1061,7 +1061,7 @@ make_fake_repo() {
   # so 2099 worked here only by relying on the bug. Now it warns, as it should.
   local repo="$1" lastboot="${2:-$(date +%F)}" run_timeout="${3:-0}" email_to="${4:-}"
   mkdir -p "$repo/bin" "$repo/state" "$repo/kb" "$repo/stub"
-  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" \
+  cp "$ROOT/bin/monitor.sh" "$ROOT/bin/flock-fd.py" "$ROOT/bin/portal.py" "$ROOT/bin/dedupe-feedback.py" \
      "$ROOT/bin/webhook.py" "$ROOT/bin/fetch.py" "$ROOT/bin/horizon.py" \
      "$ROOT/bin/cadence.py" "$repo/bin/"
   cp_libs "$repo/bin"
@@ -1198,49 +1198,53 @@ SH
 }
 test_delayed_initial_lock_owner_claim
 
-echo "== monitor.sh: concurrent stale-lock reclaimers serialize ownership =="
+echo "== monitor.sh: fcntl serializes concurrent stale-lock reclaimers =="
 test_concurrent_stale_lock_reclaim() {
   local repo="$TMP/concurrent-reclaim" marker="$TMP/concurrent-claude" gate="$TMP/reclaim-gate"
-  local first second rc1 rc2 calls
+  local first second rc1 rc2 calls real_python
   make_fake_repo "$repo"
   mkdir -p "$repo/state/.lock" "$gate"
   printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"
-  # Hold each successful monitor in its claude call. The mkdir wrapper makes both
-  # processes reach the stale-reclaim mutex acquisition together, rather than
-  # leaving this regression test to scheduling luck.
-  cat > "$repo/stub/claude" <<'SH'
+  real_python="$(command -v python3)"
+  # Pause both contenders immediately before the real inherited-FD flock call.
+  # They therefore race at the kernel boundary, not at a filesystem mutex or by
+  # scheduler coincidence; the wrapper delegates the actual flock to the helper.
+  cat > "$repo/stub/python3" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$$" >> "$CLAUDE_RAN"
-sleep 2
-printf '{"num_turns":1,"total_cost_usd":0.0}\n'
-SH
-cat > "$repo/stub/mkdir" <<'SH'
-#!/usr/bin/env bash
-if [ "${1:-}" = "state/.lock.reclaim" ]; then
-  target="$1"
-  /bin/mkdir "$RECLAIM_GATE/arrival.$$" 2>/dev/null || true
+if [ "${1:-}" = "$FLOCK_HELPER" ] && [ "${2:-}" = "9" ]; then
+  helper="$1"
+  fd="$2"
+  mkdir "$FLOCK_BARRIER/arrival.$$" 2>/dev/null || true
   i=0
   while [ "$i" -lt 100 ]; do
-    set -- "$RECLAIM_GATE"/arrival.*
+    set -- "$FLOCK_BARRIER"/arrival.*
     if [ -d "$1" ] && [ -d "${2:-}" ]; then break; fi
     sleep 0.02
     i=$((i + 1))
   done
-  exec /bin/mkdir "$target"
+  set -- "$helper" "$fd"
 fi
-exec /bin/mkdir "$@"
+exec "$REAL_PYTHON3" "$@"
 SH
-  chmod +x "$repo/stub/claude" "$repo/stub/mkdir"
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$CLAUDE_RAN"
+sleep 1
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+SH
+  chmod +x "$repo/stub/python3" "$repo/stub/claude"
   (
     cd "$repo" || exit 1
     # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
-    CLAUDE_RAN="$marker" RECLAIM_GATE="$gate" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+    CLAUDE_RAN="$marker" FLOCK_BARRIER="$gate" FLOCK_HELPER="$repo/bin/flock-fd.py" \
+      REAL_PYTHON3="$real_python" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
       bash bin/monitor.sh daily > "$TMP/concurrent-first.out" 2>&1
   ) & first=$!
   (
     cd "$repo" || exit 1
     # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
-    CLAUDE_RAN="$marker" RECLAIM_GATE="$gate" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+    CLAUDE_RAN="$marker" FLOCK_BARRIER="$gate" FLOCK_HELPER="$repo/bin/flock-fd.py" \
+      REAL_PYTHON3="$real_python" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
       bash bin/monitor.sh weekly > "$TMP/concurrent-second.out" 2>&1
   ) & second=$!
   wait "$first"; rc1=$?
@@ -1249,49 +1253,67 @@ SH
   assert_eq "second concurrent stale-lock reclaimer exits 0" "0" "$rc2"
   calls=0
   [ -f "$marker" ] && calls="$(wc -l < "$marker" | tr -d ' ')"
-  assert_eq "two concurrent stale-lock reclaimers invoke claude exactly once" "1" "$calls"
+  assert_eq "concurrent stale-lock reclaimers invoke monitor work exactly once" "1" "$calls"
 }
 test_concurrent_stale_lock_reclaim
 
-echo "== monitor.sh: a live owner keeps an aged stale-reclaim mutex ="
-test_live_reclaim_lock_owner() {
-  local repo="$TMP/live-reclaim-owner" marker out rc
-  marker="$repo/claude_ran"
+echo "== monitor.sh: inherited-FD fcntl guard releases on holder death =="
+test_fcntl_guard_liveness_and_recovery() {
+  local repo="$TMP/fcntl-guard" marker="$TMP/fcntl-claude" ready="$TMP/fcntl-ready"
+  local holder out rc calls real_python i
   make_fake_repo "$repo"
-  mkdir -p "$repo/state/.lock" "$repo/state/.lock.reclaim"
+  mkdir -p "$repo/state/.lock"
   printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"
-  printf '%s %s\n' "$$" "$(proc_start "$$")" > "$repo/state/.lock.reclaim/owner.live"
-  # This verifies that age does not overtake a reclaimer which is merely slow
-  # or stopped while holding its marker.
-  touch -t 200001010000 "$repo/state/.lock.reclaim"
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$CLAUDE_RAN"
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+SH
+  chmod +x "$repo/stub/claude"
+  real_python="$(command -v python3)"
+  # exec keeps fd 9 open in one killable process after flock-fd.py has applied
+  # the advisory lock. Killing that process is the kernel-release condition.
+  (
+    cd "$repo" || exit 1
+    exec 9>> state/.lock.reclaim
+    "$real_python" bin/flock-fd.py 9 || exit 1
+    : > "$ready"
+    exec sleep 30
+  ) & holder=$!
+  i=0
+  while [ ! -f "$ready" ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  if [ ! -f "$ready" ]; then
+    fail "fcntl guard holder acquired its inherited-FD lock"
+    kill "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
+    return
+  fi
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
-  assert_eq "live stale-reclaim mutex run exits 0" "0" "$rc"
-  assert_contains "live stale-reclaim mutex skips rather than reclaims" "$out" "in progress - skipping"
-  if [ -f "$marker" ]; then fail "claude does not run while a live reclaimer owns the mutex"; else pass "claude does not run while a live reclaimer owns the mutex"; fi
-  if [ -d "$repo/state/.lock.reclaim" ]; then pass "live stale-reclaim mutex remains intact"; else fail "live stale-reclaim mutex remains intact"; fi
-}
-test_live_reclaim_lock_owner
-
-echo "== monitor.sh: reclaims an abandoned stale-reclaim mutex after setup grace =="
-test_abandoned_reclaim_lock() {
-  local repo="$TMP/abandoned-reclaim" marker out rc
-  marker="$repo/claude_ran"
-  make_fake_repo "$repo"
-  mkdir -p "$repo/state/.lock" "$repo/state/.lock.reclaim"
-  printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"
-  # touch -t is available on macOS and Linux; this is well beyond the 30-second
-  # token-setup grace without making the test wait in real time.
-  touch -t 200001010000 "$repo/state/.lock.reclaim"
+  assert_eq "live fcntl guard run exits 0" "0" "$rc"
+  assert_contains "live fcntl guard cannot be overtaken" "$out" "in progress - skipping"
+  if [ -f "$marker" ]; then fail "monitor work does not run while fcntl guard is live"; else pass "monitor work does not run while fcntl guard is live"; fi
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" weekly 2>&1 )"; rc=$?
+  assert_eq "run after killed fcntl guard exits 0" "0" "$rc"
+  assert_contains "run after killed fcntl guard reclaims automatically" "$out" "reclaiming stale lock"
+  if [ -f "$repo/state/.lock.reclaim" ]; then pass "persistent fcntl guard file remains after recovery"; else fail "persistent fcntl guard file remains after recovery"; fi
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
   out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
-  assert_eq "abandoned stale-reclaim mutex run exits 0" "0" "$rc"
-  assert_contains "reclaims stale monitor lock after abandoned reclaim mutex" "$out" "reclaiming stale lock"
-  if [ -f "$marker" ]; then pass "claude runs after reclaiming abandoned stale-reclaim mutex"; else fail "claude runs after reclaiming abandoned stale-reclaim mutex"; fi
+  assert_eq "later run with persistent fcntl guard file exits 0" "0" "$rc"
+  calls=0
+  [ -f "$marker" ] && calls="$(wc -l < "$marker" | tr -d ' ')"
+  assert_eq "persistent fcntl guard file does not block later monitor work" "2" "$calls"
 }
-test_abandoned_reclaim_lock
+test_fcntl_guard_liveness_and_recovery
 
 echo "== monitor.sh: reclaims stale lock, prunes state, warns on stale profile =="
 test_full_run() {

@@ -156,7 +156,6 @@ LOCK="state/.lock"
 RECLAIM_LOCK="$LOCK.reclaim"
 LOCK_SETUP_GRACE=30   # secs a lock may sit without an owner token before its creator is assumed dead
 LOCK_OWNER=""
-RECLAIM_MARKER=""
 
 proc_start() {  # normalized start time of pid $1 (empty if it isn't running)
   # If ps lacks `-o lstart=` (rare), this is empty for every pid and the staleness
@@ -172,55 +171,21 @@ lock_age_secs() {  # age (s) of the lock dir named by $1; huge if it's gone
   echo "$(( $(date +%s) - mtime ))"
 }
 
-# Serialize stale-lock removal. The owner marker's unique pathname matters: a
-# delayed stale-mutex reclaimer removes only the marker it observed, so it cannot
-# empty and rmdir a replacement mutex that another process has just acquired.
+# Serialize stale-lock removal with a kernel-owned guard. Bash opens descriptor 9
+# before Python applies flock to that inherited open-file description; the lock
+# remains held by Bash until it closes its copy. Process death therefore releases
+# the guard without any age-based takeover race.
 acquire_reclaim_lock() {
-  local marker observed_marker="" marker_owner marker_pid marker_start
-  if ! mkdir "$RECLAIM_LOCK" 2>/dev/null; then
-    for marker in "$RECLAIM_LOCK"/owner.*; do
-      [ -e "$marker" ] || continue
-      # More than one owner means the mutex state is ambiguous; fail closed.
-      [ -z "$observed_marker" ] || return 1
-      observed_marker="$marker"
-    done
-    if [ -n "$observed_marker" ]; then
-      marker_owner="$(cat "$observed_marker" 2>/dev/null || true)"
-      if [ -z "$marker_owner" ]; then
-        [ "$(lock_age_secs "$RECLAIM_LOCK")" -ge "$LOCK_SETUP_GRACE" ] || return 1
-      fi
-      marker_pid="${marker_owner%% *}"
-      marker_start="${marker_owner#* }"
-      # A slow or stopped live reclaimer still owns the critical section. Age
-      # alone cannot make it safe to let another process overtake and resume.
-      if [ -n "$marker_pid" ] && kill -0 "$marker_pid" 2>/dev/null \
-         && [ "$(proc_start "$marker_pid")" = "$marker_start" ]; then
-        return 1
-      fi
-      # Remove the exact marker pathname observed above. A replacement mutex
-      # uses another unique name, so a delayed remover cannot empty it.
-      rm -f "$observed_marker"
-    else
-      # A crash between mkdir and marker creation leaves a tokenless mutex.
-      [ "$(lock_age_secs "$RECLAIM_LOCK")" -ge "$LOCK_SETUP_GRACE" ] || return 1
-    fi
-    rmdir "$RECLAIM_LOCK" 2>/dev/null || return 1
-    mkdir "$RECLAIM_LOCK" 2>/dev/null || return 1
+  exec 9>> "$RECLAIM_LOCK" || return 1
+  if python3 "$ROOT/bin/flock-fd.py" 9; then
+    return 0
   fi
-  RECLAIM_MARKER="$RECLAIM_LOCK/owner.$$.$RANDOM"
-  printf '%s\n' "$LOCK_OWNER" > "$RECLAIM_MARKER"
+  exec 9>&-
+  return 1
 }
 
 release_reclaim_lock() {
-  [ -n "$RECLAIM_MARKER" ] || return 0
-  rm -f "$RECLAIM_MARKER"
-  rmdir "$RECLAIM_LOCK" 2>/dev/null || true
-  RECLAIM_MARKER=""
-}
-
-reclaim_lock_owned() {
-  [ -n "$RECLAIM_MARKER" ] && [ -f "$RECLAIM_MARKER" ] \
-    && [ "$(cat "$RECLAIM_MARKER" 2>/dev/null || true)" = "$LOCK_OWNER" ]
+  exec 9>&- || true
 }
 
 write_lock_owner() {
@@ -268,10 +233,6 @@ acquire_lock() {
       release_reclaim_lock
       return 1
     fi
-  fi
-  if ! reclaim_lock_owned; then
-    release_reclaim_lock
-    return 1
   fi
   echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown})" >&2
   rm -rf "$LOCK"
