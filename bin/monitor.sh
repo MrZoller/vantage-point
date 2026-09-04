@@ -153,7 +153,10 @@ case "$LAST_BOOT" in null) LAST_BOOT="" ;; esac
 # matter how long it runs (claude + email/render), and regardless of whether a
 # timeout is configured or enforceable.
 LOCK="state/.lock"
+RECLAIM_LOCK="$LOCK.reclaim"
 LOCK_SETUP_GRACE=30   # secs a lock may sit without an owner token before its creator is assumed dead
+LOCK_OWNER=""
+RECLAIM_MARKER=""
 
 proc_start() {  # normalized start time of pid $1 (empty if it isn't running)
   # If ps lacks `-o lstart=` (rare), this is empty for every pid and the staleness
@@ -161,22 +164,54 @@ proc_start() {  # normalized start time of pid $1 (empty if it isn't running)
   # just without recycled-PID detection.
   ps -o lstart= -p "$1" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'
 }
+LOCK_OWNER="$$ $(proc_start "$$")"
 
-lock_age_secs() {  # age (s) of the lock dir; huge if it's gone
-  local mtime
-  mtime="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || echo 0)"
+lock_age_secs() {  # age (s) of the lock dir named by $1; huge if it's gone
+  local path="$1" mtime
+  mtime="$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0)"
   echo "$(( $(date +%s) - mtime ))"
+}
+
+# Serialize stale-lock removal. The owner marker's unique pathname matters: a
+# delayed stale-mutex reclaimer removes only the marker it observed, so it cannot
+# empty and rmdir a replacement mutex that another process has just acquired.
+acquire_reclaim_lock() {
+  local marker saw_marker=0
+  if ! mkdir "$RECLAIM_LOCK" 2>/dev/null; then
+    [ "$(lock_age_secs "$RECLAIM_LOCK")" -ge "$LOCK_SETUP_GRACE" ] || return 1
+    for marker in "$RECLAIM_LOCK"/owner.*; do
+      [ -e "$marker" ] || continue
+      saw_marker=1
+      rm -f "$marker"
+    done
+    # A tokenless mutex is reclaimable only after the same setup grace. Recheck
+    # immediately before rmdir so a freshly replaced directory is left alone.
+    if [ "$saw_marker" -eq 0 ] && [ "$(lock_age_secs "$RECLAIM_LOCK")" -lt "$LOCK_SETUP_GRACE" ]; then
+      return 1
+    fi
+    rmdir "$RECLAIM_LOCK" 2>/dev/null || return 1
+    mkdir "$RECLAIM_LOCK" 2>/dev/null || return 1
+  fi
+  RECLAIM_MARKER="$RECLAIM_LOCK/owner.$$.$RANDOM"
+  : > "$RECLAIM_MARKER"
+}
+
+release_reclaim_lock() {
+  [ -n "$RECLAIM_MARKER" ] || return 0
+  rm -f "$RECLAIM_MARKER"
+  rmdir "$RECLAIM_LOCK" 2>/dev/null || true
+  RECLAIM_MARKER=""
 }
 
 # Acquire the lock. Returns 0 (owned) or 1 (held by a live run / lost a reclaim race).
 acquire_lock() {
   mkdir "$LOCK" 2>/dev/null && return 0   # uncontended
-  local owner oldpid oldstart
+  local owner oldpid oldstart current
   owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
   if [ -z "$owner" ]; then
     # Lock dir exists but the owner token isn't written yet: another acquirer is
     # mid-setup (milliseconds). Treat as active only briefly; longer => it died there.
-    if [ "$(lock_age_secs)" -lt "$LOCK_SETUP_GRACE" ]; then return 1; fi
+    if [ "$(lock_age_secs "$LOCK")" -lt "$LOCK_SETUP_GRACE" ]; then return 1; fi
   else
     oldpid="${owner%% *}"
     oldstart="${owner#* }"
@@ -185,16 +220,40 @@ acquire_lock() {
       return 1
     fi
   fi
+  acquire_reclaim_lock || return 1
+  current="$(cat "$LOCK/owner" 2>/dev/null || true)"
+  if [ "$current" != "$owner" ]; then
+    release_reclaim_lock
+    return 1
+  fi
+  if [ -z "$current" ]; then
+    if [ "$(lock_age_secs "$LOCK")" -lt "$LOCK_SETUP_GRACE" ]; then
+      release_reclaim_lock
+      return 1
+    fi
+  else
+    oldpid="${current%% *}"
+    oldstart="${current#* }"
+    if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null && [ "$(proc_start "$oldpid")" = "$oldstart" ]; then
+      release_reclaim_lock
+      return 1
+    fi
+  fi
   echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown})" >&2
-  # Reclaim race-safely: rename the inspected dir out of the way (only one renamer
-  # of a given dir can win), then let the final mkdir be the sole ownership arbiter
-  # - concurrent reclaimers can't both end up owning.
-  mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"
-  mkdir "$LOCK" 2>/dev/null
+  rm -rf "$LOCK"
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    release_reclaim_lock
+    return 1
+  fi
+  printf '%s\n' "$LOCK_OWNER" > "$LOCK/owner"
+  release_reclaim_lock
+  return 0
 }
 
 if acquire_lock; then
-  printf '%s %s\n' "$$" "$(proc_start "$$")" > "$LOCK/owner"
+  # The uncontended path has not written its token yet; stale reclamation writes
+  # while holding its mutex so no second reclaimer can displace the new owner.
+  [ -f "$LOCK/owner" ] || printf '%s\n' "$LOCK_OWNER" > "$LOCK/owner"
 else
   echo "[monitor:$MODE] another run is in progress - skipping" >&2
   exit 0
@@ -203,8 +262,12 @@ fi
 # Release the lock on exit, and surface a hard failure (a set -e abort - e.g. the
 # claude run errored or timed out) that would otherwise vanish into the launchd log.
 cleanup() {
-  local rc=$?
-  rm -rf "$LOCK" 2>/dev/null || true
+  local rc=$? owner
+  release_reclaim_lock
+  owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
+  if [ "$owner" = "$LOCK_OWNER" ]; then
+    rm -rf "$LOCK" 2>/dev/null || true
+  fi
   if [ "$rc" -ne 0 ]; then
     echo "[monitor:$MODE] run FAILED (exit $rc) - see kb/${TODAY}.${MODE}.err" >&2
   fi

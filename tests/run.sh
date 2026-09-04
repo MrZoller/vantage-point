@@ -1145,6 +1145,80 @@ test_lock_reused_pid() {
 }
 test_lock_reused_pid
 
+echo "== monitor.sh: concurrent stale-lock reclaimers serialize ownership =="
+test_concurrent_stale_lock_reclaim() {
+  local repo="$TMP/concurrent-reclaim" marker="$TMP/concurrent-claude" gate="$TMP/reclaim-gate"
+  local first second rc1 rc2 calls
+  make_fake_repo "$repo"
+  mkdir -p "$repo/state/.lock" "$gate"
+  printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"
+  # Hold each successful monitor in its claude call. The mkdir wrapper makes both
+  # processes reach the stale-reclaim mutex acquisition together, rather than
+  # leaving this regression test to scheduling luck.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$CLAUDE_RAN"
+sleep 2
+printf '{"num_turns":1,"total_cost_usd":0.0}\n'
+SH
+cat > "$repo/stub/mkdir" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "state/.lock.reclaim" ]; then
+  target="$1"
+  /bin/mkdir "$RECLAIM_GATE/arrival.$$" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 100 ]; do
+    set -- "$RECLAIM_GATE"/arrival.*
+    if [ -d "$1" ] && [ -d "${2:-}" ]; then break; fi
+    sleep 0.02
+    i=$((i + 1))
+  done
+  exec /bin/mkdir "$target"
+fi
+exec /bin/mkdir "$@"
+SH
+  chmod +x "$repo/stub/claude" "$repo/stub/mkdir"
+  (
+    cd "$repo" || exit 1
+    # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+    CLAUDE_RAN="$marker" RECLAIM_GATE="$gate" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+      bash bin/monitor.sh daily > "$TMP/concurrent-first.out" 2>&1
+  ) & first=$!
+  (
+    cd "$repo" || exit 1
+    # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+    CLAUDE_RAN="$marker" RECLAIM_GATE="$gate" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+      bash bin/monitor.sh weekly > "$TMP/concurrent-second.out" 2>&1
+  ) & second=$!
+  wait "$first"; rc1=$?
+  wait "$second"; rc2=$?
+  assert_eq "first concurrent stale-lock reclaimer exits 0" "0" "$rc1"
+  assert_eq "second concurrent stale-lock reclaimer exits 0" "0" "$rc2"
+  calls=0
+  [ -f "$marker" ] && calls="$(wc -l < "$marker" | tr -d ' ')"
+  assert_eq "two concurrent stale-lock reclaimers invoke claude exactly once" "1" "$calls"
+}
+test_concurrent_stale_lock_reclaim
+
+echo "== monitor.sh: reclaims an abandoned stale-reclaim mutex after setup grace =="
+test_abandoned_reclaim_lock() {
+  local repo="$TMP/abandoned-reclaim" marker out rc
+  marker="$repo/claude_ran"
+  make_fake_repo "$repo"
+  mkdir -p "$repo/state/.lock" "$repo/state/.lock.reclaim"
+  printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"
+  # touch -t is available on macOS and Linux; this is well beyond the 30-second
+  # token-setup grace without making the test wait in real time.
+  touch -t 200001010000 "$repo/state/.lock.reclaim"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "abandoned stale-reclaim mutex run exits 0" "0" "$rc"
+  assert_contains "reclaims stale monitor lock after abandoned reclaim mutex" "$out" "reclaiming stale lock"
+  if [ -f "$marker" ]; then pass "claude runs after reclaiming abandoned stale-reclaim mutex"; else fail "claude runs after reclaiming abandoned stale-reclaim mutex"; fi
+}
+test_abandoned_reclaim_lock
+
 echo "== monitor.sh: reclaims stale lock, prunes state, warns on stale profile =="
 test_full_run() {
   local repo="$TMP/runrepo" out rc
