@@ -7,7 +7,7 @@ forwarded answer `consumed` in the same bookkeeping commit.
 
 ---
 
-## Q1 (task T22, open) — Fix the monitor reclaim race in place now, or wait for your lock-lib extraction?
+## Q1 (task T22, consumed) — Fix the monitor reclaim race in place now, or wait for your lock-lib extraction?
 Context: bin/monitor.sh:148-206 is the exact reclaim a reserved follow-up
 (bin/lock-lib.sh extraction + bootstrap single-run lock) plans to mirror, and
 three design decisions there are explicitly yours: contended-manual-bootstrap
@@ -18,7 +18,7 @@ code the extraction would lift, so sequencing is your call.
 Options considered: A — proceed — fix the race in place per issue #51's sketch;
 the later extraction inherits the fixed reclaim / B — hold T22 until the
 lock-lib design lands / C — drop T22 into the extraction work itself.
-**A:**
+**A:** A) proceed Answered by Chris via factory-ui. [factory-answer-intake: 7af81b1b-0d08-44a1-8432-42e4b86887e9]
 
 ## Q2 (task T12, open) — Should usage harden every numeric field or keep T12 scoped to damaged JSON and timestamps?
 Parked branch: factory/t12-tolerant-usage-log
