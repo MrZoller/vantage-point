@@ -1257,6 +1257,59 @@ SH
 }
 test_concurrent_stale_lock_reclaim
 
+echo "== monitor.sh: a stale reclaimer rechecks an owner replaced before its fcntl guard =="
+test_stale_reclaimer_loses_replaced_owner() {
+  local repo="$TMP/replaced-reclaim-owner" marker="$TMP/replaced-reclaim-claude"
+  local ready="$TMP/replaced-reclaim-ready" release="$TMP/replaced-reclaim-release"
+  local reclaimer rc owner real_python i
+  make_fake_repo "$repo"
+  mkdir -p "$repo/state/.lock"
+  # This impossible token is stale, so the reclaimer reads it before it reaches
+  # the wrapper's pause immediately ahead of flock-fd.py.
+  printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"
+  real_python="$(command -v python3)"
+  cat > "$repo/stub/python3" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "$FLOCK_HELPER" ] && [ "${2:-}" = "9" ]; then
+  : > "$FLOCK_BARRIER_READY"
+  i=0
+  while [ ! -e "$FLOCK_BARRIER_RELEASE" ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+fi
+exec "$REAL_PYTHON3" "$@"
+SH
+  chmod +x "$repo/stub/python3"
+  (
+    cd "$repo" || exit 1
+    # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+    CLAUDE_RAN="$marker" FLOCK_BARRIER_READY="$ready" FLOCK_BARRIER_RELEASE="$release" \
+      FLOCK_HELPER="$repo/bin/flock-fd.py" REAL_PYTHON3="$real_python" HOME="$TMP/fakehome" \
+      PATH="$repo/stub:$PATH" bash bin/monitor.sh daily > "$TMP/replaced-reclaim.out" 2>&1
+  ) & reclaimer=$!
+  i=0
+  while [ ! -f "$ready" ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  if [ ! -f "$ready" ]; then
+    fail "stale reclaimer reached the fcntl-guard pause"
+    : > "$release"
+    wait "$reclaimer" || true
+    return
+  fi
+  owner="$$ $(proc_start "$$")"
+  printf '%s\n' "$owner" > "$repo/state/.lock/owner"
+  : > "$release"
+  wait "$reclaimer"; rc=$?
+  assert_eq "stale reclaimer exits 0 after replacement owner wins" "0" "$rc"
+  assert_contains "stale reclaimer skips after replacement owner wins" "$(cat "$TMP/replaced-reclaim.out")" "in progress - skipping"
+  assert_eq "stale reclaimer preserves the replacement lock owner" "$owner" "$(cat "$repo/state/.lock/owner")"
+  if [ -f "$marker" ]; then fail "stale reclaimer does not invoke claude after replacement"; else pass "stale reclaimer does not invoke claude after replacement"; fi
+}
+test_stale_reclaimer_loses_replaced_owner
+
 echo "== monitor.sh: inherited-FD fcntl guard releases on holder death =="
 test_fcntl_guard_liveness_and_recovery() {
   local repo="$TMP/fcntl-guard" marker="$TMP/fcntl-claude" ready="$TMP/fcntl-ready"
