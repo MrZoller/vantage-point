@@ -21,8 +21,10 @@ command -v jq >/dev/null 2>&1 || { echo "jq not found - install it (brew install
 # Read the JSONL as raw text so a crash-truncated row cannot prevent valid rows
 # from being rolled up. A run can log multiple pass rows (triage + deepdive);
 # count runs from triage/legacy rows only (so deep-dive doesn't inflate the
-# count), but sum cost/turns across all rows. Missing fields default to 0.
+# count), but sum cost/turns across all rows. Missing or non-numeric aggregate
+# fields default to 0 so one hand-edited value cannot abort the whole rollup.
 jq -Rrs --argjson days "$DAYS" '
+  def number_or_zero: if type == "number" then . else 0 end;
   split("\n") | map(fromjson? | select(type == "object"))
   |
   (now - ($days * 86400)) as $cutoff
@@ -34,7 +36,7 @@ jq -Rrs --argjson days "$DAYS" '
                    else ($runs | group_by(.mode) | map("\(.[0].mode)=\(length)") | join(", ")) end),
     "passes:  " + (if ($all | length) == 0 then "-"
                    else ($all | group_by(.pass // "triage") | map("\(.[0].pass // "triage")=\(length)") | join(", ")) end),
-    "cost:    $\(((((($all | map(.cost_usd // 0) | add) // 0)) * 100) | round) / 100) (API-equivalent estimate)",
-    "turns:   \(($all | map(.num_turns // 0) | add) // 0)",
-    "tokens:  in \(($all | map(.input_tokens // 0) | add) // 0), out \(($all | map(.output_tokens // 0) | add) // 0), cache-read \(($all | map(.cache_read_input_tokens // 0) | add) // 0)"
+    "cost:    $\(((((($all | map(.cost_usd | number_or_zero) | add) // 0)) * 100) | round) / 100) (API-equivalent estimate)",
+    "turns:   \(($all | map(.num_turns | number_or_zero) | add) // 0)",
+    "tokens:  in \(($all | map(.input_tokens | number_or_zero) | add) // 0), out \(($all | map(.output_tokens | number_or_zero) | add) // 0), cache-read \(($all | map(.cache_read_input_tokens | number_or_zero) | add) // 0)"
 ' "$LOG"
