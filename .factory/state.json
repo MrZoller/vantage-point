@@ -3,9 +3,9 @@
   "phase": "build",
   "spec_approved": true,
   "plan_approved": true,
-  "current_task": null,
-  "branch": null,
+  "current_task": "T22",
+  "branch": "factory/t22-serialize-stale-lock-reclaim",
   "pr": null,
   "hold": false,
-  "updated": "2026-09-04T10:36:32Z"
+  "updated": "2026-09-04T10:37:11Z"
 }
