@@ -1145,6 +1145,59 @@ test_lock_reused_pid() {
 }
 test_lock_reused_pid
 
+echo "== monitor.sh: a delayed initial creator cannot overwrite a replacement owner =="
+test_delayed_initial_lock_owner_claim() {
+  local repo="$TMP/delayed-lock-owner" marker="$TMP/delayed-lock-claude"
+  local first rc owner i
+  make_fake_repo "$repo"
+  # Pause the first mkdir after it has made .lock but before monitor.sh can
+  # publish owner. The parent replaces that incomplete lock with a live owner,
+  # then lets the delayed creator attempt its atomic owner claim.
+  cat > "$repo/stub/mkdir" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "state/.lock" ] && [ ! -e "$DELAYED_LOCK_READY" ]; then
+  /bin/mkdir "$@" || exit $?
+  : > "$DELAYED_LOCK_READY"
+  i=0
+  while [ ! -e "$DELAYED_LOCK_RELEASE" ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  exit 0
+fi
+exec /bin/mkdir "$@"
+SH
+  chmod +x "$repo/stub/mkdir"
+  (
+    cd "$repo" || exit 1
+    # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+    CLAUDE_RAN="$marker" DELAYED_LOCK_READY="$TMP/delayed-lock-ready" \
+      DELAYED_LOCK_RELEASE="$TMP/delayed-lock-release" HOME="$TMP/fakehome" \
+      PATH="$repo/stub:$PATH" bash bin/monitor.sh daily > "$TMP/delayed-lock.out" 2>&1
+  ) & first=$!
+  i=0
+  while [ ! -f "$TMP/delayed-lock-ready" ] && [ "$i" -lt 100 ]; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  if [ ! -f "$TMP/delayed-lock-ready" ]; then
+    fail "delayed initial creator reached owner-publication pause"
+    : > "$TMP/delayed-lock-release"
+    wait "$first" || true
+    return
+  fi
+  rm -rf "$repo/state/.lock"
+  mkdir "$repo/state/.lock"
+  owner="$$ $(proc_start "$$")"
+  printf '%s\n' "$owner" > "$repo/state/.lock/owner"
+  : > "$TMP/delayed-lock-release"
+  wait "$first"; rc=$?
+  assert_eq "delayed initial creator exits 0 after losing owner claim" "0" "$rc"
+  assert_eq "atomic owner claim preserves the replacement owner" "$owner" "$(cat "$repo/state/.lock/owner")"
+  if [ -f "$marker" ]; then fail "delayed initial creator does not enter after replacement"; else pass "delayed initial creator does not enter after replacement"; fi
+}
+test_delayed_initial_lock_owner_claim
+
 echo "== monitor.sh: concurrent stale-lock reclaimers serialize ownership =="
 test_concurrent_stale_lock_reclaim() {
   local repo="$TMP/concurrent-reclaim" marker="$TMP/concurrent-claude" gate="$TMP/reclaim-gate"
@@ -1199,6 +1252,27 @@ SH
   assert_eq "two concurrent stale-lock reclaimers invoke claude exactly once" "1" "$calls"
 }
 test_concurrent_stale_lock_reclaim
+
+echo "== monitor.sh: a live owner keeps an aged stale-reclaim mutex ="
+test_live_reclaim_lock_owner() {
+  local repo="$TMP/live-reclaim-owner" marker out rc
+  marker="$repo/claude_ran"
+  make_fake_repo "$repo"
+  mkdir -p "$repo/state/.lock" "$repo/state/.lock.reclaim"
+  printf '%s %s\n' "2147483646" "x" > "$repo/state/.lock/owner"
+  printf '%s %s\n' "$$" "$(proc_start "$$")" > "$repo/state/.lock.reclaim/owner.live"
+  # This verifies that age does not overtake a reclaimer which is merely slow
+  # or stopped while holding its marker.
+  touch -t 200001010000 "$repo/state/.lock.reclaim"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( CLAUDE_RAN="$marker" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "live stale-reclaim mutex run exits 0" "0" "$rc"
+  assert_contains "live stale-reclaim mutex skips rather than reclaims" "$out" "in progress - skipping"
+  if [ -f "$marker" ]; then fail "claude does not run while a live reclaimer owns the mutex"; else pass "claude does not run while a live reclaimer owns the mutex"; fi
+  if [ -d "$repo/state/.lock.reclaim" ]; then pass "live stale-reclaim mutex remains intact"; else fail "live stale-reclaim mutex remains intact"; fi
+}
+test_live_reclaim_lock_owner
 
 echo "== monitor.sh: reclaims an abandoned stale-reclaim mutex after setup grace =="
 test_abandoned_reclaim_lock() {

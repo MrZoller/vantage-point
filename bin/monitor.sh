@@ -176,24 +176,39 @@ lock_age_secs() {  # age (s) of the lock dir named by $1; huge if it's gone
 # delayed stale-mutex reclaimer removes only the marker it observed, so it cannot
 # empty and rmdir a replacement mutex that another process has just acquired.
 acquire_reclaim_lock() {
-  local marker saw_marker=0
+  local marker observed_marker="" marker_owner marker_pid marker_start
   if ! mkdir "$RECLAIM_LOCK" 2>/dev/null; then
-    [ "$(lock_age_secs "$RECLAIM_LOCK")" -ge "$LOCK_SETUP_GRACE" ] || return 1
     for marker in "$RECLAIM_LOCK"/owner.*; do
       [ -e "$marker" ] || continue
-      saw_marker=1
-      rm -f "$marker"
+      # More than one owner means the mutex state is ambiguous; fail closed.
+      [ -z "$observed_marker" ] || return 1
+      observed_marker="$marker"
     done
-    # A tokenless mutex is reclaimable only after the same setup grace. Recheck
-    # immediately before rmdir so a freshly replaced directory is left alone.
-    if [ "$saw_marker" -eq 0 ] && [ "$(lock_age_secs "$RECLAIM_LOCK")" -lt "$LOCK_SETUP_GRACE" ]; then
-      return 1
+    if [ -n "$observed_marker" ]; then
+      marker_owner="$(cat "$observed_marker" 2>/dev/null || true)"
+      if [ -z "$marker_owner" ]; then
+        [ "$(lock_age_secs "$RECLAIM_LOCK")" -ge "$LOCK_SETUP_GRACE" ] || return 1
+      fi
+      marker_pid="${marker_owner%% *}"
+      marker_start="${marker_owner#* }"
+      # A slow or stopped live reclaimer still owns the critical section. Age
+      # alone cannot make it safe to let another process overtake and resume.
+      if [ -n "$marker_pid" ] && kill -0 "$marker_pid" 2>/dev/null \
+         && [ "$(proc_start "$marker_pid")" = "$marker_start" ]; then
+        return 1
+      fi
+      # Remove the exact marker pathname observed above. A replacement mutex
+      # uses another unique name, so a delayed remover cannot empty it.
+      rm -f "$observed_marker"
+    else
+      # A crash between mkdir and marker creation leaves a tokenless mutex.
+      [ "$(lock_age_secs "$RECLAIM_LOCK")" -ge "$LOCK_SETUP_GRACE" ] || return 1
     fi
     rmdir "$RECLAIM_LOCK" 2>/dev/null || return 1
     mkdir "$RECLAIM_LOCK" 2>/dev/null || return 1
   fi
   RECLAIM_MARKER="$RECLAIM_LOCK/owner.$$.$RANDOM"
-  : > "$RECLAIM_MARKER"
+  printf '%s\n' "$LOCK_OWNER" > "$RECLAIM_MARKER"
 }
 
 release_reclaim_lock() {
@@ -203,9 +218,24 @@ release_reclaim_lock() {
   RECLAIM_MARKER=""
 }
 
+reclaim_lock_owned() {
+  [ -n "$RECLAIM_MARKER" ] && [ -f "$RECLAIM_MARKER" ] \
+    && [ "$(cat "$RECLAIM_MARKER" 2>/dev/null || true)" = "$LOCK_OWNER" ]
+}
+
+write_lock_owner() {
+  # noclobber makes owner publication an atomic claim even if a process was
+  # paused after mkdir and another reclaimer replaced the directory meanwhile.
+  ( set -C; printf '%s\n' "$LOCK_OWNER" > "$LOCK/owner" ) 2>/dev/null || return 1
+  [ "$(cat "$LOCK/owner" 2>/dev/null || true)" = "$LOCK_OWNER" ]
+}
+
 # Acquire the lock. Returns 0 (owned) or 1 (held by a live run / lost a reclaim race).
 acquire_lock() {
-  mkdir "$LOCK" 2>/dev/null && return 0   # uncontended
+  if mkdir "$LOCK" 2>/dev/null; then
+    write_lock_owner
+    return
+  fi
   local owner oldpid oldstart current
   owner="$(cat "$LOCK/owner" 2>/dev/null || true)"
   if [ -z "$owner" ]; then
@@ -239,22 +269,25 @@ acquire_lock() {
       return 1
     fi
   fi
+  if ! reclaim_lock_owned; then
+    release_reclaim_lock
+    return 1
+  fi
   echo "[monitor:$MODE] reclaiming stale lock (owner ${oldpid:-unknown})" >&2
   rm -rf "$LOCK"
   if ! mkdir "$LOCK" 2>/dev/null; then
     release_reclaim_lock
     return 1
   fi
-  printf '%s\n' "$LOCK_OWNER" > "$LOCK/owner"
+  if ! write_lock_owner; then
+    release_reclaim_lock
+    return 1
+  fi
   release_reclaim_lock
   return 0
 }
 
-if acquire_lock; then
-  # The uncontended path has not written its token yet; stale reclamation writes
-  # while holding its mutex so no second reclaimer can displace the new owner.
-  [ -f "$LOCK/owner" ] || printf '%s\n' "$LOCK_OWNER" > "$LOCK/owner"
-else
+if ! acquire_lock; then
   echo "[monitor:$MODE] another run is in progress - skipping" >&2
   exit 0
 fi
