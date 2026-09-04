@@ -36,7 +36,7 @@ update and ship only the exact issue #61 fix.
 
 <!-- factory-question-timestamps-required-below -->
 
-## Q3 (task T22, open, filed-at 2026-09-04T11:23:56Z) — Which portable lock boundary should replace timed reclaim-mutex takeover?
+## Q3 (task T22, consumed, filed-at 2026-09-04T11:23:56Z) — Which portable lock boundary should replace timed reclaim-mutex takeover?
 Parked branch: factory/t22-serialize-stale-lock-reclaim
 Context:
 Observable failure: A scheduled monitor starts after an earlier process pauses during lock setup; the maintainer sees two monitor runs writing the same state files even though the second run was supposed to skip.
