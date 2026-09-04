@@ -32,4 +32,4 @@ Options considered: A — broaden T12 by treating every non-numeric aggregate
 field as zero and test all usage totals / B — keep the issue scope and narrow
 the new documentation to JSON/timestamp tolerance / C — drop the documentation
 update and ship only the exact issue #61 fix.
-**A:**
+**A:** A — broaden T12 by treating every non-numeric aggregate field as zero and test all usage totals. Answered by Chris via the operator session ask (2026-09-04); recorded by the operator.
