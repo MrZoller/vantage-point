@@ -39,8 +39,9 @@ Treat the open GitHub issue tracker as the external specification and keep this 
 - [x] T11 (standard) — monitor.sh: deepdive_max_items: 0 empties the queue after the non-empty check, launching a pointless deep-dive pass (Fixes #62)
   - acceptance: `bin/monitor.sh` treats `deepdive_max_items: 0` as disabling/skipping deep-dive work or rechecks the truncated queue, and tests verify no `claude` deep-dive invocation occurs for an empty post-cap queue
   - pr: 90
-- [~] T12 (standard) — usage.sh: one runs.log row without a valid timestamp aborts the whole rollup (Fixes #61)
+- [R] T12 (standard) — usage.sh: one runs.log row without a valid timestamp aborts the whole rollup (Fixes #61)
   - acceptance: `bin/usage.sh` skips JSONL rows with missing/invalid timestamps and malformed or truncated lines while retaining valid rows in the rollup; every non-numeric aggregate field is treated as zero; tests verify the command remains successful and reports valid usage and totals
+  - pr: 103
 - [x] T13 (standard) — monitor.sh: triage prompt renders "DEEP-DIVE QUEUE: enabledopus." when deep-dive is on (Fixes #60)
   - acceptance: `bin/monitor.sh` renders the triage prompt's deep-dive state as exactly `enabled` or `disabled`; tests cover a configured model without concatenating its name into the state
   - pr: 91
