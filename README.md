@@ -536,7 +536,10 @@ monitor's economics are deliberately untouched.
   claude call is wall-clock bounded by `monitoring.run_timeout_seconds` (default
   1800s, `0` to disable; needs `timeout`/`gtimeout` from coreutils) so a stall can't
   hang the job, and a hard failure prints a `run FAILED` line instead of vanishing
-  into the launchd log. `state/seen.jsonl` is pruned to `monitoring.state_max_lines`
+  into the launchd log. A failed claude pass writes its reason (an expired login, a
+  timeout) to that run's `kb/<date>.<mode>.err`, and with `output.email_to` set a
+  failed run emails a failure notice - at most one a day per instance, so a daily and
+  weekly failing together send one. `state/seen.jsonl` is pruned to `monitoring.state_max_lines`
   (default 5000, `0` to disable) each run so it can't grow without bound.
 - **Refresh.** Anchors drift — new awards, hires, capabilities — and a stale profile
   quietly mis-scores everything, so the `governance.profile_refresh_days` cadence is
