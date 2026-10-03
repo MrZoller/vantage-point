@@ -1424,19 +1424,66 @@ test_run_timeout_wrap
 
 echo "== monitor.sh: a wall-clock timeout fails the run and cleanup surfaces it =="
 test_run_timeout_expiry() {
-  local repo="$TMP/toexprepo" out rc
+  local repo="$TMP/toexprepo" out rc msg="$TMP/toexp.eml"
   make_fake_repo "$repo" "$(date +%F)" 1800
   # A stub `timeout` that simulates expiry: exit 124 (timeout's convention) without claude.
   printf '#!/usr/bin/env bash\nexit 124\n' > "$repo/stub/timeout"
   chmod +x "$repo/stub/timeout"
   # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
-  out="$( HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+  out="$( MSG_OUT="$msg" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
   if [ "$rc" -ne 0 ]; then pass "a timed-out run exits nonzero"; else fail "a timed-out run exits nonzero"; fi
   assert_contains "cleanup surfaces the failure" "$out" "run FAILED"
+  assert_contains "the timeout is named as the reason" "$out" "claude triage failed (exit 124): timed out after 1800s"
+  if [ -f "$msg" ]; then fail "no failure alert without output.email_to"; else pass "no failure alert without output.email_to"; fi
   if [ -d "$repo/state/.lock" ]; then fail "lock released after a timeout"; else pass "lock released after a timeout"; fi
 }
 test_run_timeout_expiry
+
+echo "== monitor.sh: a failed triage records claude's reason and emails one alert a day =="
+test_triage_failure_alert() {
+  local repo="$TMP/trifailrepo" out rc msg="$TMP/trifail.eml"
+  make_fake_repo "$repo" "$(date +%F)" 0 "me@example.com"
+  # The CLI's shape for an expired login: the reason rides the JSON envelope on STDOUT
+  # and stderr stays empty - so a run that only kept stderr logged nothing useful.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '{"type":"result","is_error":true,"result":"Failed to authenticate: OAuth session expired"}\n'
+exit 1
+SH
+  chmod +x "$repo/stub/claude"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( MSG_OUT="$msg" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
+  assert_eq "a failed triage exits with claude's status" "1" "$rc"
+  assert_contains "the launchd log names claude's reason" "$out" \
+    "claude triage failed (exit 1): Failed to authenticate: OAuth session expired"
+  assert_contains "the run's .err file names claude's reason" \
+    "$(cat "$repo/kb/$(date +%F).daily.err" 2>/dev/null)" "Failed to authenticate: OAuth session expired"
+  if [ -f "$msg" ]; then
+    assert_contains "the alert's Subject flags the failure" \
+      "$(grep -i '^Subject:' "$msg")" "[Vantage Point: Test Market & Co] daily FAILED"
+    assert_contains "the alert body carries the reason" "$(cat "$msg")" "Failed to authenticate: OAuth session expired"
+    assert_contains "the alert names the checkout's rerun command" "$(cat "$msg")" "cd $repo && ./bin/monitor.sh daily"
+  else
+    fail "a failure alert was emailed"
+  fi
+  if [ -d "$repo/state/.lock" ]; then fail "lock released after a failed triage"; else pass "lock released after a failed triage"; fi
+  # A second failure the same day (e.g. the weekly run) is logged but not re-alerted.
+  rm -f "$msg"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  out="$( MSG_OUT="$msg" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+          bash "$repo/bin/monitor.sh" weekly 2>&1 )"
+  assert_contains "a same-day repeat failure is still logged" "$out" "claude triage failed (exit 1)"
+  if [ -f "$msg" ]; then fail "at most one failure alert per day"; else pass "at most one failure alert per day"; fi
+  # A stamp from an earlier day doesn't suppress today's alert.
+  printf '2000-01-01\n' > "$repo/state/.failure-alerted"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  ( MSG_OUT="$msg" HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
+      bash "$repo/bin/monitor.sh" daily >/dev/null 2>&1 )
+  if [ -f "$msg" ]; then pass "a failure on a later day alerts again"; else fail "a failure on a later day alerts again"; fi
+}
+test_triage_failure_alert
 
 # A stub claude that, on the triage call, writes a report + a deep-dive queue with a
 # high-scoring item, and on the deep-dive call (prompt contains DEEPDIVE_FIXTURE)
@@ -1529,7 +1576,7 @@ test_deepdive_failure() {
   out="$( DD_EXIT=1 DD_WRITE_OBS=1 HOME="$TMP/fakehome" PATH="$repo/stub:$PATH" \
           bash "$repo/bin/monitor.sh" daily 2>&1 )"; rc=$?
   assert_eq "run still exits 0 despite deep-dive failure" "0" "$rc"
-  assert_contains "warns that the deep-dive failed" "$out" "deep-dive failed"
+  assert_contains "warns that the deep-dive failed, with claude's output" "$out" "deep-dive failed (exit 1: {"
   if [ -f "$repo/kb/$(date +%F).daily.md" ]; then pass "triage report still promoted"; else fail "triage report still promoted"; fi
   if grep -q from-deepdive "$repo/state/observations.jsonl"; then fail "failed deep-dive's observations rolled back"; else pass "failed deep-dive's observations rolled back"; fi
 }
