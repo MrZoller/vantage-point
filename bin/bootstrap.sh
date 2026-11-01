@@ -35,6 +35,8 @@ export PATH="$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 . "$ROOT/bin/config-lib.sh"
 # shellcheck source=bin/email-lib.sh
 . "$ROOT/bin/email-lib.sh"
+# A saved `claude setup-token` token outlives the interactive login (see config-lib.sh).
+load_claude_token
 
 CONFIG="monitor-config.yaml"
 PROMPT="bootstrap-prompt.md"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# config-lib.sh - dependency-light YAML scalar readers, sourced by bin/monitor.sh and
-# bin/bootstrap.sh. No YAML library: small awk that walks a top-level `block:` and
+# config-lib.sh - dependency-light YAML scalar readers (plus the long-lived Claude token
+# loader at the bottom), sourced by bin/monitor.sh, bin/bootstrap.sh and bin/init.sh. No YAML library: small awk that walks a top-level `block:` and
 # pulls one `key:`. The default file is the caller's $CONFIG (dynamic scope). ASCII
 # only; works on macOS bash 3.2.
 
@@ -124,4 +124,57 @@ cfg_get_list() {  # <block> <key> [file=$CONFIG]
       } else { inlist=1; next }                          # bare "key:" -> block list
     }
   ' "${3:-$CONFIG}"
+}
+
+# ---- long-lived Claude auth for unattended runs ----
+# Scheduled runs are headless, so `claude -p` leans on the interactive login's OAuth
+# refresh token - which lapses every few weeks, and from then on every run fails until
+# someone re-runs /login on the host. `claude setup-token` mints a year-long token
+# instead. Save it (alone, on one line) to $VP_CLAUDE_TOKEN_FILE, default
+# ~/.config/vantage-point/claude-token, chmod 600: one file serves every checkout on
+# the machine. The agents export it as CLAUDE_CODE_OAUTH_TOKEN, which the CLI uses ahead
+# of the stored login. No file = the stored login, exactly as before. A token already in
+# the environment wins, so a caller can still override it for one run. Fail-safe: an
+# unreadable or empty file is a stderr note and a fallback, never a dead run.
+claude_token_file() { printf '%s' "${VP_CLAUDE_TOKEN_FILE:-$HOME/.config/vantage-point/claude-token}"; }
+load_claude_token() {
+  local f tok perms
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    VP_CLAUDE_TOKEN_FROM_ENV=1      # so a failure email blames the right credential
+    return 0
+  fi
+  f="$(claude_token_file)"
+  [ -e "$f" ] || return 0
+  if [ ! -r "$f" ]; then
+    echo "[auth] note: $f is not readable - using the stored claude login" >&2
+    return 0
+  fi
+  # First non-blank, non-comment line, all whitespace removed (a pasted token often
+  # carries a trailing newline or stray spaces; a real token never contains one).
+  tok="$(awk '!/^[[:space:]]*(#|$)/ { gsub(/[[:space:]]/, ""); print; exit }' "$f" 2>/dev/null || true)"
+  if [ -z "$tok" ]; then
+    echo "[auth] note: $f has no token - using the stored claude login" >&2
+    return 0
+  fi
+  # Group- or other-readable? `find -perm -NNN` is portable across BSD/GNU, unlike stat.
+  # -H follows a symlinked token file to its target: a link's own mode is always 755.
+  perms="$(find -H "$f" -prune \( -perm -040 -o -perm -004 \) -print 2>/dev/null || true)"
+  [ -z "$perms" ] || echo "[auth] WARNING: $f is readable by other users - chmod 600 it" >&2
+  export CLAUDE_CODE_OAUTH_TOKEN="$tok"
+  VP_CLAUDE_TOKEN_LOADED="$f"
+}
+
+# Markdown paragraph for a failure email when <text> (a failure reason or an stderr tail)
+# reads as a claude auth failure; prints nothing otherwise. The fix differs by where the
+# credential came from, so say which one failed rather than a generic "log in again".
+claude_auth_hint() {  # <text>
+  printf '%s' "$1" | grep -Eqi 'authenticat|oauth|/login|invalid api key' || return 0
+  # shellcheck disable=SC2016  # backticks are literal Markdown
+  if [ -n "${VP_CLAUDE_TOKEN_FROM_ENV:-}" ]; then
+    printf '**Fix:** the `CLAUDE_CODE_OAUTH_TOKEN` this run inherited from its environment was rejected (expired or revoked). Mint a new one with `claude setup-token` and update wherever that variable is set.\n\n'
+  elif [ -n "${VP_CLAUDE_TOKEN_LOADED:-}" ]; then
+    printf '**Fix:** the saved token in `%s` was rejected (expired or revoked). Mint a new one on the host with `claude setup-token` and replace the file'"'"'s contents.\n\n' "$VP_CLAUDE_TOKEN_LOADED"
+  else
+    printf '**Fix:** the stored `claude` login has lapsed, and it will keep lapsing every few weeks. On the host, run `claude setup-token` and save the token it prints to `%s` (`chmod 600`). Every scheduled run then uses that year-long token instead.\n\n' "$(claude_token_file)"
+  fi
 }

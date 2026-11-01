@@ -1485,6 +1485,108 @@ SH
 }
 test_triage_failure_alert
 
+echo "== config-lib.sh: load_claude_token exports a saved long-lived token, fail-safe =="
+# shellcheck disable=SC2016  # the bash -c scripts expand $1 in the child shell, by design
+test_load_claude_token() {
+  local d="$TMP/tokhome" f out
+  f="$d/.config/vantage-point/claude-token"
+  mkdir -p "$(dirname "$f")"
+  # Each probe runs in a clean subshell with any inherited token removed, so the host's
+  # own environment can't leak into (or mask) the result.
+  probe() {  # [extra env assignments...] -> prints "<token>|<loaded file>" then stderr
+    env -u CLAUDE_CODE_OAUTH_TOKEN HOME="$d" "$@" bash -c '
+      set -euo pipefail
+      . "$1/bin/config-lib.sh"
+      load_claude_token
+      printf "%s|%s" "${CLAUDE_CODE_OAUTH_TOKEN:-}" "${VP_CLAUDE_TOKEN_LOADED:-}"
+    ' _ "$ROOT" 2>&1
+  }
+  out="$(probe)"
+  assert_eq "no token file: nothing exported (the stored login, as before)" "|" "$out"
+
+  printf '# from claude setup-token\n\n  sk-ant-oat01-abc  \n' > "$f"; chmod 600 "$f"
+  out="$(probe)"
+  assert_eq "a saved token is exported, comment/blank lines and whitespace dropped" \
+    "sk-ant-oat01-abc|$f" "$out"
+
+  out="$(probe CLAUDE_CODE_OAUTH_TOKEN=from-env)"
+  assert_eq "a token already in the environment wins over the file" "from-env|" "$out"
+
+  out="$(probe VP_CLAUDE_TOKEN_FILE="$d/elsewhere")"
+  assert_eq "VP_CLAUDE_TOKEN_FILE overrides the default path" "|" "$out"
+
+  chmod 644 "$f"
+  out="$(probe)"
+  assert_contains "a group/world-readable token file warns" "$out" "readable by other users - chmod 600"
+  assert_contains "...but is still used (warn-only)" "$out" "sk-ant-oat01-abc|$f"
+
+  # A symlinked token file (e.g. kept in a dotfiles repo) is judged by its target's
+  # mode, not the link's own always-755 one.
+  chmod 600 "$f"; mv "$f" "$d/real-token"; ln -s "$d/real-token" "$f"
+  out="$(probe)"
+  assert_eq "a symlink to a 600 token file loads without a spurious warning" "sk-ant-oat01-abc|$f" "$out"
+  rm -f "$f"; mv "$d/real-token" "$f"
+
+  printf '# nothing here yet\n\n' > "$f"; chmod 600 "$f"
+  out="$(probe)"
+  assert_contains "an empty token file is a note, not a failure" "$out" "has no token - using the stored claude login"
+  assert_eq "...and nothing is exported" "|" "${out##*$'\n'}"
+  assert_not_contains "...not even the comment" "$out" "nothing here"
+}
+test_load_claude_token
+
+echo "== config-lib.sh: claude_auth_hint names the right fix, only for auth failures =="
+# shellcheck disable=SC2016  # the bash -c scripts expand $1 in the child shell, by design
+test_claude_auth_hint() {
+  local out
+  out="$(env -u VP_CLAUDE_TOKEN_LOADED HOME=/h bash -c '. "$1/bin/config-lib.sh"; claude_auth_hint "timed out after 1800s"' _ "$ROOT")"
+  assert_eq "no hint for a non-auth failure" "" "$out"
+  out="$(env -u VP_CLAUDE_TOKEN_LOADED HOME=/h bash -c '. "$1/bin/config-lib.sh"; claude_auth_hint "Failed to authenticate: OAuth session expired"' _ "$ROOT")"
+  assert_contains "a lapsed login points at claude setup-token" "$out" "run \`claude setup-token\`"
+  assert_contains "...and the default token path" "$out" "/h/.config/vantage-point/claude-token"
+  out="$(VP_CLAUDE_TOKEN_LOADED=/t/tok HOME=/h bash -c '. "$1/bin/config-lib.sh"; claude_auth_hint "Invalid API key - Please run /login"' _ "$ROOT")"
+  assert_contains "a rejected saved token says to replace that file" "$out" "the saved token in \`/t/tok\` was rejected"
+  # A token the run inherited (not read from the file) is the credential to blame.
+  out="$(CLAUDE_CODE_OAUTH_TOKEN=from-env HOME=/h bash -c '. "$1/bin/config-lib.sh"; load_claude_token; claude_auth_hint "OAuth token has expired"' _ "$ROOT")"
+  assert_contains "a rejected inherited token blames the environment, not the login" "$out" \
+    "the \`CLAUDE_CODE_OAUTH_TOKEN\` this run inherited from its environment was rejected"
+}
+test_claude_auth_hint
+
+echo "== monitor.sh: the saved token reaches claude, and the alert says which credential failed =="
+test_monitor_token_passthrough() {
+  local repo="$TMP/tokrepo" home="$TMP/tokrepohome" msg="$TMP/tok.eml" seen="$TMP/tok.seen"
+  make_fake_repo "$repo" "$(date +%F)" 0 "me@example.com"
+  # A stub claude that records the token it was handed, then fails like a rejected login.
+  cat > "$repo/stub/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${CLAUDE_CODE_OAUTH_TOKEN:-<none>}" >> "$TOKEN_SEEN"
+printf '{"type":"result","is_error":true,"result":"Failed to authenticate: OAuth token has expired"}\n'
+exit 1
+SH
+  chmod +x "$repo/stub/claude"
+  # No token file: claude sees no token, and the alert points at setup-token.
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  ( env -u CLAUDE_CODE_OAUTH_TOKEN TOKEN_SEEN="$seen" MSG_OUT="$msg" HOME="$home" PATH="$repo/stub:$PATH" \
+      bash "$repo/bin/monitor.sh" daily >/dev/null 2>&1 )
+  assert_eq "without a token file claude gets no token" "<none>" "$(head -n 1 "$seen" 2>/dev/null)"
+  assert_contains "the alert says how to stop the login lapsing" "$(cat "$msg" 2>/dev/null)" \
+    "save the token it prints to \`$home/.config/vantage-point/claude-token\`"
+  # With a token file: claude gets it, and the alert blames that token instead.
+  mkdir -p "$home/.config/vantage-point"
+  printf 'sk-ant-oat01-xyz\n' > "$home/.config/vantage-point/claude-token"
+  chmod 600 "$home/.config/vantage-point/claude-token"
+  rm -f "$msg" "$seen" "$repo/state/.failure-alerted"
+  # shellcheck disable=SC2031  # per-command env prefix, not a lost subshell change
+  ( env -u CLAUDE_CODE_OAUTH_TOKEN TOKEN_SEEN="$seen" MSG_OUT="$msg" HOME="$home" PATH="$repo/stub:$PATH" \
+      bash "$repo/bin/monitor.sh" daily >/dev/null 2>&1 )
+  assert_eq "the saved token is exported to claude" "sk-ant-oat01-xyz" "$(head -n 1 "$seen" 2>/dev/null)"
+  assert_contains "the alert says the saved token was rejected" "$(cat "$msg" 2>/dev/null)" \
+    "the saved token in \`$home/.config/vantage-point/claude-token\` was rejected"
+  assert_not_contains "the alert never prints the token itself" "$(cat "$msg" 2>/dev/null)" "sk-ant-oat01-xyz"
+}
+test_monitor_token_passthrough
+
 # A stub claude that, on the triage call, writes a report + a deep-dive queue with a
 # high-scoring item, and on the deep-dive call (prompt contains DEEPDIVE_FIXTURE)
 # records that it ran. Used by the two-pass tests.

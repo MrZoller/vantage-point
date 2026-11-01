@@ -28,6 +28,7 @@ export PATH="$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 # so "does my answer read back?" is checked against the real consumers.
 # shellcheck source=bin/config-lib.sh
 . "$ROOT/bin/config-lib.sh"
+load_claude_token   # a saved long-lived token, if any (see config-lib.sh)
 
 CONFIG="monitor-config.yaml"
 DRAFT=".init.draft.yaml"        # assembled here; moved into place at the very end
