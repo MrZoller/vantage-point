@@ -56,7 +56,9 @@ stays consistent instead of re-deriving them.
   corroborates the top items on a stronger model.
 - **editor** (`editor-prompt.md`): optional final pass (`models.editor`) that curates +
   polishes the report before delivery — non-destructive, no new facts, citations kept.
-- Both are `claude -p` calls wrapped in shell, sharing `config-lib.sh` (cfg readers) and
+- Both are `claude -p` calls wrapped in shell, sharing `config-lib.sh` (cfg readers, plus `load_claude_token`: a saved
+  `claude setup-token` token from `~/.config/vantage-point/claude-token` →
+  `CLAUDE_CODE_OAUTH_TOKEN`, and `claude_auth_hint` for the failure email) and
   `email-lib.sh` (rendering + `send_email`; table-based HTML for Outlook; one private
   message per recipient; optional CID-embedded brand logo from `assets/logo-email.png`
   when `output.email_images` is on). The portal inlines the same mark as SVG. Each pass's `--max-turns` cap comes from

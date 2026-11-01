@@ -103,6 +103,22 @@ makes the review gate a literal, diffable file promotion.
    line at the top of **both** `bin/*.sh` — otherwise the scheduled job dies with
    `command not found` even though it runs fine in your shell. This is the most common
    first-run failure.
+
+   **Recommended for scheduled runs: a long-lived token.** The interactive login's
+   session lapses every few weeks. From then on every headless run fails with
+   `OAuth session expired` until someone runs `/login` on the host again. To avoid
+   that, mint a year-long token once and save it where the agents look for it:
+   ```
+   claude setup-token                     # prints a token tied to your plan
+   mkdir -p ~/.config/vantage-point
+   (umask 077; pbpaste > ~/.config/vantage-point/claude-token)   # or paste it with an editor
+   ```
+   `monitor.sh`, `bootstrap.sh` and `init.sh` export it as `CLAUDE_CODE_OAUTH_TOKEN`,
+   which `claude` uses ahead of the stored login. One file serves every checkout on
+   the machine. `VP_CLAUDE_TOKEN_FILE` points them at a different path, and a token
+   already in the environment wins. Without the file, runs use the stored login as
+   before. If a run fails on auth, the failure email says which credential lapsed and
+   how to replace it.
 3. Fill in `monitor-config.yaml` — the subject, the anchor, and a few good seed
    URLs for each. Seeds matter most when the anchor has a thin public footprint.
    (Or skip the YAML editing entirely — see **Guided setup** below.)
@@ -256,7 +272,8 @@ Notes:
     instance: ai-models
     refresh_time: "03:20"   # HH:MM; overrides the hashed slot
   ```
-- `~/.msmtprc` and your Claude auth are shared across clones, which is fine. To view
+- `~/.msmtprc` and your Claude auth (including `~/.config/vantage-point/claude-token`)
+  are shared across clones, which is fine. To view
   two portals at once, give each a distinct port (`./bin/portal.sh --port 8081`).
 
 ## Email delivery (optional)

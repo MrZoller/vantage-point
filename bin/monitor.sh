@@ -22,6 +22,8 @@ export PATH="$PATH:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin"
 . "$ROOT/bin/config-lib.sh"
 # shellcheck source=bin/email-lib.sh
 . "$ROOT/bin/email-lib.sh"
+# A saved `claude setup-token` token outlives the interactive login (see config-lib.sh).
+load_claude_token
 
 CONFIG="monitor-config.yaml"
 PROFILE="profile.yaml"
@@ -272,6 +274,7 @@ alert_failure() {  # <exit-code>
   {
     printf '> **The %s run failed (exit %s)** - no report was produced.\n\n' "$MODE" "$1"
     [ -n "$FAILURE_REASON" ] && printf '**Reason:** %s\n\n' "$FAILURE_REASON"
+    claude_auth_hint "$FAILURE_REASON"
     printf 'Checkout: `%s`\n\n' "$ROOT"
     printf 'Runs keep retrying on schedule. To retry now, on the host:\n\n'
     printf '```sh\ncd %s && ./bin/monitor.sh %s\n```\n\n' "$ROOT" "$MODE"
