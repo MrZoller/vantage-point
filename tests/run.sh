@@ -2763,7 +2763,10 @@ import importlib.util, json, os, sys
 from datetime import datetime, timezone, timedelta
 root = os.path.dirname(os.path.dirname(sys.argv[1]))
 today = datetime.now(timezone.utc).date()
-d0, d1 = today.isoformat(), (today - timedelta(days=1)).isoformat()
+# d1 must fall in d0's Sunday-based chart week, or the one weekly precision bar asserted
+# below splits in two. On a Sunday "yesterday" is last week, so use today itself then.
+d0 = today.isoformat()
+d1 = (today if today.weekday() == 6 else today - timedelta(days=1)).isoformat()
 old = (today - timedelta(days=60)).isoformat()
 seen = [
     {"id": "g1", "date": d0, "signal": "opportunity", "title": "good", "source": "alpha.com", "url": "https://a"},
